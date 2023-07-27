@@ -210,6 +210,7 @@ func (f CompiledFunction) Call(ctx FunctionContext) Value {
 	return v
 }
 
+//go:nolint
 func noescape[T any](pointer *T) *T {
 	v := uintptr(unsafe.Pointer(pointer)) ^ 0
 	return (*T)(unsafe.Pointer(v))

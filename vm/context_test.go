@@ -54,7 +54,7 @@ func BenchmarkFunction_Run(b *testing.B) {
 	ctx := &GlobalContext{Functions: []Callable{f}}
 	ctx.Init()
 
-	program := CompiledFunction{Constants: []Value{Int(2)}}
+	program := CompiledFunction{Constants: []Value{Int(10)}}
 	program.Instructions = append(program.Instructions, byte(OpConst), 0)
 	program.Instructions = append(program.Instructions, byte(OpAssertType), byte(IntType))
 	program.Instructions = append(program.Instructions, byte(OpCall), 0, 1)
@@ -64,7 +64,7 @@ func BenchmarkFunction_Run(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		if program.Call(ctx.Child(0)) != Int(1) {
+		if program.Call(ctx.Child(0)) != Int(55) {
 			panic("")
 		}
 	}

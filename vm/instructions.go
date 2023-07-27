@@ -8,11 +8,6 @@ import (
 	"strings"
 )
 
-type Operation struct {
-	op       Operator
-	operands [2]Value
-}
-
 type Bytecode []byte
 
 func (b Bytecode) ReadOperation(ctx *FunctionContext) Operator {
@@ -400,15 +395,8 @@ func Add(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Offset(0)
 
-	as := Juggle(left.Type(), right.Type())
-
-	switch as {
-	case FloatType:
-		ctx.Put(ctx.TopIndex(), left.AsFloat(ctx)+right.AsFloat(ctx))
-	case BoolType, IntType:
-		ctx.Put(ctx.TopIndex(), left.AsInt(ctx)+right.AsInt(ctx))
-	case ArrayType:
-		result := maps.Clone(left.AsArray(ctx))
+	if left.Type() == ArrayType || right.Type() == ArrayType {
+        result := maps.Clone(left.AsArray(ctx))
 
 		for key, val := range right.AsArray(ctx) {
 			if _, ok := result[key]; !ok {
@@ -417,7 +405,15 @@ func Add(ctx *FunctionContext) {
 		}
 
 		ctx.Put(ctx.TopIndex(), result)
+		return;
 	}
+
+	if left.Type() == FloatType || right.Type() == FloatType {
+		ctx.Put(ctx.TopIndex(), left.AsFloat(ctx)+right.AsFloat(ctx))
+		return;
+	}
+
+	ctx.Put(ctx.TopIndex(), left.AsInt(ctx)+right.AsInt(ctx))
 }
 
 func AddInt(ctx *FunctionContext) {
@@ -684,6 +680,7 @@ func Concat(ctx *FunctionContext) {
 	ctx.Put(ctx.TopIndex(), left+right)
 }
 
+// AsertType => fn(int $a)
 func AssertType(ctx *FunctionContext) {
 	ctx.Put(ctx.TopIndex(), ctx.Offset(0).Cast(ctx, Type(ctx.rx)))
 }

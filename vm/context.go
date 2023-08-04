@@ -6,7 +6,8 @@ import (
 )
 
 type Callable interface {
-	Call(ctx FunctionContext) Value
+	NumArgs() int
+	Invoke(Context) Value
 }
 
 type Context interface {
@@ -14,7 +15,6 @@ type Context interface {
 
 	Parent() Context
 	Global() Context
-	Child(int) FunctionContext
 	GetFunction(int) Callable
 	Throw(error)
 
@@ -37,9 +37,9 @@ type GlobalContext struct {
 }
 
 func (g *GlobalContext) Parent() Context { return nil }
-func (g *GlobalContext) Global() Context { return nil }
-func (g *GlobalContext) Child(numArgs int) FunctionContext {
-	return NewFunctionContext(g, numArgs)
+func (g *GlobalContext) Global() Context { return g }
+func (g *GlobalContext) Child() FunctionContext {
+	return NewFunctionContext(g)
 }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
 func (g *GlobalContext) Throw(error)                    {}
@@ -47,45 +47,52 @@ func (g *GlobalContext) Throw(error)                    {}
 type FunctionContext struct {
 	Context
 
-	vars           []Value
+	vars, args     []Value
 	constants      []Value
 	rx, ry, pc, fp int // Registers
 	returned       bool
-	numArgs        int
 }
 
-func NewFunctionContext(parent Context, numArgs int) FunctionContext {
-	c := FunctionContext{}
+func NewFunctionContext(parent Context) (c FunctionContext) {
 	c.pc, c.rx, c.ry = 0, 0, 0
 	c.returned = false
 	c.Context = parent
-	c.fp = parent.TopIndex() - numArgs
-	c.numArgs = numArgs
-	return c
+	return
 }
 
+func (ctx *FunctionContext) Arg(num int) Value { return ctx.args[num] }
 func (ctx *FunctionContext) Parent() Context { return ctx.Context }
 func (ctx *FunctionContext) Global() Context { return ctx.Context.Global() }
-func (ctx *FunctionContext) Child(numArgs int) FunctionContext {
-	return NewFunctionContext(ctx, numArgs)
+func (ctx *FunctionContext) Child() FunctionContext {
+	return NewFunctionContext(ctx)
 }
 
-type BuiltInFunction func(ctx FunctionContext) Value
+type BuiltInFunction struct{
+	Args int
+    Fn   func(Context, ...Value) Value
+}
 
-func (f BuiltInFunction) Call(ctx FunctionContext) Value { return f(ctx) }
+func (f BuiltInFunction) NumArgs() int { return f.Args }
+func (f BuiltInFunction) Invoke(ctx Context) Value { 
+	args := ctx.Slice(-f.Args, 0)
+	return f.Fn(ctx, args...) 
+}
 
 type CompiledFunction struct {
-	Name         string
-	LocalsSize   int
 	Instructions Bytecode
 	Constants    []Value
-	NumVars      int
+	Args         int
+	Vars         int
 }
 
-func (f CompiledFunction) Call(ctx FunctionContext) Value {
+func (f CompiledFunction) NumArgs() int { return f.Args }
+func (f CompiledFunction) Invoke(parent Context) Value {
+    ctx := NewFunctionContext(parent)
 	ctx.constants = f.Constants
-	ctx.vars = ctx.Slice(-ctx.numArgs, f.NumVars)
-	ctx.MovePointer(f.NumVars)
+	ctx.vars = ctx.Slice(-f.Args, f.Vars)
+	ctx.args = ctx.Slice(-f.Args, 0)
+	ctx.fp = ctx.TopIndex() - f.Args
+	ctx.MovePointer(f.Vars)
 
 	for ctx.pc = 0; !ctx.returned && ctx.pc < len(f.Instructions); ctx.pc++ {
 		switch f.Instructions.ReadOperation(noescape(&ctx)) {
@@ -141,12 +148,6 @@ func (f CompiledFunction) Call(ctx FunctionContext) Value {
 			PreDecrement(noescape(&ctx))
 		case OpPostDecrement:
 			PostDecrement(noescape(&ctx))
-		case OpAnd:
-			And(noescape(&ctx))
-		case OpOr:
-			Or(noescape(&ctx))
-		case OpNot:
-			Not(noescape(&ctx))
 		case OpIdentical:
 			Identical(noescape(&ctx))
 		case OpNotIdentical:

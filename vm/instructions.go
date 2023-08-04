@@ -13,10 +13,6 @@ type Bytecode []byte
 func (b Bytecode) ReadOperation(ctx *FunctionContext) Operator {
 	op := Operator(b[ctx.pc])
 
-	if op > _opTwoOperand {
-		ctx.pc++
-		ctx.ry = int(b[ctx.pc])
-	}
 	if op > _opOneOperand {
 		ctx.pc++
 		ctx.rx = int(b[ctx.pc])
@@ -47,10 +43,6 @@ func Reduce[T Value, F ~func(prev T, operator Operator, operands ...byte) T](byt
 	for ip < len(bytecode) {
 		op := Operator(bytecode[ip])
 
-		if op > _opTwoOperand {
-			ip++
-			registers = append(registers, bytecode[ip])
-		}
 		if op > _opOneOperand {
 			ip++
 			registers = append(registers, bytecode[ip])
@@ -91,9 +83,6 @@ const (
 	OpModInt                         // MOD_INT
 	OpModFloat                       // MOD_FLOAT
 	OpModBool                        // MOD_BOOL
-	OpAnd                            // AND
-	OpOr                             // OR
-	OpNot                            // NOT
 	OpEqual                          // EQUAL
 	OpNotEqual                       // NOT_EQUAL
 	OpIdentical                      // IDENTICAL
@@ -126,9 +115,7 @@ const (
 	OpJump                   // JUMP
 	OpJumpZ                  // JUMP_Z
 	OpJumpNZ                 // JUMP_NZ
-
-	_opTwoOperand Operator = iota - 2
-	OpCall                 // CALL
+	OpCall                   // CALL
 )
 
 func arrayCompare(ctx *FunctionContext, x, y Array) Int {
@@ -188,25 +175,6 @@ func compare(ctx *FunctionContext, x, y Value) Int {
 	}
 
 	return 0
-}
-
-// And => x && y
-func And(ctx *FunctionContext) {
-	right := ctx.Pop().AsBool(ctx)
-	left := ctx.Pop().AsBool(ctx)
-	ctx.Push(left && right)
-}
-
-// Or => x || y
-func Or(ctx *FunctionContext) {
-	right := ctx.Pop().AsBool(ctx)
-	left := ctx.Pop().AsBool(ctx)
-	ctx.Push(left || right)
-}
-
-// Not => !x
-func Not(ctx *FunctionContext) {
-	ctx.Push(!ctx.Pop().AsBool(ctx))
 }
 
 // Identical => x === y
@@ -353,7 +321,7 @@ func AssignMod(ctx *FunctionContext) {
 	left := ctx.vars[ctx.rx].AsFloat(ctx)
 
 	if res := Float(math.Mod(float64(left), float64(right))); res == Float(int(res)) {
-		ctx.vars[ctx.rx] = res.AsInt(ctx)
+	    ctx.vars[ctx.rx] = res.AsInt(ctx)
 	} else {
 		ctx.vars[ctx.rx] = res
 	}
@@ -361,7 +329,7 @@ func AssignMod(ctx *FunctionContext) {
 
 // Jump unconditional jump
 func Jump(ctx *FunctionContext) {
-	ctx.pc = ctx.rx
+	ctx.pc = ctx.rx - 1
 }
 
 // JumpZ if (true_statement)
@@ -380,8 +348,8 @@ func JumpNZ(ctx *FunctionContext) {
 
 // Call => someFunction($a, $x)
 func Call(ctx *FunctionContext) {
-	fn := ctx.GetFunction(ctx.ry)
-	res := fn.Call(ctx.Child(ctx.rx))
+	fn := ctx.GetFunction(ctx.rx)
+	res := fn.Invoke(ctx)
 	ctx.Push(res)
 }
 
@@ -405,12 +373,12 @@ func Add(ctx *FunctionContext) {
 		}
 
 		ctx.Put(ctx.TopIndex(), result)
-		return;
+		return
 	}
 
 	if left.Type() == FloatType || right.Type() == FloatType {
 		ctx.Put(ctx.TopIndex(), left.AsFloat(ctx)+right.AsFloat(ctx))
-		return;
+		return
 	}
 
 	ctx.Put(ctx.TopIndex(), left.AsInt(ctx)+right.AsInt(ctx))

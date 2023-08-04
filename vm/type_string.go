@@ -13,12 +13,13 @@ func _() {
 	_ = x[FloatType-2]
 	_ = x[StringType-3]
 	_ = x[ArrayType-4]
-	_ = x[BoolType-5]
+	_ = x[ObjectType-5]
+	_ = x[BoolType-6]
 }
 
-const _Type_name = "nullintegerfloatstringarrayboolean"
+const _Type_name = "nullintegerfloatstringarrayobjectboolean"
 
-var _Type_index = [...]uint8{0, 4, 11, 16, 22, 27, 34}
+var _Type_index = [...]uint8{0, 4, 11, 16, 22, 27, 33, 40}
 
 func (i Type) String() string {
 	if i >= Type(len(_Type_index)-1) {

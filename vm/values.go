@@ -15,6 +15,7 @@ const (
 	FloatType              // float
 	StringType             // string
 	ArrayType              // array
+	ObjectType             // object
 	BoolType               // boolean
 )
 
@@ -53,7 +54,7 @@ func (i Int) Cast(ctx Context, t Type) Value {
 	case IntType:
 		return i
 	case FloatType:
-		return i.AsFloat(ctx)
+		return i. AsFloat(ctx)
 	case BoolType:
 		return i.AsBool(ctx)
 	case StringType:

@@ -2,11 +2,16 @@ package compiler
 
 import (
 	"github.com/VKCOM/php-parser/pkg/ast"
-	_ "github.com/VKCOM/php-parser/pkg/visitor/traverser"
+	"github.com/VKCOM/php-parser/pkg/visitor/traverser"
 )
 
-type Compiler struct{}
+type Compiler struct{
+	*traverser.Traverser
+}
 
-func New(node ast.Vertex) *Compiler {
-	return new(Compiler)
+func New(node *ast.Root) *Compiler {
+	c := &Compiler{}
+    c.Traverser = traverser.NewTraverser(c)
+
+	return c
 }

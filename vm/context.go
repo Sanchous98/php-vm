@@ -67,15 +67,15 @@ func (ctx *FunctionContext) Child() FunctionContext {
 	return NewFunctionContext(ctx)
 }
 
-type BuiltInFunction struct{
+type BuiltInFunction[R Value] struct{
 	Args int
-    Fn   func(Context, ...Value) Value
+	Fn   func(...Value) R
 }
 
-func (f BuiltInFunction) NumArgs() int { return f.Args }
-func (f BuiltInFunction) Invoke(ctx Context) Value { 
+func (f BuiltInFunction[R]) NumArgs() int { return f.Args }
+func (f BuiltInFunction[R]) Invoke(ctx Context) Value { 
 	args := ctx.Slice(-f.Args, 0)
-	return f.Fn(ctx, args...) 
+	return f.Fn(args...) 
 }
 
 type CompiledFunction struct {
@@ -96,6 +96,8 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 
 	for ctx.pc = 0; !ctx.returned && ctx.pc < len(f.Instructions); ctx.pc++ {
 		switch f.Instructions.ReadOperation(noescape(&ctx)) {
+		case OpPop:
+			Pop(noescape(&ctx))
 		case OpAssertType:
 			AssertType(noescape(&ctx))
 		case OpAdd:

@@ -61,6 +61,7 @@ type Operator byte
 
 const (
 	OpNoop           Operator = iota // NOOP
+	OpPop                            // POP
 	OpReturn                         // RETURN
 	OpAdd                            // ADD
 	OpAddInt                         // ADD_INT
@@ -346,11 +347,15 @@ func JumpNZ(ctx *FunctionContext) {
 	}
 }
 
-// Call => someFunction($a, $x)
+// Call => $b = someFunction($a, $x)
 func Call(ctx *FunctionContext) {
 	fn := ctx.GetFunction(ctx.rx)
 	res := fn.Invoke(ctx)
 	ctx.Push(res)
+}
+
+func Pop(ctx *FunctionContext) {
+	ctx.Pop()
 }
 
 // Return => return 0

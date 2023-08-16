@@ -52,7 +52,7 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	ctx := &GlobalContext{Functions: []Callable{f}}
 	ctx.Init()
 
-	program := CompiledFunction{Constants: []Value{Int(10)}}
+	program := CompiledFunction{Constants: []Value{Int(35)}}
 	program.Instructions = append(program.Instructions, byte(OpConst), 0)
 	program.Instructions = append(program.Instructions, byte(OpAssertType), byte(IntType))
 	program.Instructions = append(program.Instructions, byte(OpCall), 0)
@@ -73,7 +73,7 @@ func fibonacci(args ...Value) Int {
 		return n
 	}
 
-	return fibonacci(n - 2) + fibonacci(n - 1)
+	return fibonacci(n-2) + fibonacci(n-1)
 }
 
 func nativeFibonacci(n int) int {
@@ -81,13 +81,13 @@ func nativeFibonacci(n int) int {
 		return n
 	}
 
-	return nativeFibonacci(n - 2) + nativeFibonacci(n - 1)
+	return nativeFibonacci(n-2) + nativeFibonacci(n-1)
 }
 
 func BenchmarkBuiltInFunction_Invoke(b *testing.B) {
-    f := BuiltInFunction[Int]{
+	f := BuiltInFunction[Int]{
 		Args: 1,
-		Fn: fibonacci,
+		Fn:   fibonacci,
 	}
 
 	ctx := &GlobalContext{Functions: []Callable{f}}
@@ -121,6 +121,6 @@ func Benchmark_nativeFibonacci(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-        nativeFibonacci(10)
+		nativeFibonacci(10)
 	}
 }

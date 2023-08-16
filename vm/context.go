@@ -14,7 +14,7 @@ type Context interface {
 	context.Context
 
 	Parent() Context
-	Global() Context
+	Global() *GlobalContext
 	GetFunction(int) Callable
 	Throw(error)
 
@@ -36,8 +36,8 @@ type GlobalContext struct {
 	Functions []Callable
 }
 
-func (g *GlobalContext) Parent() Context { return nil }
-func (g *GlobalContext) Global() Context { return g }
+func (g *GlobalContext) Parent() Context        { return nil }
+func (g *GlobalContext) Global() *GlobalContext { return g }
 func (g *GlobalContext) Child() FunctionContext {
 	return NewFunctionContext(g)
 }
@@ -47,6 +47,7 @@ func (g *GlobalContext) Throw(error)                    {}
 type FunctionContext struct {
 	Context
 
+	global         *GlobalContext
 	vars, args     []Value
 	constants      []Value
 	rx, ry, pc, fp int // Registers
@@ -54,6 +55,7 @@ type FunctionContext struct {
 }
 
 func NewFunctionContext(parent Context) (c FunctionContext) {
+	c.global = parent.Global()
 	c.pc, c.rx, c.ry = 0, 0, 0
 	c.returned = false
 	c.Context = parent
@@ -61,21 +63,29 @@ func NewFunctionContext(parent Context) (c FunctionContext) {
 }
 
 func (ctx *FunctionContext) Arg(num int) Value { return ctx.args[num] }
-func (ctx *FunctionContext) Parent() Context { return ctx.Context }
-func (ctx *FunctionContext) Global() Context { return ctx.Context.Global() }
+func (ctx *FunctionContext) Parent() Context   { return ctx.Context }
 func (ctx *FunctionContext) Child() FunctionContext {
 	return NewFunctionContext(ctx)
 }
+func (ctx *FunctionContext) Global() *GlobalContext { return ctx.global }
+func (ctx *FunctionContext) Offset(o int) Value     { return ctx.global.Offset(o) }
+func (ctx *FunctionContext) Pop() Value             { return ctx.global.Pop() }
+func (ctx *FunctionContext) Push(v Value)           { ctx.global.Push(v) }
+func (ctx *FunctionContext) Put(index int, v Value) { ctx.global.Put(index, v) }
+func (ctx *FunctionContext) Slice(x, y int) []Value { return ctx.global.Slice(x, y) }
+func (ctx *FunctionContext) Sp(pointer int)         { ctx.global.Sp(pointer) }
+func (ctx *FunctionContext) MovePointer(offset int) { ctx.global.MovePointer(offset) }
+func (ctx *FunctionContext) TopIndex() int          { return ctx.global.TopIndex() }
 
-type BuiltInFunction[R Value] struct{
+type BuiltInFunction[R Value] struct {
 	Args int
 	Fn   func(...Value) R
 }
 
 func (f BuiltInFunction[R]) NumArgs() int { return f.Args }
-func (f BuiltInFunction[R]) Invoke(ctx Context) Value { 
+func (f BuiltInFunction[R]) Invoke(ctx Context) Value {
 	args := ctx.Slice(-f.Args, 0)
-	return f.Fn(args...) 
+	return f.Fn(args...)
 }
 
 type CompiledFunction struct {
@@ -87,12 +97,12 @@ type CompiledFunction struct {
 
 func (f CompiledFunction) NumArgs() int { return f.Args }
 func (f CompiledFunction) Invoke(parent Context) Value {
-    ctx := NewFunctionContext(parent)
+	ctx := NewFunctionContext(parent)
 	ctx.constants = f.Constants
 	ctx.vars = ctx.Slice(-f.Args, f.Vars)
 	ctx.args = ctx.Slice(-f.Args, 0)
 	ctx.fp = ctx.TopIndex() - f.Args
-	ctx.MovePointer(f.Vars)
+	ctx.MovePointer(f.Vars + f.Args)
 
 	for ctx.pc = 0; !ctx.returned && ctx.pc < len(f.Instructions); ctx.pc++ {
 		switch f.Instructions.ReadOperation(noescape(&ctx)) {

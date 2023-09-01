@@ -5,64 +5,53 @@ import (
 )
 
 func BenchmarkCompiledFunction_Invoke(b *testing.B) {
-	f := CompiledFunction{Constants: []Value{Int(0), Int(1), Int(2)}, Args: 1}
-	/**
-	function fibonacci(int $n)
-	{
-		if ($n === 0) {
-			return 0;
-		}
-
-		if ($n === 1) {)
-			return 1;
-		}
-
-		return fibonacci($n-1) + fibonacci($n-2);
+	f := CompiledFunction{Args: 1}
+	f.Instructions = Bytecode{
+		byte(OpLoad), 0,
+		byte(OpConst), 1,
+		byte(OpIdentical),
+		byte(OpJumpNZ), 10,
+		byte(OpConst), 1,
+		byte(OpReturnValue),
+		byte(OpLoad), 0,
+		byte(OpConst), 2,
+		byte(OpIdentical),
+		byte(OpJumpNZ), 20,
+		byte(OpConst), 2,
+		byte(OpReturnValue),
+		byte(OpLoad), 0,
+		byte(OpConst), 2,
+		byte(OpSubInt),
+		byte(OpCall), 0,
+		byte(OpLoad), 0,
+		byte(OpConst), 3,
+		byte(OpSubInt),
+		byte(OpCall), 0,
+		byte(OpAddInt),
+		byte(OpReturnValue),
 	}
-	return fibonacci(10);
-	*/
-	// $n === 0
-	f.Instructions = append(f.Instructions, byte(OpLoad), 0)
-	f.Instructions = append(f.Instructions, byte(OpConst), 0)
-	f.Instructions = append(f.Instructions, byte(OpIdentical))
-	f.Instructions = append(f.Instructions, byte(OpJumpNZ), 10)
-	f.Instructions = append(f.Instructions, byte(OpConst), 0)
-	f.Instructions = append(f.Instructions, byte(OpReturn))
-	// $n === 1
-	f.Instructions = append(f.Instructions, byte(OpLoad), 0)
-	f.Instructions = append(f.Instructions, byte(OpConst), 1)
-	f.Instructions = append(f.Instructions, byte(OpIdentical))
-	f.Instructions = append(f.Instructions, byte(OpJumpNZ), 20)
-	f.Instructions = append(f.Instructions, byte(OpConst), 1)
-	f.Instructions = append(f.Instructions, byte(OpReturn))
-	// fibonacci($n-1)
-	f.Instructions = append(f.Instructions, byte(OpLoad), 0)
-	f.Instructions = append(f.Instructions, byte(OpConst), 1)
-	f.Instructions = append(f.Instructions, byte(OpSubInt))
-	f.Instructions = append(f.Instructions, byte(OpCall), 0)
-	// fibonacci($n-2)
-	f.Instructions = append(f.Instructions, byte(OpLoad), 0)
-	f.Instructions = append(f.Instructions, byte(OpConst), 2)
-	f.Instructions = append(f.Instructions, byte(OpSubInt))
-	f.Instructions = append(f.Instructions, byte(OpCall), 0)
-	// fibonacci($n-1) + fibonacci($n-2)
-	f.Instructions = append(f.Instructions, byte(OpAddInt))
-	f.Instructions = append(f.Instructions, byte(OpReturn))
 
-	ctx := &GlobalContext{Functions: []Callable{f}}
+	ctx := &GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10), Int(0), Int(1), Int(2)}}
 	ctx.Init()
 
-	program := CompiledFunction{Constants: []Value{Int(35)}}
-	program.Instructions = append(program.Instructions, byte(OpConst), 0)
-	program.Instructions = append(program.Instructions, byte(OpAssertType), byte(IntType))
-	program.Instructions = append(program.Instructions, byte(OpCall), 0)
-	program.Instructions = append(program.Instructions, byte(OpReturn))
+	bytecode := Bytecode{
+		byte(OpConst), 0,
+		byte(OpAssertType), byte(IntType),
+		byte(OpCall), 0,
+		byte(OpReturnValue),
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		program.Invoke(ctx)
+		ctx.Run(CompiledFunction{
+			Instructions: bytecode,
+		})
+
+		if ctx.TopIndex() > 0 {
+			panic("")
+		}
 	}
 }
 
@@ -93,17 +82,20 @@ func BenchmarkBuiltInFunction_Invoke(b *testing.B) {
 	ctx := &GlobalContext{Functions: []Callable{f}}
 	ctx.Init()
 
-	program := CompiledFunction{Constants: []Value{Int(10)}}
-	program.Instructions = append(program.Instructions, byte(OpConst), 0)
-	program.Instructions = append(program.Instructions, byte(OpAssertType), byte(IntType))
-	program.Instructions = append(program.Instructions, byte(OpCall), 0)
-	program.Instructions = append(program.Instructions, byte(OpReturn))
+	bytecode := []byte{
+		byte(OpConst), 0,
+		byte(OpAssertType), byte(IntType),
+		byte(OpCall), 0,
+		byte(OpReturn),
+	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		program.Invoke(ctx)
+		ctx.Run(CompiledFunction{
+			Instructions: bytecode,
+		})
 	}
 }
 

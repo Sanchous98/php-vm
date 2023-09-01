@@ -19,13 +19,7 @@ const (
 	BoolType               // boolean
 )
 
-func Juggle(x, y Type) Type {
-	if x > y {
-		return x
-	}
-
-	return y
-}
+func Juggle(x, y Type) Type { return max(x, y) }
 
 type Value interface {
 	AsInt(Context) Int
@@ -54,7 +48,7 @@ func (i Int) Cast(ctx Context, t Type) Value {
 	case IntType:
 		return i
 	case FloatType:
-		return i. AsFloat(ctx)
+		return i.AsFloat(ctx)
 	case BoolType:
 		return i.AsBool(ctx)
 	case StringType:

@@ -4,47 +4,55 @@ import (
 	"unsafe"
 )
 
-const stackSize = 512
+const stackSize = 4096
 
-type Stack struct {
+type stackIface[T any] interface {
+	Init()
+	Pop() T
+	Push(T)
+	TopIndex() int
+	Slice(int, int) []T
+	Sp(int)
+	Top() T
+	SetTop(T)
+	MovePointer(int)
+}
+
+type Stack[T any] struct {
 	sp    unsafe.Pointer
-	stack [stackSize]Value
+	stack [stackSize]T
+	size  int
 }
 
-func (s *Stack) Init() {
-	s.sp = unsafe.Add(unsafe.Pointer(&s.stack[0]), -16)
+func (s *Stack[T]) Init() {
+	s.size = int(unsafe.Sizeof(*new(T)))
+	s.sp = unsafe.Add(unsafe.Pointer(&s.stack[0]), -s.size)
 }
-func (s *Stack) Offset(offset int) Value {
-	return *(*Value)(unsafe.Add(s.sp, offset << 4))
-}
-func (s *Stack) Pop() (v Value) {
-    if uintptr(s.sp) < uintptr(unsafe.Pointer(&s.stack[0])) {
-		panic("stack is empty")
+func (s *Stack[T]) Pop() T {
+	if uintptr(s.sp) < uintptr(unsafe.Pointer(&s.stack[0])) {
+		return *new(T)
 	}
 
-	v, *(*Value)(s.sp) = *(*Value)(s.sp), v
+	v := *(*T)(s.sp)
 	s.MovePointer(-1)
-	return
+	return v
 }
-func (s *Stack) Push(v Value) {
+func (s *Stack[T]) Push(v T) {
 	if s.sp == unsafe.Pointer(&s.stack[stackSize-1]) {
 		panic("stack overflow")
 	}
 
 	s.MovePointer(1)
-	*(*Value)(s.sp) = v
+	s.SetTop(v)
 }
-func (s *Stack) Put(index int, v Value) { s.stack[index] = v }
-func (s *Stack) TopIndex() int {
-	return int(uintptr(s.sp)-uintptr(unsafe.Pointer(&s.stack[0]))) >> 4
+func (s *Stack[T]) TopIndex() int {
+	return int(uintptr(s.sp)-uintptr(unsafe.Pointer(&s.stack[0]))) / s.size
 }
-func (s *Stack) Slice(offsetX, offsetY int) []Value {
+func (s *Stack[T]) Slice(offsetX, offsetY int) []T {
 	length := s.TopIndex() + 1
 	return s.stack[length+offsetX : length+offsetY]
 }
-func (s *Stack) Sp(pointer int) {
-	s.sp = unsafe.Add(unsafe.Pointer(&s.stack[0]), pointer << 4)
-}
-func (s *Stack) MovePointer(offset int) {
-	s.sp = unsafe.Add(s.sp, offset << 4)
-}
+func (s *Stack[T]) Sp(pointer int)         { s.sp = unsafe.Add(unsafe.Pointer(&s.stack[0]), pointer*s.size) }
+func (s *Stack[T]) Top() T                 { return *(*T)(s.sp) }
+func (s *Stack[T]) SetTop(v T)             { *(*T)(s.sp) = v }
+func (s *Stack[T]) MovePointer(offset int) { s.sp = unsafe.Add(s.sp, offset*s.size) }

@@ -2,229 +2,290 @@ package vm
 
 import (
 	"context"
-	"unsafe"
+	"sync/atomic"
 )
+
+type Frame struct {
+	ctx      FunctionContext
+	bytecode Bytecode
+	fp       int
+}
 
 type Callable interface {
 	NumArgs() int
-	Invoke(Context) Value
+	Invoke(Context)
 }
 
 type Context interface {
 	context.Context
+	stackIface[Value]
 
 	Parent() Context
 	Global() *GlobalContext
 	GetFunction(int) Callable
 	Throw(error)
 
-	Init()
-	Offset(int) Value
-	Pop() Value
-	Push(Value)
-	Put(int, Value)
-	TopIndex() int
-	Slice(int, int) []Value
-	Sp(int)
-	MovePointer(int)
+	ReadRX() int
+	ReadRY() int
+	WriteRX(int)
+	WriteRY(int)
+
+	PushFrame() *Frame
+	PopFrame() *Frame
 }
 
 type GlobalContext struct {
 	context.Context
-	Stack
+	Stack[Value]
 
-	Functions []Callable
+	frames   [128]Frame
+	framesSp int
+
+	Constants   []Value
+	Functions   []Callable
+	initialized atomic.Bool
+
+	rx, ry int
 }
 
-func (g *GlobalContext) Parent() Context        { return nil }
-func (g *GlobalContext) Global() *GlobalContext { return g }
-func (g *GlobalContext) Child() FunctionContext {
-	return NewFunctionContext(g)
+func (g *GlobalContext) Init() {
+	if !g.initialized.Swap(true) {
+		g.Stack.Init()
+	}
 }
+func (g *GlobalContext) Parent() Context                { return nil }
+func (g *GlobalContext) Global() *GlobalContext         { return g }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
 func (g *GlobalContext) Throw(error)                    {}
+func (g *GlobalContext) currentFrame() *Frame           { return &g.frames[g.framesSp] }
+func (g *GlobalContext) PushFrame() *Frame {
+	g.framesSp++
+	return &g.frames[g.framesSp]
+}
+func (g *GlobalContext) PopFrame() *Frame {
+	frame := &g.frames[g.framesSp]
+	g.framesSp--
+	return frame
+}
+func (g *GlobalContext) ReadRX() int   { return g.rx }
+func (g *GlobalContext) ReadRY() int   { return g.ry }
+func (g *GlobalContext) WriteRX(x int) { g.rx = x }
+func (g *GlobalContext) WriteRY(y int) { g.ry = y }
+func (g *GlobalContext) Run(fn CompiledFunction) Value {
+	g.Init()
+	fn.Invoke(g)
+
+	for g.framesSp > 0 {
+		g.currentFrame().ctx.pc++
+
+		switch g.currentFrame().bytecode.ReadOperation(&g.currentFrame().ctx) {
+		case OpPop:
+			Pop(&g.currentFrame().ctx)
+		case OpReturn:
+			Return(&g.currentFrame().ctx)
+		case OpReturnValue:
+			ReturnValue(&g.currentFrame().ctx)
+		case OpAdd:
+			Add(&g.currentFrame().ctx)
+		case OpAddInt:
+			AddInt(&g.currentFrame().ctx)
+		case OpAddFloat:
+			AddFloat(&g.currentFrame().ctx)
+		case OpAddArray:
+			AddArray(&g.currentFrame().ctx)
+		case OpAddBool:
+			AddBool(&g.currentFrame().ctx)
+		case OpSub:
+			Sub(&g.currentFrame().ctx)
+		case OpSubInt:
+			SubInt(&g.currentFrame().ctx)
+		case OpSubFloat:
+			SubFloat(&g.currentFrame().ctx)
+		case OpSubBool:
+			SubBool(&g.currentFrame().ctx)
+		case OpMul:
+			Mul(&g.currentFrame().ctx)
+		case OpMulInt:
+			MulInt(&g.currentFrame().ctx)
+		case OpMulFloat:
+			MulFloat(&g.currentFrame().ctx)
+		case OpMulBool:
+			MulBool(&g.currentFrame().ctx)
+		case OpDiv:
+			Div(&g.currentFrame().ctx)
+		case OpDivInt:
+			DivInt(&g.currentFrame().ctx)
+		case OpDivFloat:
+			DivFloat(&g.currentFrame().ctx)
+		case OpDivBool:
+			DivBool(&g.currentFrame().ctx)
+		case OpMod:
+			Mod(&g.currentFrame().ctx)
+		case OpModInt:
+			ModInt(&g.currentFrame().ctx)
+		case OpModFloat:
+			ModFloat(&g.currentFrame().ctx)
+		case OpModBool:
+			ModBool(&g.currentFrame().ctx)
+		case OpPow:
+			Pow(&g.currentFrame().ctx)
+		case OpPowInt:
+			PowInt(&g.currentFrame().ctx)
+		case OpPowFloat:
+			PowFloat(&g.currentFrame().ctx)
+		case OpPowBool:
+			PowBool(&g.currentFrame().ctx)
+		case OpBwAnd:
+			BwAnd(&g.currentFrame().ctx)
+		case OpBwOr:
+			BwOr(&g.currentFrame().ctx)
+		case OpBwXor:
+			BwXor(&g.currentFrame().ctx)
+		case OpBwNot:
+			BwNot(&g.currentFrame().ctx)
+		case OpShiftLeft:
+			ShiftLeft(&g.currentFrame().ctx)
+		case OpShiftRight:
+			ShiftRight(&g.currentFrame().ctx)
+		case OpEqual:
+			Equal(&g.currentFrame().ctx)
+		case OpNotEqual:
+			NotEqual(&g.currentFrame().ctx)
+		case OpIdentical:
+			Identical(&g.currentFrame().ctx)
+		case OpNotIdentical:
+			NotIdentical(&g.currentFrame().ctx)
+		case OpGreater:
+			Greater(&g.currentFrame().ctx)
+		case OpLess:
+			Less(&g.currentFrame().ctx)
+		case OpGreaterOrEqual:
+			GreaterOrEqual(&g.currentFrame().ctx)
+		case OpLessOrEqual:
+			LessOrEqual(&g.currentFrame().ctx)
+		case OpCompare:
+			Compare(&g.currentFrame().ctx)
+		case OpArrayFetch:
+			ArrayFetch(&g.currentFrame().ctx)
+		case OpConcat:
+			Concat(&g.currentFrame().ctx)
+		case OpAssertType:
+			AssertType(&g.currentFrame().ctx)
+		case OpAssign:
+			Assign(&g.currentFrame().ctx)
+		case OpAssignAdd:
+			AssignAdd(&g.currentFrame().ctx)
+		case OpAssignSub:
+			AssignSub(&g.currentFrame().ctx)
+		case OpAssignMul:
+			AssignMul(&g.currentFrame().ctx)
+		case OpAssignDiv:
+			AssignDiv(&g.currentFrame().ctx)
+		case OpAssignMod:
+			AssignMod(&g.currentFrame().ctx)
+		case OpAssignPow:
+			AssignPow(&g.currentFrame().ctx)
+		case OpAssignBwAnd:
+			AssignBwAnd(&g.currentFrame().ctx)
+		case OpAssignBwOr:
+			AssignBwOr(&g.currentFrame().ctx)
+		case OpAssignBwXor:
+			AssignBwXor(&g.currentFrame().ctx)
+		case OpAssignConcat:
+			AssignConcat(&g.currentFrame().ctx)
+		case OpAssignShiftLeft:
+			AssignShiftLeft(&g.currentFrame().ctx)
+		case OpAssignShiftRight:
+			AssignShiftRight(&g.currentFrame().ctx)
+		case OpArrayPut:
+			ArrayPut(&g.currentFrame().ctx)
+		case OpArrayPush:
+			ArrayPush(&g.currentFrame().ctx)
+		case OpCast:
+			Cast(&g.currentFrame().ctx)
+		case OpPreIncrement:
+			PreIncrement(&g.currentFrame().ctx)
+		case OpPostIncrement:
+			PostIncrement(&g.currentFrame().ctx)
+		case OpPreDecrement:
+			PreDecrement(&g.currentFrame().ctx)
+		case OpPostDecrement:
+			PostDecrement(&g.currentFrame().ctx)
+		case OpLoad:
+			Load(&g.currentFrame().ctx)
+		case OpLoadString:
+			LoadString(&g.currentFrame().ctx)
+		case OpConst:
+			Const(&g.currentFrame().ctx)
+		case OpJump:
+			Jump(&g.currentFrame().ctx)
+		case OpJumpZ:
+			JumpZ(&g.currentFrame().ctx)
+		case OpJumpNZ:
+			JumpNZ(&g.currentFrame().ctx)
+		case OpCall:
+			Call(&g.currentFrame().ctx)
+		}
+	}
+
+	return g.Pop()
+}
 
 type FunctionContext struct {
 	Context
 
-	global         *GlobalContext
-	vars, args     []Value
-	constants      []Value
-	rx, ry, pc, fp int // Registers
-	returned       bool
+	global     *GlobalContext
+	vars, args []Value
+	symbols    map[String]int
+	constants  []Value
+	pc         int // Registers
 }
 
-func NewFunctionContext(parent Context) (c FunctionContext) {
-	c.global = parent.Global()
-	c.pc, c.rx, c.ry = 0, 0, 0
-	c.returned = false
-	c.Context = parent
-	return
-}
-
-func (ctx *FunctionContext) Arg(num int) Value { return ctx.args[num] }
-func (ctx *FunctionContext) Parent() Context   { return ctx.Context }
-func (ctx *FunctionContext) Child() FunctionContext {
-	return NewFunctionContext(ctx)
-}
+func (ctx *FunctionContext) Arg(num int) Value      { return ctx.args[num] }
+func (ctx *FunctionContext) Parent() Context        { return ctx.Context }
 func (ctx *FunctionContext) Global() *GlobalContext { return ctx.global }
-func (ctx *FunctionContext) Offset(o int) Value     { return ctx.global.Offset(o) }
+func (ctx *FunctionContext) PushFrame() *Frame      { return ctx.global.PushFrame() }
+func (ctx *FunctionContext) PopFrame() *Frame       { return ctx.global.PopFrame() }
+func (ctx *FunctionContext) ReadRX() int            { return ctx.global.ReadRX() }
+func (ctx *FunctionContext) ReadRY() int            { return ctx.global.ReadRY() }
+func (ctx *FunctionContext) WriteRX(x int)          { ctx.global.WriteRX(x) }
+func (ctx *FunctionContext) WriteRY(y int)          { ctx.global.WriteRY(y) }
 func (ctx *FunctionContext) Pop() Value             { return ctx.global.Pop() }
 func (ctx *FunctionContext) Push(v Value)           { ctx.global.Push(v) }
-func (ctx *FunctionContext) Put(index int, v Value) { ctx.global.Put(index, v) }
-func (ctx *FunctionContext) Slice(x, y int) []Value { return ctx.global.Slice(x, y) }
-func (ctx *FunctionContext) Sp(pointer int)         { ctx.global.Sp(pointer) }
-func (ctx *FunctionContext) MovePointer(offset int) { ctx.global.MovePointer(offset) }
 func (ctx *FunctionContext) TopIndex() int          { return ctx.global.TopIndex() }
+func (ctx *FunctionContext) Slice(offsetX, offsetY int) []Value {
+	return ctx.global.Slice(offsetX, offsetY)
+}
+func (ctx *FunctionContext) Sp(pointer int)          { ctx.global.Sp(pointer) }
+func (ctx *FunctionContext) Top() Value              { return ctx.global.Top() }
+func (ctx *FunctionContext) SetTop(v Value)          { ctx.global.SetTop(v) }
+func (ctx *FunctionContext) MovePointer(pointer int) { ctx.global.MovePointer(pointer) }
 
-type BuiltInFunction[R Value] struct {
+type BuiltInFunction[RT Value] struct {
 	Args int
-	Fn   func(...Value) R
+	Fn   func(...Value) RT
 }
 
-func (f BuiltInFunction[R]) NumArgs() int { return f.Args }
-func (f BuiltInFunction[R]) Invoke(ctx Context) Value {
-	args := ctx.Slice(-f.Args, 0)
-	return f.Fn(args...)
+func (f BuiltInFunction[RT]) NumArgs() int { return f.Args }
+func (f BuiltInFunction[RT]) Invoke(ctx Context) {
+	ctx.Push(f.Fn(ctx.Slice(-f.Args, 0)...))
 }
 
 type CompiledFunction struct {
 	Instructions Bytecode
-	Constants    []Value
-	Args         int
-	Vars         int
+	Args, Vars   int
 }
 
 func (f CompiledFunction) NumArgs() int { return f.Args }
-func (f CompiledFunction) Invoke(parent Context) Value {
-	ctx := NewFunctionContext(parent)
-	ctx.constants = f.Constants
-	ctx.vars = ctx.Slice(-f.Args, f.Vars)
-	ctx.args = ctx.Slice(-f.Args, 0)
-	ctx.fp = ctx.TopIndex() - f.Args
-	ctx.MovePointer(f.Vars + f.Args)
-
-	for ctx.pc = 0; !ctx.returned && ctx.pc < len(f.Instructions); ctx.pc++ {
-		switch f.Instructions.ReadOperation(noescape(&ctx)) {
-		case OpPop:
-			Pop(noescape(&ctx))
-		case OpAssertType:
-			AssertType(noescape(&ctx))
-		case OpAdd:
-			Add(noescape(&ctx))
-		case OpAddInt:
-			AddInt(noescape(&ctx))
-		case OpAddFloat:
-			AddFloat(noescape(&ctx))
-		case OpAddArray:
-			AddArray(noescape(&ctx))
-		case OpAddBool:
-			AddBool(noescape(&ctx))
-		case OpSub:
-			Sub(noescape(&ctx))
-		case OpSubInt:
-			SubInt(noescape(&ctx))
-		case OpSubFloat:
-			SubFloat(noescape(&ctx))
-		case OpSubBool:
-			SubBool(noescape(&ctx))
-		case OpMul:
-			Mul(noescape(&ctx))
-		case OpMulInt:
-			MulInt(noescape(&ctx))
-		case OpMulFloat:
-			MulFloat(noescape(&ctx))
-		case OpMulBool:
-			MulBool(noescape(&ctx))
-		case OpDiv:
-			Div(noescape(&ctx))
-		case OpDivInt:
-			DivInt(noescape(&ctx))
-		case OpDivFloat:
-			DivFloat(noescape(&ctx))
-		case OpDivBool:
-			DivBool(noescape(&ctx))
-		case OpMod:
-			Mod(noescape(&ctx))
-		case OpModInt:
-			ModInt(noescape(&ctx))
-		case OpModFloat:
-			ModFloat(noescape(&ctx))
-		case OpModBool:
-			ModBool(noescape(&ctx))
-		case OpPreIncrement:
-			PreIncrement(noescape(&ctx))
-		case OpPostIncrement:
-			PostIncrement(noescape(&ctx))
-		case OpPreDecrement:
-			PreDecrement(noescape(&ctx))
-		case OpPostDecrement:
-			PostDecrement(noescape(&ctx))
-		case OpIdentical:
-			Identical(noescape(&ctx))
-		case OpNotIdentical:
-			NotIdentical(noescape(&ctx))
-		case OpLoad:
-			Load(noescape(&ctx))
-		case OpConst:
-			Const(noescape(&ctx))
-		case OpConcat:
-			Concat(noescape(&ctx))
-		case OpJump:
-			Jump(noescape(&ctx))
-		case OpJumpZ:
-			JumpZ(noescape(&ctx))
-		case OpJumpNZ:
-			JumpNZ(noescape(&ctx))
-		case OpCall:
-			Call(noescape(&ctx))
-		case OpReturn:
-			Return(noescape(&ctx))
-		case OpAssign:
-			Assign(noescape(&ctx))
-		case OpAssignAdd:
-			AssignAdd(noescape(&ctx))
-		case OpAssignSub:
-			AssignSub(noescape(&ctx))
-		case OpAssignMul:
-			AssignMul(noescape(&ctx))
-		case OpAssignDiv:
-			AssignDiv(noescape(&ctx))
-		case OpAssignMod:
-			AssignMod(noescape(&ctx))
-		case OpArrayFetch:
-			ArrayFetch(noescape(&ctx))
-		case OpArrayPut:
-			ArrayPut(noescape(&ctx))
-		case OpArrayPush:
-			ArrayPush(noescape(&ctx))
-		case OpCast:
-			Cast(noescape(&ctx))
-		case OpEqual:
-			Equal(noescape(&ctx))
-		case OpNotEqual:
-			NotEqual(noescape(&ctx))
-		case OpGreater:
-			Greater(noescape(&ctx))
-		case OpLess:
-			Less(noescape(&ctx))
-		case OpGreaterOrEqual:
-			GreaterOrEqual(noescape(&ctx))
-		case OpLessOrEqual:
-			LessOrEqual(noescape(&ctx))
-		case OpCompare:
-			Compare(noescape(&ctx))
-		}
-	}
-
-	v := ctx.Offset(0)
-	ctx.Sp(ctx.fp)
-
-	return v
-}
-
-//go:nolint
-func noescape[T any](pointer *T) *T {
-	v := uintptr(unsafe.Pointer(pointer)) ^ 0
-	return (*T)(unsafe.Pointer(v))
+func (f CompiledFunction) Invoke(parent Context) {
+	global := parent.Global()
+	frame := global.PushFrame()
+	frame.ctx.Context = parent
+	frame.ctx.global = global
+	frame.ctx.vars = frame.ctx.global.Slice(-f.Args, f.Vars)
+	frame.ctx.args = frame.ctx.vars[:len(frame.ctx.vars)-f.Vars]
+	frame.ctx.pc = -1
+	frame.fp = parent.TopIndex() - f.Args
+	frame.bytecode = f.Instructions
+	parent.MovePointer(f.Vars + f.Args)
 }

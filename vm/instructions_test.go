@@ -8,7 +8,8 @@ import (
 func BenchmarkEqual(b *testing.B) {
 	b.ReportAllocs()
 
-	ctx := &FunctionContext{Context: &GlobalContext{}}
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
 	b.ResetTimer()
@@ -24,7 +25,8 @@ func BenchmarkEqual(b *testing.B) {
 func BenchmarkIdentical(b *testing.B) {
 	b.ReportAllocs()
 
-	ctx := &FunctionContext{Context: &GlobalContext{}}
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
 	b.ResetTimer()
@@ -39,8 +41,11 @@ func BenchmarkIdentical(b *testing.B) {
 
 func BenchmarkAdd(b *testing.B) {
 	b.ReportAllocs()
-	ctx := &FunctionContext{Context: &GlobalContext{}}
+
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
+
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -148,7 +153,8 @@ func TestEqual(t *testing.T) {
 		{"[] == []", Array{}, Array{}, Bool(true)},
 	}
 
-	ctx := &FunctionContext{Context: &GlobalContext{}}
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
 	for _, tt := range tests {
@@ -173,9 +179,11 @@ func TestAdd(t *testing.T) {
 		{"bool + bool = int", Bool(false), Bool(false), Int(0)},
 		{"bool + int = int", Bool(false), Int(1), Int(1)},
 		{"bool + float = float", Bool(false), Float(1), Float(1)},
+		{"[0] + [1, 2] = [0, 2]", Array{Int(0): Int(0)}, Array{Int(0): Int(1), Int(1): Int(2)}, Array{Int(0): Int(0), Int(1): Int(2)}},
 	}
 
-	ctx := &FunctionContext{Context: &GlobalContext{}}
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
 	for _, tt := range tests {
@@ -203,7 +211,6 @@ func TestCompare(t *testing.T) {
 		{"1 <=> false", Int(1), Bool(false), 1},
 		{"1 <=> true", Int(1), Bool(true), 0},
 		{"2 <=> true", Int(2), Bool(true), 0},
-		{"2 <=> true", Int(2), Bool(true), 0},
 		{"1 <=> \"1\"", Int(1), String("1"), 0},
 		{"2 <=> \"1\"", Int(2), String("1"), 1},
 		{"2 <=> \"2\"", Int(2), String("2"), 0},
@@ -216,7 +223,6 @@ func TestCompare(t *testing.T) {
 		{"1.0 <=> 1.0", Float(1), Float(1), 0},
 		{"1.0 <=> false", Float(1), Bool(false), 1},
 		{"1.0 <=> true", Float(1), Bool(true), 0},
-		{"2.0 <=> true", Float(2), Bool(true), 0},
 		{"2.0 <=> true", Float(2), Bool(true), 0},
 		{"1.0 <=> \"1\"", Float(1), String("1"), 0},
 		{"2.0 <=> \"1\"", Float(2), String("1"), 1},
@@ -245,7 +251,8 @@ func TestCompare(t *testing.T) {
 		{"\"1\" <=> []", String("1"), Array{}, -1},
 	}
 
-	ctx := &FunctionContext{Context: &GlobalContext{}}
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
 	for _, tt := range tests {

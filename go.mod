@@ -1,11 +1,11 @@
 module php-vm
 
-go 1.20
+go 1.21
 
 require (
 	github.com/VKCOM/php-parser v0.8.2
 	github.com/stretchr/testify v1.8.4
-	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090
+	github.com/valyala/bytebufferpool v1.0.0
 )
 
 require (

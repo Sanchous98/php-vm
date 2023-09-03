@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"io"
 	"sync/atomic"
 )
 
@@ -9,11 +10,6 @@ type Frame struct {
 	ctx      FunctionContext
 	bytecode Bytecode
 	fp       int
-}
-
-type Callable interface {
-	NumArgs() int
-	Invoke(Context)
 }
 
 type Context interface {
@@ -45,7 +41,17 @@ type GlobalContext struct {
 	Functions   []Callable
 	initialized atomic.Bool
 
+	in     io.Reader
+	out    io.Writer
 	rx, ry int
+}
+
+func NewGlobalContext(ctx context.Context) *GlobalContext {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return &GlobalContext{Context: ctx}
 }
 
 func (g *GlobalContext) Init() {
@@ -57,7 +63,6 @@ func (g *GlobalContext) Parent() Context                { return nil }
 func (g *GlobalContext) Global() *GlobalContext         { return g }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
 func (g *GlobalContext) Throw(error)                    {}
-func (g *GlobalContext) currentFrame() *Frame           { return &g.frames[g.framesSp] }
 func (g *GlobalContext) PushFrame() *Frame {
 	g.framesSp++
 	return &g.frames[g.framesSp]
@@ -76,155 +81,155 @@ func (g *GlobalContext) Run(fn CompiledFunction) Value {
 	fn.Invoke(g)
 
 	for g.framesSp > 0 {
-		g.currentFrame().ctx.pc++
+		g.frames[g.framesSp].ctx.pc++
 
-		switch g.currentFrame().bytecode.ReadOperation(&g.currentFrame().ctx) {
+		switch g.frames[g.framesSp].bytecode.ReadOperation(&g.frames[g.framesSp].ctx) {
 		case OpPop:
-			Pop(&g.currentFrame().ctx)
+			Pop(&g.frames[g.framesSp].ctx)
 		case OpReturn:
-			Return(&g.currentFrame().ctx)
+			Return(&g.frames[g.framesSp].ctx)
 		case OpReturnValue:
-			ReturnValue(&g.currentFrame().ctx)
+			ReturnValue(&g.frames[g.framesSp].ctx)
 		case OpAdd:
-			Add(&g.currentFrame().ctx)
+			Add(&g.frames[g.framesSp].ctx)
 		case OpAddInt:
-			AddInt(&g.currentFrame().ctx)
+			AddInt(&g.frames[g.framesSp].ctx)
 		case OpAddFloat:
-			AddFloat(&g.currentFrame().ctx)
+			AddFloat(&g.frames[g.framesSp].ctx)
 		case OpAddArray:
-			AddArray(&g.currentFrame().ctx)
+			AddArray(&g.frames[g.framesSp].ctx)
 		case OpAddBool:
-			AddBool(&g.currentFrame().ctx)
+			AddBool(&g.frames[g.framesSp].ctx)
 		case OpSub:
-			Sub(&g.currentFrame().ctx)
+			Sub(&g.frames[g.framesSp].ctx)
 		case OpSubInt:
-			SubInt(&g.currentFrame().ctx)
+			SubInt(&g.frames[g.framesSp].ctx)
 		case OpSubFloat:
-			SubFloat(&g.currentFrame().ctx)
+			SubFloat(&g.frames[g.framesSp].ctx)
 		case OpSubBool:
-			SubBool(&g.currentFrame().ctx)
+			SubBool(&g.frames[g.framesSp].ctx)
 		case OpMul:
-			Mul(&g.currentFrame().ctx)
+			Mul(&g.frames[g.framesSp].ctx)
 		case OpMulInt:
-			MulInt(&g.currentFrame().ctx)
+			MulInt(&g.frames[g.framesSp].ctx)
 		case OpMulFloat:
-			MulFloat(&g.currentFrame().ctx)
+			MulFloat(&g.frames[g.framesSp].ctx)
 		case OpMulBool:
-			MulBool(&g.currentFrame().ctx)
+			MulBool(&g.frames[g.framesSp].ctx)
 		case OpDiv:
-			Div(&g.currentFrame().ctx)
+			Div(&g.frames[g.framesSp].ctx)
 		case OpDivInt:
-			DivInt(&g.currentFrame().ctx)
+			DivInt(&g.frames[g.framesSp].ctx)
 		case OpDivFloat:
-			DivFloat(&g.currentFrame().ctx)
+			DivFloat(&g.frames[g.framesSp].ctx)
 		case OpDivBool:
-			DivBool(&g.currentFrame().ctx)
+			DivBool(&g.frames[g.framesSp].ctx)
 		case OpMod:
-			Mod(&g.currentFrame().ctx)
+			Mod(&g.frames[g.framesSp].ctx)
 		case OpModInt:
-			ModInt(&g.currentFrame().ctx)
+			ModInt(&g.frames[g.framesSp].ctx)
 		case OpModFloat:
-			ModFloat(&g.currentFrame().ctx)
+			ModFloat(&g.frames[g.framesSp].ctx)
 		case OpModBool:
-			ModBool(&g.currentFrame().ctx)
+			ModBool(&g.frames[g.framesSp].ctx)
 		case OpPow:
-			Pow(&g.currentFrame().ctx)
+			Pow(&g.frames[g.framesSp].ctx)
 		case OpPowInt:
-			PowInt(&g.currentFrame().ctx)
+			PowInt(&g.frames[g.framesSp].ctx)
 		case OpPowFloat:
-			PowFloat(&g.currentFrame().ctx)
+			PowFloat(&g.frames[g.framesSp].ctx)
 		case OpPowBool:
-			PowBool(&g.currentFrame().ctx)
+			PowBool(&g.frames[g.framesSp].ctx)
 		case OpBwAnd:
-			BwAnd(&g.currentFrame().ctx)
+			BwAnd(&g.frames[g.framesSp].ctx)
 		case OpBwOr:
-			BwOr(&g.currentFrame().ctx)
+			BwOr(&g.frames[g.framesSp].ctx)
 		case OpBwXor:
-			BwXor(&g.currentFrame().ctx)
+			BwXor(&g.frames[g.framesSp].ctx)
 		case OpBwNot:
-			BwNot(&g.currentFrame().ctx)
+			BwNot(&g.frames[g.framesSp].ctx)
 		case OpShiftLeft:
-			ShiftLeft(&g.currentFrame().ctx)
+			ShiftLeft(&g.frames[g.framesSp].ctx)
 		case OpShiftRight:
-			ShiftRight(&g.currentFrame().ctx)
+			ShiftRight(&g.frames[g.framesSp].ctx)
 		case OpEqual:
-			Equal(&g.currentFrame().ctx)
+			Equal(&g.frames[g.framesSp].ctx)
 		case OpNotEqual:
-			NotEqual(&g.currentFrame().ctx)
+			NotEqual(&g.frames[g.framesSp].ctx)
 		case OpIdentical:
-			Identical(&g.currentFrame().ctx)
+			Identical(&g.frames[g.framesSp].ctx)
 		case OpNotIdentical:
-			NotIdentical(&g.currentFrame().ctx)
+			NotIdentical(&g.frames[g.framesSp].ctx)
 		case OpGreater:
-			Greater(&g.currentFrame().ctx)
+			Greater(&g.frames[g.framesSp].ctx)
 		case OpLess:
-			Less(&g.currentFrame().ctx)
+			Less(&g.frames[g.framesSp].ctx)
 		case OpGreaterOrEqual:
-			GreaterOrEqual(&g.currentFrame().ctx)
+			GreaterOrEqual(&g.frames[g.framesSp].ctx)
 		case OpLessOrEqual:
-			LessOrEqual(&g.currentFrame().ctx)
+			LessOrEqual(&g.frames[g.framesSp].ctx)
 		case OpCompare:
-			Compare(&g.currentFrame().ctx)
+			Compare(&g.frames[g.framesSp].ctx)
 		case OpArrayFetch:
-			ArrayFetch(&g.currentFrame().ctx)
+			ArrayFetch(&g.frames[g.framesSp].ctx)
 		case OpConcat:
-			Concat(&g.currentFrame().ctx)
+			Concat(&g.frames[g.framesSp].ctx)
 		case OpAssertType:
-			AssertType(&g.currentFrame().ctx)
+			AssertType(&g.frames[g.framesSp].ctx)
 		case OpAssign:
-			Assign(&g.currentFrame().ctx)
+			Assign(&g.frames[g.framesSp].ctx)
 		case OpAssignAdd:
-			AssignAdd(&g.currentFrame().ctx)
+			AssignAdd(&g.frames[g.framesSp].ctx)
 		case OpAssignSub:
-			AssignSub(&g.currentFrame().ctx)
+			AssignSub(&g.frames[g.framesSp].ctx)
 		case OpAssignMul:
-			AssignMul(&g.currentFrame().ctx)
+			AssignMul(&g.frames[g.framesSp].ctx)
 		case OpAssignDiv:
-			AssignDiv(&g.currentFrame().ctx)
+			AssignDiv(&g.frames[g.framesSp].ctx)
 		case OpAssignMod:
-			AssignMod(&g.currentFrame().ctx)
+			AssignMod(&g.frames[g.framesSp].ctx)
 		case OpAssignPow:
-			AssignPow(&g.currentFrame().ctx)
+			AssignPow(&g.frames[g.framesSp].ctx)
 		case OpAssignBwAnd:
-			AssignBwAnd(&g.currentFrame().ctx)
+			AssignBwAnd(&g.frames[g.framesSp].ctx)
 		case OpAssignBwOr:
-			AssignBwOr(&g.currentFrame().ctx)
+			AssignBwOr(&g.frames[g.framesSp].ctx)
 		case OpAssignBwXor:
-			AssignBwXor(&g.currentFrame().ctx)
+			AssignBwXor(&g.frames[g.framesSp].ctx)
 		case OpAssignConcat:
-			AssignConcat(&g.currentFrame().ctx)
+			AssignConcat(&g.frames[g.framesSp].ctx)
 		case OpAssignShiftLeft:
-			AssignShiftLeft(&g.currentFrame().ctx)
+			AssignShiftLeft(&g.frames[g.framesSp].ctx)
 		case OpAssignShiftRight:
-			AssignShiftRight(&g.currentFrame().ctx)
+			AssignShiftRight(&g.frames[g.framesSp].ctx)
 		case OpArrayPut:
-			ArrayPut(&g.currentFrame().ctx)
+			ArrayPut(&g.frames[g.framesSp].ctx)
 		case OpArrayPush:
-			ArrayPush(&g.currentFrame().ctx)
+			ArrayPush(&g.frames[g.framesSp].ctx)
 		case OpCast:
-			Cast(&g.currentFrame().ctx)
+			Cast(&g.frames[g.framesSp].ctx)
 		case OpPreIncrement:
-			PreIncrement(&g.currentFrame().ctx)
+			PreIncrement(&g.frames[g.framesSp].ctx)
 		case OpPostIncrement:
-			PostIncrement(&g.currentFrame().ctx)
+			PostIncrement(&g.frames[g.framesSp].ctx)
 		case OpPreDecrement:
-			PreDecrement(&g.currentFrame().ctx)
+			PreDecrement(&g.frames[g.framesSp].ctx)
 		case OpPostDecrement:
-			PostDecrement(&g.currentFrame().ctx)
+			PostDecrement(&g.frames[g.framesSp].ctx)
 		case OpLoad:
-			Load(&g.currentFrame().ctx)
-		case OpLoadString:
-			LoadString(&g.currentFrame().ctx)
+			Load(&g.frames[g.framesSp].ctx)
 		case OpConst:
-			Const(&g.currentFrame().ctx)
+			Const(&g.frames[g.framesSp].ctx)
 		case OpJump:
-			Jump(&g.currentFrame().ctx)
-		case OpJumpZ:
-			JumpZ(&g.currentFrame().ctx)
-		case OpJumpNZ:
-			JumpNZ(&g.currentFrame().ctx)
+			Jump(&g.frames[g.framesSp].ctx)
+		case OpJumpTrue:
+			JumpTrue(&g.frames[g.framesSp].ctx)
+		case OpJumpFalse:
+			JumpFalse(&g.frames[g.framesSp].ctx)
 		case OpCall:
-			Call(&g.currentFrame().ctx)
+			Call(&g.frames[g.framesSp].ctx)
+		case OpEcho:
+			Echo(&g.frames[g.framesSp].ctx)
 		}
 	}
 
@@ -237,7 +242,6 @@ type FunctionContext struct {
 	global     *GlobalContext
 	vars, args []Value
 	symbols    map[String]int
-	constants  []Value
 	pc         int // Registers
 }
 
@@ -260,32 +264,3 @@ func (ctx *FunctionContext) Sp(pointer int)          { ctx.global.Sp(pointer) }
 func (ctx *FunctionContext) Top() Value              { return ctx.global.Top() }
 func (ctx *FunctionContext) SetTop(v Value)          { ctx.global.SetTop(v) }
 func (ctx *FunctionContext) MovePointer(pointer int) { ctx.global.MovePointer(pointer) }
-
-type BuiltInFunction[RT Value] struct {
-	Args int
-	Fn   func(...Value) RT
-}
-
-func (f BuiltInFunction[RT]) NumArgs() int { return f.Args }
-func (f BuiltInFunction[RT]) Invoke(ctx Context) {
-	ctx.Push(f.Fn(ctx.Slice(-f.Args, 0)...))
-}
-
-type CompiledFunction struct {
-	Instructions Bytecode
-	Args, Vars   int
-}
-
-func (f CompiledFunction) NumArgs() int { return f.Args }
-func (f CompiledFunction) Invoke(parent Context) {
-	global := parent.Global()
-	frame := global.PushFrame()
-	frame.ctx.Context = parent
-	frame.ctx.global = global
-	frame.ctx.vars = frame.ctx.global.Slice(-f.Args, f.Vars)
-	frame.ctx.args = frame.ctx.vars[:len(frame.ctx.vars)-f.Vars]
-	frame.ctx.pc = -1
-	frame.fp = parent.TopIndex() - f.Args
-	frame.bytecode = f.Instructions
-	parent.MovePointer(f.Vars + f.Args)
-}

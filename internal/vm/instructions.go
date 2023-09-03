@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"math"
@@ -11,11 +12,11 @@ import (
 type Bytecode []byte
 
 func (b Bytecode) ReadOperation(ctx *FunctionContext) (op Operator) {
-	op = Operator(b[ctx.pc])
+	op = Operator(binary.NativeEndian.Uint64(b[ctx.pc<<3:]))
 
 	if op > _opOneOperand {
 		ctx.pc++
-		ctx.WriteRX(int(b[ctx.pc]))
+		ctx.WriteRX(int(binary.NativeEndian.Uint64(b[ctx.pc<<3:])))
 	}
 
 	return
@@ -23,7 +24,7 @@ func (b Bytecode) ReadOperation(ctx *FunctionContext) (op Operator) {
 
 func (b Bytecode) String() string {
 	var ip int
-	return string(Reduce(b, func(prev String, operator Operator, operands ...byte) String {
+	return string(Reduce(b, func(prev String, operator Operator, operands ...int) String {
 		strOperands := make([]string, 0, len(operands))
 
 		for _, op := range operands {
@@ -36,16 +37,16 @@ func (b Bytecode) String() string {
 	}, ""))
 }
 
-func Reduce[T Value, F ~func(prev T, operator Operator, operands ...byte) T](bytecode Bytecode, f F, start T) T {
+func Reduce[T any, F ~func(prev T, operator Operator, operands ...int) T](bytecode Bytecode, f F, start T) T {
 	ip := 0
-	registers := make([]byte, 0, 2)
+	registers := make([]int, 0, 1)
 
-	for ip < len(bytecode) {
-		op := Operator(bytecode[ip])
+	for ip < len(bytecode)>>3 {
+		op := Operator(binary.NativeEndian.Uint64(bytecode[ip<<3:]))
 
 		if op > _opOneOperand {
 			ip++
-			registers = append(registers, bytecode[ip])
+			registers = append(registers, int(binary.NativeEndian.Uint64(bytecode[ip<<3:])))
 		}
 
 		start = f(start, op, registers...)
@@ -57,7 +58,7 @@ func Reduce[T Value, F ~func(prev T, operator Operator, operands ...byte) T](byt
 }
 
 //go:generate stringer -type=Operator -linecomment
-type Operator byte
+type Operator uint64
 
 const (
 	OpNoop           Operator = iota // NOOP
@@ -106,7 +107,6 @@ const (
 	OpCompare                        // COMPARE
 	OpArrayFetch                     // ARRAY_FETCH
 	OpConcat                         // CONCAT
-	OpLoadString                     // LOAD_STRING
 
 	_opOneOperand      Operator = iota - 1
 	OpAssertType                // ASSERT_TYPE
@@ -133,9 +133,10 @@ const (
 	OpLoad                      // LOAD
 	OpConst                     // CONST
 	OpJump                      // JUMP
-	OpJumpZ                     // JUMP_Z
-	OpJumpNZ                    // JUMP_NZ
+	OpJumpTrue                  // JUMP_TRUE
+	OpJumpFalse                 // JUMP_FALSE
 	OpCall                      // CALL
+	OpEcho                      // ECHO
 )
 
 func arrayCompare(ctx *FunctionContext, x, y Array) Int {
@@ -279,18 +280,17 @@ func Const(ctx *FunctionContext) {
 
 // Load => $a
 func Load(ctx *FunctionContext) {
-	ctx.Push(ctx.vars[ctx.ReadRX()])
-}
+	if ctx.vars[ctx.ReadRX()] == nil {
+		ctx.vars[ctx.ReadRX()] = Null{}
+	}
 
-// LoadString => $$a
-func LoadString(ctx *FunctionContext) {
-	name := ctx.Top().AsString(ctx)
-	ctx.SetTop(ctx.vars[ctx.symbols[name]])
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // Assign => $a = 0
 func Assign(ctx *FunctionContext) {
 	ctx.vars[ctx.ReadRX()] = ctx.Pop()
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignAdd => $a += 1
@@ -305,6 +305,8 @@ func AssignAdd(ctx *FunctionContext) {
 	default:
 		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) + right.AsInt(ctx)
 	}
+
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignSub => $a -= 1
@@ -317,6 +319,7 @@ func AssignSub(ctx *FunctionContext) {
 	default:
 		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) - right.AsInt(ctx)
 	}
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignMul => $a *= 1
@@ -329,6 +332,7 @@ func AssignMul(ctx *FunctionContext) {
 	default:
 		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) * right.AsInt(ctx)
 	}
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignDiv => $a /= 1
@@ -340,6 +344,7 @@ func AssignDiv(ctx *FunctionContext) {
 	} else {
 		ctx.vars[ctx.ReadRX()] = res
 	}
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignPow => $a **= 1
@@ -353,42 +358,49 @@ func AssignPow(ctx *FunctionContext) {
 		res := Float(math.Pow(float64(ctx.vars[ctx.ReadRX()].AsFloat(ctx)), float64(right.AsFloat(ctx))))
 		ctx.vars[ctx.ReadRX()] = res.Cast(ctx, as)
 	}
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignBwAnd => $a &= 1
 func AssignBwAnd(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
 	ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) & right
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignBwOr => $a |= 1
 func AssignBwOr(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
 	ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) | right
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignBwXor => $a ^= 1
 func AssignBwXor(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
 	ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) ^ right
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignConcat => $a .= 1
 func AssignConcat(ctx *FunctionContext) {
 	right := ctx.Pop().AsString(ctx)
 	ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsString(ctx) + right
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignShiftLeft => $a <<= 1
 func AssignShiftLeft(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
 	ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) << right
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignShiftRight => $a >>= 1
 func AssignShiftRight(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
 	ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) >> right
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // AssignMod => $a %= 1
@@ -401,6 +413,7 @@ func AssignMod(ctx *FunctionContext) {
 	} else {
 		ctx.vars[ctx.ReadRX()] = res
 	}
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // Jump unconditional jump
@@ -408,15 +421,15 @@ func Jump(ctx *FunctionContext) {
 	ctx.pc = ctx.ReadRX() - 1
 }
 
-// JumpZ if (true_statement)
-func JumpZ(ctx *FunctionContext) {
+// JumpTrue if (true_statement)
+func JumpTrue(ctx *FunctionContext) {
 	if ctx.Pop().AsBool(ctx) {
 		Jump(ctx)
 	}
 }
 
-// JumpNZ for ($i = 0; $i < 1; $i++) {}
-func JumpNZ(ctx *FunctionContext) {
+// JumpFalse for ($i = 0; $i < 1; $i++) {}
+func JumpFalse(ctx *FunctionContext) {
 	if !ctx.Pop().AsBool(ctx) {
 		Jump(ctx)
 	}
@@ -745,6 +758,8 @@ func PreIncrement(ctx *FunctionContext) {
 	case Int:
 		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Int) + 1
 	}
+
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // PreDecrement => --$x
@@ -755,6 +770,8 @@ func PreDecrement(ctx *FunctionContext) {
 	case IntType:
 		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Int) - 1
 	}
+
+	ctx.Push(ctx.vars[ctx.ReadRX()])
 }
 
 // PostIncrement => $x++
@@ -764,8 +781,8 @@ func PostIncrement(ctx *FunctionContext) {
 	switch ctx.vars[ctx.ReadRX()].Type() {
 	case FloatType:
 		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Float) + 1
-	case IntType:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Int) + 1
+	default:
+		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) + 1
 	}
 }
 
@@ -820,4 +837,16 @@ func Concat(ctx *FunctionContext) {
 // AssertType => fn(int $a)
 func AssertType(ctx *FunctionContext) {
 	ctx.SetTop(ctx.Top().Cast(ctx, Type(ctx.ReadRX())))
+}
+
+// Echo => echo $x, $y;
+func Echo(ctx *FunctionContext) {
+	count := ctx.ReadRX()
+	values := make([]any, count)
+
+	for i, v := range ctx.Slice(-count, 0) {
+		values[i] = v
+	}
+
+	fmt.Print(values...)
 }

@@ -1,4 +1,4 @@
-package compiler
+package internal
 
 import (
 	"github.com/VKCOM/php-parser/pkg/ast"

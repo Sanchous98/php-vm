@@ -12,82 +12,25 @@ func init() {
 		Name:    "std",
 		Version: "7.0.0",
 		Functions: map[string]vm.Callable{
-			"bin2hex": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   bin2hex,
-			},
-			"sleep": vm.BuiltInFunction[vm.Int]{
-				Args: 1,
-				Fn:   sleep,
-			},
-			"usleep": vm.BuiltInFunction[vm.Null]{
-				Args: 1,
-				Fn:   usleep,
-			},
-			"strtoupper": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   strtoupper,
-			},
-			"strtolower": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   strtolower,
-			},
-			"strpos": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   strpos,
-			},
-			"stripos": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   stripos,
-			},
-			"strrpos": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   strrpos,
-			},
-			"strripos": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   strripos,
-			},
-			"strrev": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   strrev,
-			},
-			"nl2br": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   nl2br,
-			},
-			"basename": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   basename,
-			},
-			"dirname": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   dirname,
-			},
-			"pathinfo": vm.BuiltInFunction[vm.Array]{
-				Args: 1,
-				Fn:   pathinfo,
-			},
-			"stripslashes": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   stripslashes,
-			},
-			"stripcslashes": vm.BuiltInFunction[vm.String]{
-				Args: 1,
-				Fn:   stripcslashes,
-			},
-			"strstr": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   strstr,
-			},
-			"stristr": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   stristr,
-			},
-			"microtime": vm.BuiltInFunction[vm.Value]{
-				Args: 1,
-				Fn:   microtime,
-			},
+			"bin2hex":       vm.NewBuiltInFunction(bin2hex, 1),
+			"sleep":         vm.NewBuiltInFunction(sleep, 1),
+			"usleep":        vm.NewBuiltInFunction(usleep, 1),
+			"strtoupper":    vm.NewBuiltInFunction(strtoupper, 1),
+			"strtolower":    vm.NewBuiltInFunction(strtolower, 1),
+			"strpos":        vm.NewBuiltInFunction(strpos, 1),
+			"stripos":       vm.NewBuiltInFunction(stripos, 1),
+			"strrpos":       vm.NewBuiltInFunction(strrpos, 1),
+			"strripos":      vm.NewBuiltInFunction(strripos, 1),
+			"strrev":        vm.NewBuiltInFunction(strrev, 1),
+			"nl2br":         vm.NewBuiltInFunction(nl2br, 1),
+			"basename":      vm.NewBuiltInFunction(basename, 1),
+			"dirname":       vm.NewBuiltInFunction(dirname, 1),
+			"pathinfo":      vm.NewBuiltInFunction(pathinfo, 1),
+			"stripslashes":  vm.NewBuiltInFunction(stripslashes, 1),
+			"stripcslashes": vm.NewBuiltInFunction(stripcslashes, 1),
+			"strstr":        vm.NewBuiltInFunction(strstr, 1),
+			"stristr":       vm.NewBuiltInFunction(stristr, 1),
+			"microtime":     vm.NewBuiltInFunction(microtime, 1),
 		},
 		Constants: map[string]vm.Value{
 			"PATHINFO_DIRNAME":   PathinfoDirname,

@@ -1,8 +1,6 @@
 <?php
 
-const ticks = 1;
-
-function fibonacci($n)
+function fibonacci($n, &$ret)
 {
 	if ($n === 0) {
 		return 0;
@@ -21,14 +19,9 @@ function fibonacci($n)
 		$current = $temp;
 	}
 
-	return $current;
+	$ret = $current;
 }
 
+fibonacci(10, $ret);
 
-$time = microtime(true);
-
-for ($i = 0; $i < 100000; $i++) {
-    fibonacci(1000);
-}
-
-echo microtime(true) - $time, "\n";
+echo $ret;

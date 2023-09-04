@@ -35,7 +35,8 @@ func TestFibonacciRecursive(t *testing.T) {
 		}
 
 		return fibonacci($n - 1) + fibonacci($n - 2);
-	}`
+	}
+	`
 
 	var instructions vm.Bytecode
 
@@ -164,6 +165,85 @@ func TestFibonacciLoop(t *testing.T) {
 	})
 }
 
+func TestFibonacciAll(t *testing.T) {
+	const input = `<?php
+	function fibonacci($n)
+	{
+		if ($n === 0) {
+			return 0;
+		}
+
+		if ($n < 2) {
+			return 1;
+		}
+
+		$prev = 1;
+		$current = 1;
+
+		for ($i = 2; $i < $n; $i++) {
+			$temp = $prev + $current;
+			$prev = $current;
+			$current = $temp;
+		}
+		
+		return $current;
+	}
+	return fibonacci(10);`
+
+	instructions := []uint64{
+		uint64(vm.OpLoad), 0, // 00000: LOAD          0
+		uint64(vm.OpConst), 3, // 00002: CONST         3
+		uint64(vm.OpIdentical),     // 00004: IDENTICAL
+		uint64(vm.OpJumpFalse), 10, // 00005: JUMP_NZ       10
+		uint64(vm.OpConst), 3, // 00007: CONST         3
+		uint64(vm.OpReturnValue), // 00009: RETURN_VAL
+		uint64(vm.OpLoad), 0,     // 00010: LOAD          0
+		uint64(vm.OpConst), 4, // 00012: CONST         4
+		uint64(vm.OpLess),          // 00014: LT
+		uint64(vm.OpJumpFalse), 20, // 00015: JUMP_NZ       20
+		uint64(vm.OpConst), 5, // 00017: CONST         5
+		uint64(vm.OpReturnValue), // 00019: RETURN_VAL
+		uint64(vm.OpConst), 5,    // 00020: CONST         5
+		uint64(vm.OpAssign), 1, // 00022: ASSIGN        1
+		uint64(vm.OpPop),      // 00024: POP
+		uint64(vm.OpConst), 5, // 00025: CONST         5
+		uint64(vm.OpAssign), 2, // 00027: ASSIGN        2
+		uint64(vm.OpPop),      // 00029: POP
+		uint64(vm.OpConst), 4, // 00030: CONST         4
+		uint64(vm.OpAssign), 3, // 00032: ASSIGN        3
+		uint64(vm.OpPop),     // 00034: POP
+		uint64(vm.OpLoad), 3, // 00035: LOAD          3
+		uint64(vm.OpLoad), 0, // 00037: LOAD          0
+		uint64(vm.OpLess),          // 00039: LT
+		uint64(vm.OpJumpFalse), 65, // 00040: JUMP_NZ       65
+		uint64(vm.OpLoad), 1, // 00042: LOAD          1
+		uint64(vm.OpLoad), 2, // 00044: LOAD          2
+		uint64(vm.OpAdd),       // 00046: ADD
+		uint64(vm.OpAssign), 4, // 00047: ASSIGN        4
+		uint64(vm.OpPop),     // 00049: POP
+		uint64(vm.OpLoad), 2, // 00050: LOAD          2
+		uint64(vm.OpAssign), 1, // 00052: ASSIGN        1
+		uint64(vm.OpPop),     // 00054: POP
+		uint64(vm.OpLoad), 4, // 00055: LOAD          4
+		uint64(vm.OpAssign), 2, // 00057: ASSIGN        2
+		uint64(vm.OpPop),              // 00059: POP
+		uint64(vm.OpPostIncrement), 3, // 00060: POST_INC      3
+		uint64(vm.OpPop),      // 00062: POP
+		uint64(vm.OpJump), 35, // 00063: JUMP          35
+		uint64(vm.OpLoad), 2, // 00065: LOAD          2
+		uint64(vm.OpReturnValue), // 00067: RETURN_VAL
+	}
+
+	t.Run("fibonacci", func(t *testing.T) {
+		compiler := NewCompiler(nil)
+		ctx := new(vm.GlobalContext)
+		fn := compiler.Compile([]byte(input), ctx)
+		assert.Equal(t, instructionsToBytecode(instructions).String(), ctx.Functions[0].(vm.CompiledFunction).Instructions.String())
+		assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(2), vm.Int(1), vm.Int(10)}, ctx.Constants)
+		assert.Equal(t, vm.Int(55), ctx.Run(fn))
+	})
+}
+
 func TestLoop(t *testing.T) {
 	cases := [...]compilerTestCase{
 		{
@@ -177,9 +257,19 @@ func TestLoop(t *testing.T) {
 			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 17, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
 		},
 		{
+			input:                "for($i=0;$i<5;$i++){}",
+			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 17, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
+		},
+		{
 			input:                "do{ $i++; } while($i < 5)",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(5)},
 			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 3, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 0, uint64(vm.OpReturn)}),
+		},
+		{
+			input:                "for($i=0;$i<5;$i++){ $x = &$i; }",
+			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 22, uint64(vm.OpLoadRef), 0, uint64(vm.OpAssign), 1, uint64(vm.OpPop), uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
 		},
 	}
 
@@ -391,20 +481,30 @@ func TestArithmetic(t *testing.T) {
 
 func BenchmarkFibonacci(b *testing.B) {
 	var input = []byte(`<?php
-	function fibonacci(int $n)
+	function fibonacci($n, &$ret)
 	{
 		if ($n === 0) {
 			return 0;
 		}
-
-		if ($n === 1) {
+	
+		if ($n < 2) {
 			return 1;
 		}
-
-		return fibonacci($n-1) + fibonacci($n-2);
+	
+		$prev = 1;
+		$current = 1;
+	
+		for ($i = 2; $i < $n; $i++) {
+			$temp = $prev + $current;
+			$prev = $current;
+			$current = $temp;
+		}
+	
+		$ret = $current;
 	}
-	echo fibonacci(10);
-	return;
+	
+	fibonacci(35, $ret);
+	return $ret;
 	`)
 
 	b.ReportAllocs()
@@ -415,6 +515,9 @@ func BenchmarkFibonacci(b *testing.B) {
 	fn := compiler.Compile(input, ctx)
 
 	for i := 0; i < b.N; i++ {
-		ctx.Run(fn)
+		res := ctx.Run(fn)
+		if res != vm.Int(9227465) {
+			panic(res)
+		}
 	}
 }

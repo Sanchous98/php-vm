@@ -5,18 +5,25 @@ type Callable interface {
 	Invoke(Context)
 }
 
+type Arg struct {
+	ByRef   bool
+	Name    string
+	Type    Type
+	Default Value
+}
+
 type BuiltInFunction[RT Value] struct {
-	Args int
+	Args []Arg
 	Fn   func(...Value) RT
 }
 
-func NewBuiltInFunction[RT Value, F ~func(...Value) RT](fn F, args int) BuiltInFunction[RT] {
+func NewBuiltInFunction[RT Value, F ~func(...Value) RT](fn F, args ...Arg) BuiltInFunction[RT] {
 	return BuiltInFunction[RT]{args, fn}
 }
-func (f BuiltInFunction[RT]) NumArgs() int { return f.Args }
+func (f BuiltInFunction[RT]) NumArgs() int { return len(f.Args) }
 func (f BuiltInFunction[RT]) Invoke(ctx Context) {
-	res := f.Fn(ctx.Slice(-f.Args, 0)...)
-	ctx.MovePointer(-f.Args)
+	res := f.Fn(ctx.Slice(-f.NumArgs(), 0)...)
+	ctx.MovePointer(-f.NumArgs())
 	ctx.Push(res)
 }
 
@@ -28,7 +35,7 @@ type CompiledFunction struct {
 func (f CompiledFunction) NumArgs() int { return f.Args }
 func (f CompiledFunction) Invoke(parent Context) {
 	global := parent.Global()
-	frame := global.PushFrame()
+	frame := global.NextFrame()
 	frame.ctx.Context = parent
 	frame.ctx.global = global
 	frame.ctx.vars = frame.ctx.global.Slice(-f.Args, f.Vars)
@@ -37,12 +44,4 @@ func (f CompiledFunction) Invoke(parent Context) {
 	frame.fp = parent.TopIndex() - f.Args
 	frame.bytecode = f.Instructions
 	parent.MovePointer(f.Vars + f.Args)
-}
-
-func (f CompiledFunction) MarshalBinary() ([]byte, error) {
-	return nil, nil
-}
-
-func (f CompiledFunction) UnmarshalBinary([]byte) error {
-	return nil
 }

@@ -31,23 +31,24 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, 0)
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpConst))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, 2)
-	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpSubInt))
+	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpSub))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpCall))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, 0)
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpLoad))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, 0)
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpConst))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, 3)
-	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpSubInt))
+	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpSub))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpCall))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, 0)
-	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpAddInt))
+	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpAdd))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpReturnValue))
 
-	ctx := &GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10), Int(0), Int(1), Int(2)}}
+	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(35), Int(0), Int(1), Int(2)}}
 	ctx.Init()
 
-	bytecode := binary.NativeEndian.AppendUint64(nil, uint64(OpConst))
+	var bytecode Bytecode
+	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpAssertType))
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(IntType))
@@ -62,10 +63,6 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 		ctx.Run(CompiledFunction{
 			Instructions: bytecode,
 		})
-
-		if ctx.TopIndex() > 0 {
-			panic("")
-		}
 	}
 }
 

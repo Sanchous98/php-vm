@@ -25,6 +25,10 @@ func Benchmark_main(b *testing.B) {
 		ctx := new(vm.GlobalContext)
 		input, _ := io.ReadAll(file)
 		fn := comp.Compile(input, ctx)
-		ctx.Run(fn)
+		res := ctx.Run(fn)
+		if res != vm.Int(55) {
+			panic(res)
+		}
+		comp.Reset()
 	}
 }

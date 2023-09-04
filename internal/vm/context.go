@@ -26,7 +26,7 @@ type Context interface {
 	WriteRX(int)
 	WriteRY(int)
 
-	PushFrame() *Frame
+	NextFrame() *Frame
 	PopFrame() *Frame
 }
 
@@ -34,7 +34,7 @@ type GlobalContext struct {
 	context.Context
 	Stack[Value]
 
-	frames   [128]Frame
+	frames   [999]Frame
 	framesSp int
 
 	Constants   []Value
@@ -63,7 +63,7 @@ func (g *GlobalContext) Parent() Context                { return nil }
 func (g *GlobalContext) Global() *GlobalContext         { return g }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
 func (g *GlobalContext) Throw(error)                    {}
-func (g *GlobalContext) PushFrame() *Frame {
+func (g *GlobalContext) NextFrame() *Frame {
 	g.framesSp++
 	return &g.frames[g.framesSp]
 }
@@ -92,54 +92,16 @@ func (g *GlobalContext) Run(fn CompiledFunction) Value {
 			ReturnValue(&g.frames[g.framesSp].ctx)
 		case OpAdd:
 			Add(&g.frames[g.framesSp].ctx)
-		case OpAddInt:
-			AddInt(&g.frames[g.framesSp].ctx)
-		case OpAddFloat:
-			AddFloat(&g.frames[g.framesSp].ctx)
-		case OpAddArray:
-			AddArray(&g.frames[g.framesSp].ctx)
-		case OpAddBool:
-			AddBool(&g.frames[g.framesSp].ctx)
 		case OpSub:
 			Sub(&g.frames[g.framesSp].ctx)
-		case OpSubInt:
-			SubInt(&g.frames[g.framesSp].ctx)
-		case OpSubFloat:
-			SubFloat(&g.frames[g.framesSp].ctx)
-		case OpSubBool:
-			SubBool(&g.frames[g.framesSp].ctx)
 		case OpMul:
 			Mul(&g.frames[g.framesSp].ctx)
-		case OpMulInt:
-			MulInt(&g.frames[g.framesSp].ctx)
-		case OpMulFloat:
-			MulFloat(&g.frames[g.framesSp].ctx)
-		case OpMulBool:
-			MulBool(&g.frames[g.framesSp].ctx)
 		case OpDiv:
 			Div(&g.frames[g.framesSp].ctx)
-		case OpDivInt:
-			DivInt(&g.frames[g.framesSp].ctx)
-		case OpDivFloat:
-			DivFloat(&g.frames[g.framesSp].ctx)
-		case OpDivBool:
-			DivBool(&g.frames[g.framesSp].ctx)
 		case OpMod:
 			Mod(&g.frames[g.framesSp].ctx)
-		case OpModInt:
-			ModInt(&g.frames[g.framesSp].ctx)
-		case OpModFloat:
-			ModFloat(&g.frames[g.framesSp].ctx)
-		case OpModBool:
-			ModBool(&g.frames[g.framesSp].ctx)
 		case OpPow:
 			Pow(&g.frames[g.framesSp].ctx)
-		case OpPowInt:
-			PowInt(&g.frames[g.framesSp].ctx)
-		case OpPowFloat:
-			PowFloat(&g.frames[g.framesSp].ctx)
-		case OpPowBool:
-			PowBool(&g.frames[g.framesSp].ctx)
 		case OpBwAnd:
 			BwAnd(&g.frames[g.framesSp].ctx)
 		case OpBwOr:
@@ -170,8 +132,6 @@ func (g *GlobalContext) Run(fn CompiledFunction) Value {
 			LessOrEqual(&g.frames[g.framesSp].ctx)
 		case OpCompare:
 			Compare(&g.frames[g.framesSp].ctx)
-		case OpArrayFetch:
-			ArrayFetch(&g.frames[g.framesSp].ctx)
 		case OpConcat:
 			Concat(&g.frames[g.framesSp].ctx)
 		case OpAssertType:
@@ -202,10 +162,6 @@ func (g *GlobalContext) Run(fn CompiledFunction) Value {
 			AssignShiftLeft(&g.frames[g.framesSp].ctx)
 		case OpAssignShiftRight:
 			AssignShiftRight(&g.frames[g.framesSp].ctx)
-		case OpArrayPut:
-			ArrayPut(&g.frames[g.framesSp].ctx)
-		case OpArrayPush:
-			ArrayPush(&g.frames[g.framesSp].ctx)
 		case OpCast:
 			Cast(&g.frames[g.framesSp].ctx)
 		case OpPreIncrement:
@@ -218,6 +174,8 @@ func (g *GlobalContext) Run(fn CompiledFunction) Value {
 			PostDecrement(&g.frames[g.framesSp].ctx)
 		case OpLoad:
 			Load(&g.frames[g.framesSp].ctx)
+		case OpLoadRef:
+			LoadRef(&g.frames[g.framesSp].ctx)
 		case OpConst:
 			Const(&g.frames[g.framesSp].ctx)
 		case OpJump:
@@ -248,7 +206,7 @@ type FunctionContext struct {
 func (ctx *FunctionContext) Arg(num int) Value      { return ctx.args[num] }
 func (ctx *FunctionContext) Parent() Context        { return ctx.Context }
 func (ctx *FunctionContext) Global() *GlobalContext { return ctx.global }
-func (ctx *FunctionContext) PushFrame() *Frame      { return ctx.global.PushFrame() }
+func (ctx *FunctionContext) NextFrame() *Frame      { return ctx.global.NextFrame() }
 func (ctx *FunctionContext) PopFrame() *Frame       { return ctx.global.PopFrame() }
 func (ctx *FunctionContext) ReadRX() int            { return ctx.global.ReadRX() }
 func (ctx *FunctionContext) ReadRY() int            { return ctx.global.ReadRY() }

@@ -6,12 +6,18 @@ import (
 	"slices"
 )
 
+type Arg struct {
+	Name  string
+	IsRef bool
+	Type  ast.Vertex
+}
+
 type Context interface {
+	Arg(string, ast.Vertex, bool) Arg
 	Parent() Context
 	Child(string) *FunctionContext
 	Global() *GlobalContext
 	Bytecode(func(*vm.Bytecode))
-	Args(int)
 	Literal(ast.Vertex, vm.Value) int
 	Resolve(ast.Vertex, string) string
 	Function(string) int
@@ -22,11 +28,11 @@ type Context interface {
 type FunctionContext struct {
 	Context
 
-	Name        string
-	Names       *NameResolver
-	ArgsNum     int
-	Instruction vm.Bytecode
-	Variables   []string
+	Name         string
+	Names        *NameResolver
+	Args         []Arg
+	Instructions vm.Bytecode
+	Variables    []string
 }
 
 func (ctx *FunctionContext) Parent() Context { return ctx.Context }
@@ -39,9 +45,17 @@ func (ctx *FunctionContext) Child(fn string) *FunctionContext {
 }
 func (ctx *FunctionContext) Global() *GlobalContext { return ctx.Context.Global() }
 func (ctx *FunctionContext) Bytecode(fn func(bytecode *vm.Bytecode)) {
-	fn(&ctx.Instruction)
+	fn(&ctx.Instructions)
 }
-func (ctx *FunctionContext) Args(i int) { ctx.ArgsNum = i }
+func (ctx *FunctionContext) Arg(name string, _type ast.Vertex, isRef bool) Arg {
+	if i := slices.IndexFunc(ctx.Args, func(arg Arg) bool { return arg.Name == name }); i >= 0 {
+		return ctx.Args[i]
+	}
+
+	a := Arg{name, isRef, _type}
+	ctx.Args = append(ctx.Args, a)
+	return a
+}
 func (ctx *FunctionContext) Resolve(vertex ast.Vertex, aliasType string) string {
 	ctx.Names.Resolve(vertex, aliasType)
 
@@ -99,7 +113,7 @@ func (ctx *GlobalContext) Literal(n ast.Vertex, v vm.Value) int {
 func (ctx *GlobalContext) Bytecode(fn func(bytecode *vm.Bytecode)) {
 	fn(&ctx.Instructions)
 }
-func (ctx *GlobalContext) Args(int) {}
+func (ctx *GlobalContext) Arg(name string, _type ast.Vertex, isRef bool) Arg { return Arg{} }
 func (ctx *GlobalContext) Resolve(vertex ast.Vertex, aliasType string) string {
 	ctx.Names.Resolve(vertex, aliasType)
 

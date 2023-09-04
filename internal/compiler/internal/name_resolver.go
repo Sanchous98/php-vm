@@ -21,6 +21,9 @@ func (r *NameResolver) Resolve(n ast.Vertex, aliasType string) {
 		switch n.(type) {
 		case *ast.Identifier:
 			r.Variables[n] = *(*string)(unsafe.Pointer(&n.(*ast.Identifier).Value))
+		case *ast.ExprVariable:
+			r.Resolve(n.(*ast.ExprVariable).Name, aliasType)
+			r.Variables[n] = r.Variables[n.(*ast.ExprVariable).Name]
 		default:
 			// TODO:
 		}

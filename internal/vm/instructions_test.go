@@ -42,8 +42,8 @@ func BenchmarkIdentical(b *testing.B) {
 func BenchmarkAdd(b *testing.B) {
 	b.ReportAllocs()
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{Context: &g, global: &g}
 	ctx.Init()
 
 	b.ResetTimer()
@@ -51,7 +51,7 @@ func BenchmarkAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ctx.Push(Int(1))
 		ctx.Push(Int(2))
-		Add(ctx)
+		Add(noescape(&ctx))
 		ctx.Pop()
 	}
 }
@@ -262,5 +262,38 @@ func TestCompare(t *testing.T) {
 			Compare(ctx)
 			assert.Equal(t, tt.result, ctx.Pop())
 		})
+	}
+}
+
+func BenchmarkPostIncrement(b *testing.B) {
+	b.ReportAllocs()
+
+	g := GlobalContext{}
+	ctx := FunctionContext{Context: &g, global: &g}
+	ctx.Init()
+	ctx.vars = append(ctx.vars, Int(0))
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		PostIncrement(noescape(&ctx))
+		ctx.vars[0] = ctx.vars[0].(Int) - 1
+		Pop(noescape(&ctx))
+	}
+}
+
+func BenchmarkLoad(b *testing.B) {
+	b.ReportAllocs()
+
+	g := GlobalContext{}
+	ctx := FunctionContext{Context: &g, global: &g}
+	ctx.Init()
+	ctx.vars = append(ctx.vars, Int(0))
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		Load(noescape(&ctx))
+		ctx.Pop()
 	}
 }

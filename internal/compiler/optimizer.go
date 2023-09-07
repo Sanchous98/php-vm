@@ -6,11 +6,11 @@ import (
 )
 
 func Optimizer(bytecode vm.Bytecode) vm.Bytecode {
-	bytecode = removeNops(bytecode)
 	//bytecode = removeMultipleReturns(bytecode)
-	return bytecode
+	return removeNops(bytecode)
 }
 
+// NOOP => _
 func removeNops(bytecode vm.Bytecode) vm.Bytecode {
 	return vm.Reduce(bytecode, func(prev vm.Bytecode, operator vm.Operator, operands ...int) vm.Bytecode {
 		if operator != vm.OpNoop {
@@ -25,6 +25,10 @@ func removeNops(bytecode vm.Bytecode) vm.Bytecode {
 	}, nil)
 }
 
+// 00000: RETURN_VAL
+// 00001: RETURN
+// =>
+// 00000: RETURN_VAL
 func removeMultipleReturns(bytecode vm.Bytecode) vm.Bytecode {
 	return vm.Reduce(bytecode, func(prev vm.Bytecode, operator vm.Operator, operands ...int) vm.Bytecode {
 		if len(prev) >= 8 {

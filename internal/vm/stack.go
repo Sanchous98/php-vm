@@ -19,21 +19,23 @@ type stackIface[T any] interface {
 }
 
 type Stack[T any] struct {
-	sp    *T
-	stack [stackSize]T
-	size  int
+	sp           *T
+	stack        [stackSize]T
+	defaultValue T
 }
 
 func (s *Stack[T]) Init() {
-	s.size = int(unsafe.Sizeof(*new(T)))
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -s.size))
+	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -unsafe.Sizeof(*s.sp)))
 }
 func (s *Stack[T]) Pop() T {
+	var d T
+
 	if uintptr(unsafe.Pointer(s.sp)) < uintptr(unsafe.Pointer(&s.stack[0])) {
-		return *new(T)
+		return d
 	}
 
 	v := *s.sp
+	*s.sp = d
 	s.MovePointer(-1)
 	return v
 }
@@ -46,17 +48,21 @@ func (s *Stack[T]) Push(v T) {
 	s.SetTop(v)
 }
 func (s *Stack[T]) TopIndex() int {
-	return int(uintptr(unsafe.Pointer(s.sp))-uintptr(unsafe.Pointer(&s.stack[0]))) / s.size
+	return int(uintptr(unsafe.Pointer(s.sp))-uintptr(unsafe.Pointer(&s.stack[0]))) / int(unsafe.Sizeof(*s.sp))
 }
 func (s *Stack[T]) Slice(offsetX, offsetY int) []T {
 	length := s.TopIndex() + 1
 	return s.stack[length+offsetX : length+offsetY]
 }
 func (s *Stack[T]) Sp(pointer int) {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), pointer*s.size))
+	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), pointer*int(unsafe.Sizeof(*s.sp))))
 }
 func (s *Stack[T]) Top() T     { return *(s.sp) }
 func (s *Stack[T]) SetTop(v T) { *(s.sp) = v }
 func (s *Stack[T]) MovePointer(offset int) {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), offset*s.size))
+	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), offset*int(unsafe.Sizeof(*s.sp))))
+}
+func (s *Stack[T]) Reset() {
+	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -int(unsafe.Sizeof(*s.sp))))
+	clear(s.stack[:])
 }

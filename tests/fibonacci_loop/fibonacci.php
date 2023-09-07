@@ -1,6 +1,5 @@
 <?php
-
-function fibonacci($n, &$ret)
+function fibonacci($n)
 {
 	if ($n === 0) {
 		return 0;
@@ -19,9 +18,6 @@ function fibonacci($n, &$ret)
 		$current = $temp;
 	}
 
-	$ret = $current;
+	return $current;
 }
-
-fibonacci(10, $ret);
-
-echo $ret;
+return fibonacci(10);

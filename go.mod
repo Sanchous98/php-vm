@@ -7,7 +7,6 @@ require (
 	github.com/VKCOM/php-parser v0.8.2
 	github.com/spf13/cobra v1.7.0
 	github.com/stretchr/testify v1.8.4
-	github.com/syyongx/php2go v0.9.8
 )
 
 require (

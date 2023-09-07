@@ -44,7 +44,7 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpAdd))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpReturnValue))
 
-	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(35), Int(0), Int(1), Int(2)}}
+	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10), Int(0), Int(1), Int(2)}}
 	ctx.Init()
 
 	var bytecode Bytecode
@@ -54,7 +54,7 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(IntType))
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpCall))
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturn))
+	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturnValue))
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -86,18 +86,24 @@ func nativeFibonacci(n int) int {
 
 func BenchmarkBuiltInFunction_Invoke(b *testing.B) {
 	f := BuiltInFunction[Int]{
-		Args: 1,
-		Fn:   fibonacci,
+		Args: []Arg{
+			{Name: "n", Type: IntType},
+		},
+		Fn: fibonacci,
 	}
 
-	ctx := &GlobalContext{Functions: []Callable{f}}
+	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10)}}
 	ctx.Init()
 
-	bytecode := []byte{
-		byte(OpConst), 0,
-		byte(OpAssertType), byte(IntType),
-		byte(OpCall), 0,
-		byte(OpReturn),
+	var bytecode Bytecode
+
+	for _, op := range []uint64{
+		uint64(OpConst), 0,
+		uint64(OpAssertType), uint64(IntType),
+		uint64(OpCall), 0,
+		uint64(OpReturn),
+	} {
+		bytecode = binary.NativeEndian.AppendUint64(bytecode, op)
 	}
 
 	b.ReportAllocs()

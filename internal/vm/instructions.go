@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 type Bytecode []byte
@@ -16,7 +17,7 @@ func (b Bytecode) ReadOperation(ctx *FunctionContext) (op Operator) {
 
 	if op > _opOneOperand {
 		ctx.pc++
-		ctx.WriteRX(int(binary.NativeEndian.Uint64(b[ctx.pc<<3:])))
+		ctx.global.rx = binary.NativeEndian.Uint64(b[ctx.pc<<3:])
 	}
 
 	return
@@ -81,6 +82,7 @@ const (
 	OpNotEqual                       // NOT_EQUAL
 	OpIdentical                      // IDENTICAL
 	OpNotIdentical                   // NOT_IDENTICAL
+	OpNot                            // NOT
 	OpGreater                        // GT
 	OpLess                           // LT
 	OpGreaterOrEqual                 // GTE
@@ -90,6 +92,9 @@ const (
 	OpArrayDimLoad                   // ARRAY_DIM_LOAD
 	OpArrayDimAssign                 // ARRAY_DIM_ASSIGN
 	OpConcat                         // CONCAT
+	OpRopeInit                       // ROPE_INIT
+	OpRopePush                       // ROPE_PUSH
+	OpRopeEnd                        // ROPE_END
 
 	_opOneOperand      Operator = iota - 1
 	OpAssertType                // ASSERT_TYPE
@@ -119,13 +124,10 @@ const (
 	OpJumpFalse                 // JUMP_FALSE
 	OpCall                      // CALL
 	OpEcho                      // ECHO
+	OpIsSet                     // ISSET
 )
 
 func assignTryRef(ref *Value, v Value) {
-	if (*ref) == nil {
-		*ref = Null{}
-	}
-
 	if (*ref).IsRef() {
 		*(*ref).Deref() = v
 	} else {
@@ -133,6 +135,7 @@ func assignTryRef(ref *Value, v Value) {
 	}
 }
 
+//go:noinline
 func arrayCompare(ctx *FunctionContext, x, y Array) Int {
 	if len(x) < len(y) {
 		return -1
@@ -192,28 +195,34 @@ func compare(ctx *FunctionContext, x, y Value) Int {
 	return 0
 }
 
-// Identical => x === y
+// Identical => $x === $y
 func Identical(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(Bool(left == right))
 }
 
-// NotIdentical => x !== y
+// NotIdentical => $x !== $y
 func NotIdentical(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(Bool(left != right))
 }
 
-// Equal => x == y
+// Not => !$x
+func Not(ctx *FunctionContext) {
+	v := ctx.Top().AsBool(ctx)
+	ctx.SetTop(!v)
+}
+
+// Equal => $x == $y
 func Equal(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(equal(ctx, left, right))
 }
 
-// NotEqual => x != y
+// NotEqual => $x != $y
 func NotEqual(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
@@ -232,35 +241,35 @@ func equal(ctx *FunctionContext, x, y Value) Bool {
 	return x.Cast(ctx, as) == y.Cast(ctx, as)
 }
 
-// LessOrEqual => x <= y
+// LessOrEqual => $x <= $y
 func LessOrEqual(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(Bool(compare(ctx, left, right) < 1))
 }
 
-// GreaterOrEqual => x >= y
+// GreaterOrEqual => $x >= $y
 func GreaterOrEqual(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(Bool(compare(ctx, left, right) > -1))
 }
 
-// Less => x < y
+// Less => $x < $y
 func Less(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(Bool(compare(ctx, left, right) < 0))
 }
 
-// Greater => x > y
+// Greater => $x > $y
 func Greater(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
 	ctx.SetTop(Bool(compare(ctx, left, right) > 0))
 }
 
-// Compare => x <=> y
+// Compare => $x <=> $y
 func Compare(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := ctx.Top()
@@ -269,158 +278,164 @@ func Compare(ctx *FunctionContext) {
 
 // Const => 0
 func Const(ctx *FunctionContext) {
-	ctx.Push(ctx.global.Constants[ctx.ReadRX()])
+	ctx.Push(ctx.global.Constants[ctx.global.rx])
 }
 
 // Load => $a
 func Load(ctx *FunctionContext) {
-	if ctx.vars[ctx.ReadRX()] == nil {
-		ctx.vars[ctx.ReadRX()] = Null{}
-	}
-
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(ctx.vars[ctx.global.rx])
 }
 
+// LoadRef => &$a
 func LoadRef(ctx *FunctionContext) {
-	if ctx.vars[ctx.ReadRX()] == nil {
-		ctx.vars[ctx.ReadRX()] = Null{}
-	}
-
-	ctx.Push(NewRef(&ctx.vars[ctx.ReadRX()]))
+	ctx.Push(NewRef(&ctx.vars[ctx.global.rx]))
 }
 
 // Assign => $a = 0
 func Assign(ctx *FunctionContext) {
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.Pop())
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, ctx.Pop())
+	ctx.Push(*v)
 }
 
 // AssignAdd => $a += 1
 func AssignAdd(ctx *FunctionContext) {
 	right := ctx.Pop()
+	v := &ctx.vars[ctx.global.rx]
 
-	switch Juggle(ctx.vars[ctx.ReadRX()].Type(), right.Type()) {
+	switch Juggle((*v).Type(), right.Type()) {
 	case ArrayType:
-		assignTryRef(&ctx.vars[ctx.ReadRX()], addArray(ctx.vars[ctx.ReadRX()].AsArray(ctx), right.AsArray(ctx)))
+		assignTryRef(v, addArray((*v).AsArray(ctx), right.AsArray(ctx)))
 	case FloatType:
-		assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsFloat(ctx)+right.AsFloat(ctx))
+		assignTryRef(v, (*v).AsFloat(ctx)+right.AsFloat(ctx))
 	default:
-		assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)+right.AsInt(ctx))
+		assignTryRef(v, (*v).AsInt(ctx)+right.AsInt(ctx))
 	}
 
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(*v)
 }
 
 // AssignSub => $a -= 1
 func AssignSub(ctx *FunctionContext) {
 	right := ctx.Pop()
+	v := &ctx.vars[ctx.global.rx]
 
 	switch FloatType {
-	case ctx.vars[ctx.ReadRX()].Type(), right.Type():
-		assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsFloat(ctx)-right.AsFloat(ctx))
+	case (*v).Type(), right.Type():
+		assignTryRef(v, (*v).AsFloat(ctx)-right.AsFloat(ctx))
 	default:
-		assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)-right.AsInt(ctx))
+		assignTryRef(v, (*v).AsInt(ctx)-right.AsInt(ctx))
 	}
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(*v)
 }
 
 // AssignMul => $a *= 1
 func AssignMul(ctx *FunctionContext) {
 	right := ctx.Pop()
+	v := &ctx.vars[ctx.global.rx]
 
 	switch FloatType {
-	case ctx.vars[ctx.ReadRX()].Type(), right.Type():
-		assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsFloat(ctx)*right.AsFloat(ctx))
+	case (*v).Type(), right.Type():
+		assignTryRef(&ctx.vars[ctx.global.rx], ctx.vars[ctx.global.rx].AsFloat(ctx)*right.AsFloat(ctx))
 	default:
-		assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)*right.AsInt(ctx))
+		assignTryRef(v, (*v).AsInt(ctx)*right.AsInt(ctx))
 	}
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(*v)
 }
 
 // AssignDiv => $a /= 1
 func AssignDiv(ctx *FunctionContext) {
 	right := ctx.Pop()
+	v := &ctx.vars[ctx.global.rx]
 
-	if res := ctx.vars[ctx.ReadRX()].AsFloat(ctx) / right.AsFloat(ctx); res == Float(int(res)) {
-		assignTryRef(&ctx.vars[ctx.ReadRX()], res.AsInt(ctx))
+	if res := (*v).AsFloat(ctx) / right.AsFloat(ctx); res == Float(int(res)) {
+		assignTryRef(v, res.AsInt(ctx))
 	} else {
-		assignTryRef(&ctx.vars[ctx.ReadRX()], res)
+		assignTryRef(v, res)
 	}
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(*v)
 }
 
 // AssignPow => $a **= 1
 func AssignPow(ctx *FunctionContext) {
 	right := ctx.Pop()
-	as := Juggle(ctx.vars[ctx.ReadRX()].Type(), right.Type())
+	v := &ctx.vars[ctx.global.rx]
+	as := Juggle((*v).Type(), right.Type())
 
 	if as == BoolType {
-		assignTryRef(&ctx.vars[ctx.ReadRX()], (!right.AsBool(ctx) || ctx.vars[ctx.ReadRX()].AsBool(ctx)).AsInt(ctx))
+		assignTryRef(v, (!right.AsBool(ctx) || (*v).AsBool(ctx)).AsInt(ctx))
 	} else {
-		res := Float(math.Pow(float64(ctx.vars[ctx.ReadRX()].AsFloat(ctx)), float64(right.AsFloat(ctx))))
-		assignTryRef(&ctx.vars[ctx.ReadRX()], res.Cast(ctx, as))
+		res := Float(math.Pow(float64((*v).AsFloat(ctx)), float64(right.AsFloat(ctx))))
+		assignTryRef(v, res.Cast(ctx, as))
 	}
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(*v)
 }
 
 // AssignBwAnd => $a &= 1
 func AssignBwAnd(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)&right)
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, (*v).AsInt(ctx)&right)
+	ctx.Push(*v)
 }
 
 // AssignBwOr => $a |= 1
 func AssignBwOr(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)|right)
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, (*v).AsInt(ctx)|right)
+	ctx.Push(*v)
 }
 
 // AssignBwXor => $a ^= 1
 func AssignBwXor(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)^right)
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, (*v).AsInt(ctx)^right)
+	ctx.Push(*v)
 }
 
 // AssignConcat => $a .= 1
 func AssignConcat(ctx *FunctionContext) {
 	right := ctx.Pop().AsString(ctx)
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsString(ctx)+right)
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, (*v).AsString(ctx)+right)
+	ctx.Push(*v)
 }
 
 // AssignShiftLeft => $a <<= 1
 func AssignShiftLeft(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)<<right)
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, (*v).AsInt(ctx)<<right)
+	ctx.Push(*v)
 }
 
 // AssignShiftRight => $a >>= 1
 func AssignShiftRight(ctx *FunctionContext) {
 	right := ctx.Pop().AsInt(ctx)
-	assignTryRef(&ctx.vars[ctx.ReadRX()], ctx.vars[ctx.ReadRX()].AsInt(ctx)>>right)
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
+	assignTryRef(v, (*v).AsInt(ctx)>>right)
+	ctx.Push(*v)
 }
 
 // AssignMod => $a %= 1
 func AssignMod(ctx *FunctionContext) {
 	right := ctx.Pop().AsFloat(ctx)
-	left := ctx.vars[ctx.ReadRX()].AsFloat(ctx)
+	v := &ctx.vars[ctx.global.rx]
+	left := (*v).AsFloat(ctx)
 
 	if res := Float(math.Mod(float64(left), float64(right))); res == Float(int(res)) {
-		assignTryRef(&ctx.vars[ctx.ReadRX()], res.AsInt(ctx))
+		assignTryRef(v, res.AsInt(ctx))
 	} else {
-		assignTryRef(&ctx.vars[ctx.ReadRX()], res)
+		assignTryRef(v, res)
 	}
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	ctx.Push(*v)
 }
 
 // Jump unconditional jump
 func Jump(ctx *FunctionContext) {
-	ctx.pc = ctx.ReadRX() - 1
+	ctx.pc = int(ctx.global.rx) - 1
 }
 
 // JumpTrue if (true_statement)
@@ -439,7 +454,7 @@ func JumpFalse(ctx *FunctionContext) {
 
 // Call => $b = someFunction($a, $x)
 func Call(ctx *FunctionContext) {
-	ctx.global.Functions[ctx.ReadRX()].Invoke(ctx)
+	ctx.Push(ctx.global.Functions[ctx.global.rx].Invoke(ctx))
 }
 
 func Pop(ctx *FunctionContext) {
@@ -455,8 +470,7 @@ func ReturnValue(ctx *FunctionContext) {
 
 // Return => return;
 func Return(ctx *FunctionContext) {
-	f := ctx.PopFrame()
-	ctx.Sp(f.fp)
+	ctx.Sp(ctx.fp)
 }
 
 // Add => 1 + 2
@@ -562,31 +576,31 @@ func Pow(ctx *FunctionContext) {
 
 // BwAnd => 1 & 2
 func BwAnd(ctx *FunctionContext) {
-	right := ctx.Pop().(Int)
-	left := ctx.Top().(Int)
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
 
 	ctx.SetTop(left & right)
 }
 
 // BwOr => 1 | 2
 func BwOr(ctx *FunctionContext) {
-	right := ctx.Pop().(Int)
-	left := ctx.Top().(Int)
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
 
 	ctx.SetTop(left | right)
 }
 
 // BwXor => 1 ^ 2
 func BwXor(ctx *FunctionContext) {
-	right := ctx.Pop().(Int)
-	left := ctx.Top().(Int)
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
 
 	ctx.SetTop(left ^ right)
 }
 
 // BwNot => ~1
 func BwNot(ctx *FunctionContext) {
-	left := ctx.Top().(Int)
+	left := ctx.Top().AsInt(ctx)
 	ctx.SetTop(^left)
 }
 
@@ -609,54 +623,78 @@ func ShiftRight(ctx *FunctionContext) {
 // Cast => (type)$x
 func Cast(ctx *FunctionContext) {
 	val := ctx.Pop()
-	ctx.Push(val.Cast(ctx, Type(ctx.ReadRX())))
+	ctx.Push(val.Cast(ctx, Type(ctx.global.rx)))
 }
 
 // PreIncrement => ++$x
 func PreIncrement(ctx *FunctionContext) {
-	switch ctx.vars[ctx.ReadRX()].(type) {
-	case Float:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Float) + 1
-	case Int:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Int) + 1
+	v := &ctx.vars[ctx.global.rx]
+
+	switch (*v).Type() {
+	case FloatType:
+		assignTryRef(v, (*v).AsFloat(ctx)+1)
+	default:
+		assignTryRef(v, (*v).AsInt(ctx)+1)
 	}
 
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	if (*v).IsRef() {
+		ctx.Push(*(*v).Deref())
+	} else {
+		ctx.Push(*v)
+	}
 }
 
 // PreDecrement => --$x
 func PreDecrement(ctx *FunctionContext) {
-	switch ctx.vars[ctx.ReadRX()].Type() {
+	v := &ctx.vars[ctx.global.rx]
+
+	switch (*v).Type() {
 	case FloatType:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Float) - 1
-	case IntType:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Int) - 1
+		assignTryRef(v, (*v).AsFloat(ctx)-1)
+	default:
+		assignTryRef(v, (*v).AsInt(ctx)-1)
 	}
 
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	if (*v).IsRef() {
+		ctx.Push(*(*v).Deref())
+	} else {
+		ctx.Push(*v)
+	}
 }
 
 // PostIncrement => $x++
 func PostIncrement(ctx *FunctionContext) {
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
 
-	switch ctx.vars[ctx.ReadRX()].Type() {
+	if (*v).IsRef() {
+		ctx.Push(*(*v).Deref())
+	} else {
+		ctx.Push(*v)
+	}
+
+	switch (*v).Type() {
 	case FloatType:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Float) + 1
+		assignTryRef(v, (*v).AsFloat(ctx)+1)
 	default:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].AsInt(ctx) + 1
+		assignTryRef(v, (*v).AsInt(ctx)+1)
 	}
 }
 
 // PostDecrement => $x--
 func PostDecrement(ctx *FunctionContext) {
-	ctx.Push(ctx.vars[ctx.ReadRX()])
+	v := &ctx.vars[ctx.global.rx]
 
-	switch ctx.vars[ctx.ReadRX()].Type() {
+	if (*v).IsRef() {
+		ctx.Push(*(*v).Deref())
+	} else {
+		ctx.Push(*v)
+	}
+
+	switch (*v).Type() {
 	case FloatType:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Float) + 1
-	case IntType:
-		ctx.vars[ctx.ReadRX()] = ctx.vars[ctx.ReadRX()].(Int) + 1
+		assignTryRef(v, (*v).AsFloat(ctx)-1)
+	default:
+		assignTryRef(v, (*v).AsInt(ctx)-1)
 	}
 }
 
@@ -669,17 +707,36 @@ func Concat(ctx *FunctionContext) {
 
 // AssertType => fn(int $a)
 func AssertType(ctx *FunctionContext) {
-	ctx.SetTop(ctx.Top().Cast(ctx, Type(ctx.ReadRX())))
+	ctx.SetTop(ctx.Top().Cast(ctx, Type(ctx.global.rx)))
 }
 
 // Echo => echo $x, $y;
 func Echo(ctx *FunctionContext) {
-	count := ctx.ReadRX()
+	count := ctx.global.rx
 	values := make([]any, count)
 
-	for i, v := range ctx.Slice(-count, 0) {
+	for i, v := range ctx.Slice(-int(count), 0) {
 		values[i] = v
 	}
 
 	fmt.Print(values...)
+}
+
+func IsSet(ctx *FunctionContext) {
+	v := ctx.Top()
+	ctx.SetTop(Bool(v != nil && v != Null{}))
+}
+
+func RopeInit(ctx *FunctionContext) {
+	ctx.global.ry = unsafe.Pointer(new(strings.Builder))
+}
+
+func RopePush(ctx *FunctionContext) {
+	(*strings.Builder)(ctx.global.ry).WriteString(string(ctx.Pop().AsString(ctx)))
+}
+
+func RopeEnd(ctx *FunctionContext) {
+	s := (*strings.Builder)(ctx.global.ry).String()
+	ctx.Push(String(s))
+	ctx.global.ry = unsafe.Pointer(uintptr(0))
 }

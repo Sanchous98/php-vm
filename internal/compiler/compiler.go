@@ -23,7 +23,11 @@ var builtInTypeAsserts = map[string]vm.Type{
 	"object": vm.ObjectType,
 }
 
-const FunctionAliasType = "function"
+const (
+	FunctionAliasType = "function"
+	ConstantAliasType = "const"
+	VariableAliasType = "variable"
+)
 
 type Compiler struct {
 	visitor.Null
@@ -33,6 +37,7 @@ type Compiler struct {
 	contexts []*internal.FunctionContext
 	global   *internal.GlobalContext
 	context  internal.Context
+	ctx      *vm.GlobalContext
 }
 
 func (c *Compiler) Root(n *ast.Root) {
@@ -50,8 +55,9 @@ func (c *Compiler) Root(n *ast.Root) {
 }
 
 func (c *Compiler) Parameter(n *ast.Parameter) {
-	name := c.context.Resolve(n.Var, "variable")
-	c.context.Arg(name, n.Type, n.AmpersandTkn != nil)
+	name := c.context.Resolve(n.Var, VariableAliasType)
+	_type := c.context.Resolve(n.Type, "")
+	c.context.Arg(name, _type, n.DefaultValue, n.AmpersandTkn != nil)
 }
 
 func (c *Compiler) Argument(n *ast.Argument) {
@@ -67,7 +73,7 @@ func (c *Compiler) StmtConstant(n *ast.StmtConstant) {
 		}
 	})
 
-	name := c.context.Resolve(n.Name, "const")
+	name := c.context.Resolve(n.Name, ConstantAliasType)
 	c.global.NamedConstants[name] = c.global.Constants[n.Expr]
 }
 
@@ -89,10 +95,6 @@ func (c *Compiler) StmtFunction(n *ast.StmtFunction) {
 	ctx := c.context.Child(c.context.Resolve(n.Name, FunctionAliasType))
 	c.context = ctx
 	c.contexts = append(c.contexts, ctx)
-
-	for _, param := range n.Params {
-		param.Accept(c)
-	}
 
 	for _, param := range n.Params {
 		param.Accept(c)
@@ -237,28 +239,50 @@ func (c *Compiler) StmtDo(n *ast.StmtDo) {
 	})
 }
 
+func (c *Compiler) StmtGoto(n *ast.StmtGoto) {
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		name := c.context.Resolve(n.Label, "")
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpJump))
+		c.context.AddLabel(name, uint64(len(*bytecode)))
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpNoop))
+	})
+}
+
+func (c *Compiler) StmtLabel(n *ast.StmtLabel) {
+	label := c.context.Resolve(n.Name, "")
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		binary.NativeEndian.PutUint64((*bytecode)[c.context.FindLabel(label):], uint64(len(*bytecode))>>3)
+	})
+}
+
 func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	name := c.context.Resolve(n.Function, FunctionAliasType)
 	f := slices.IndexFunc(c.contexts, func(context *internal.FunctionContext) bool {
 		return context.Name == name
 	})
 
-	for i, arg := range n.Args {
-		arg.Accept(c)
+	if f >= 0 {
+		for i, arg := range c.contexts[f].Args {
+			if len(n.Args)-1 < i {
+				arg.Default.Accept(c)
+				continue
+			}
 
-		if c.contexts[f].Args[i].IsRef {
-			c.context.Bytecode(func(bytecode *vm.Bytecode) {
-				binary.NativeEndian.PutUint64((*bytecode)[len(*bytecode)-16:], uint64(vm.OpLoadRef))
-			})
-		}
+			n.Args[i].Accept(c)
 
-		if c.contexts[f].Args[i].Type != nil {
-			_type := c.global.Resolve(c.contexts[f].Args[i].Type, "")
-			if aT, ok := builtInTypeAsserts[_type]; ok {
+			if arg.IsRef {
 				c.context.Bytecode(func(bytecode *vm.Bytecode) {
-					*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpAssertType))
-					*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(aT))
+					binary.NativeEndian.PutUint64((*bytecode)[len(*bytecode)-16:], uint64(vm.OpLoadRef))
 				})
+			}
+
+			if arg.Type != "" {
+				if aT, ok := builtInTypeAsserts[arg.Type]; ok {
+					c.context.Bytecode(func(bytecode *vm.Bytecode) {
+						*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpAssertType))
+						*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(aT))
+					})
+				}
 			}
 		}
 	}
@@ -271,7 +295,7 @@ func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
 
 func (c *Compiler) ExprVariable(n *ast.ExprVariable) {
 	c.context.Bytecode(func(bytecode *vm.Bytecode) {
-		name := c.context.Resolve(n.Name, "variable")
+		name := c.context.Resolve(n.Name, VariableAliasType)
 		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpLoad))
 		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(c.context.Var(name)))
 	})
@@ -279,7 +303,7 @@ func (c *Compiler) ExprVariable(n *ast.ExprVariable) {
 
 func (c *Compiler) ExprConstFetch(n *ast.ExprConstFetch) {
 	c.context.Bytecode(func(bytecode *vm.Bytecode) {
-		name := c.context.Resolve(n.Const, "const")
+		name := c.context.Resolve(n.Const, ConstantAliasType)
 		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpConst))
 		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(c.context.Constant(name)))
 	})
@@ -365,11 +389,17 @@ func (c *Compiler) ExprAssignReference(n *ast.ExprAssignReference) {
 	})
 }
 
-func (c *Compiler) ExprArray(n *ast.ExprArray) {}
+func (c *Compiler) ExprArray(n *ast.ExprArray) {
+	panic("not implemented")
+}
 
-func (c *Compiler) ExprArrayDimFetch(n *ast.ExprArrayDimFetch) {}
+func (c *Compiler) ExprArrayDimFetch(n *ast.ExprArrayDimFetch) {
+	panic("not implemented")
+}
 
-func (c *Compiler) ExprArrayItem(n *ast.ExprArrayItem) {}
+func (c *Compiler) ExprArrayItem(n *ast.ExprArrayItem) {
+	panic("not implemented")
+}
 
 func (c *Compiler) ExprPostInc(n *ast.ExprPostInc) {
 	n.Var.Accept(c)
@@ -638,6 +668,40 @@ func (c *Compiler) ExprBinarySpaceship(n *ast.ExprBinarySpaceship) {
 	})
 }
 
+func (c *Compiler) ExprIsset(n *ast.ExprIsset) {
+	for _, v := range n.Vars {
+		v.Accept(c)
+	}
+
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpIsSet))
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(len(n.Vars)))
+	})
+}
+
+func (c *Compiler) ExprBooleanNot(n *ast.ExprBooleanNot) {
+	n.Expr.Accept(c)
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpNot))
+	})
+}
+
+func (c *Compiler) ExprRequire(n *ast.ExprRequire) {
+	panic("not implemented")
+}
+
+func (c *Compiler) ExprRequireOnce(n *ast.ExprRequireOnce) {
+	panic("not implemented")
+}
+
+func (c *Compiler) ExprInclude(n *ast.ExprInclude) {
+	panic("not implemented")
+}
+
+func (c *Compiler) ExprIncludeOnce(n *ast.ExprIncludeOnce) {
+	panic("not implemented")
+}
+
 func (c *Compiler) ScalarLnumber(n *ast.ScalarLnumber) {
 	i, _ := strconv.Atoi(*(*string)(unsafe.Pointer(&n.Value)))
 	c.context.Bytecode(func(bytecode *vm.Bytecode) {
@@ -662,6 +726,36 @@ func (c *Compiler) ScalarDnumber(n *ast.ScalarDnumber) {
 	})
 }
 
+func (c *Compiler) ScalarEncapsed(n *ast.ScalarEncapsed) {
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpRopeInit))
+		for _, part := range n.Parts {
+			part.Accept(c)
+		}
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpRopeEnd))
+	})
+}
+
+func (c *Compiler) ScalarEncapsedStringPart(n *ast.ScalarEncapsedStringPart) {
+	s := *(*string)(unsafe.Pointer(&n.Value))
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpConst))
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(c.context.Literal(n, vm.String(s))))
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpRopePush))
+	})
+}
+
+func (c *Compiler) ScalarEncapsedStringVar(n *ast.ScalarEncapsedStringVar) {
+	panic("not implemented")
+}
+
+func (c *Compiler) ScalarEncapsedStringBrackets(n *ast.ScalarEncapsedStringBrackets) {
+	n.Var.Accept(c)
+	c.context.Bytecode(func(bytecode *vm.Bytecode) {
+		*bytecode = binary.NativeEndian.AppendUint64(*bytecode, uint64(vm.OpRopePush))
+	})
+}
+
 func (c *Compiler) StmtEcho(n *ast.StmtEcho) {
 	for _, expr := range n.Exprs {
 		expr.Accept(c)
@@ -673,12 +767,16 @@ func (c *Compiler) StmtEcho(n *ast.StmtEcho) {
 	})
 }
 
+func (c *Compiler) ExprBrackets(n *ast.ExprBrackets) {
+	n.Expr.Accept(c)
+}
+
 func NewCompiler(extensions *Extensions) *Compiler {
 	if extensions == nil {
 		return new(Compiler)
 	}
 
-	return &Compiler{extensions: extensions.exts}
+	return &Compiler{extensions: extensions.Exts}
 }
 
 func (c *Compiler) Reset() {
@@ -709,7 +807,9 @@ func (c *Compiler) Compile(input []byte, ctx *vm.GlobalContext) vm.CompiledFunct
 		"false": slices.Index(c.global.Literals, vm.Value(vm.Bool(false))),
 		"null":  slices.Index(c.global.Literals, vm.Value(vm.Null{})),
 	}
+	c.global.Labels = make(map[string]uint64)
 	c.context = c.global
+	c.ctx = ctx
 
 	for _, ext := range c.extensions {
 		for n, constant := range ext.Constants {
@@ -722,10 +822,31 @@ func (c *Compiler) Compile(input []byte, ctx *vm.GlobalContext) vm.CompiledFunct
 		for n, fn := range ext.Functions {
 			ctx.Functions = append(ctx.Functions, fn)
 			c.global.Functions = append(c.global.Functions, n)
+
+			var args []internal.Arg
+
+			for _, arg := range fn.(interface{ GetArgs() []vm.Arg }).GetArgs() {
+				args = append(args, internal.Arg{
+					Name:  arg.Name,
+					IsRef: arg.ByRef,
+					Type:  arg.Type.String(),
+				})
+			}
+
+			c.contexts = append(c.contexts, &internal.FunctionContext{
+				Name:    n,
+				Args:    args,
+				BuiltIn: true,
+			})
 		}
 	}
 
-	node, _ := parser.Parse(input, conf.Config{Version: &version.Version{Major: 7, Minor: 0}})
+	node, err := parser.Parse(input, conf.Config{Version: &version.Version{Major: 7, Minor: 4}})
+
+	if err != nil {
+		panic(err)
+	}
+
 	node.Accept(c)
 
 	ctx.Constants = c.global.Literals
@@ -733,6 +854,9 @@ func (c *Compiler) Compile(input []byte, ctx *vm.GlobalContext) vm.CompiledFunct
 	ctx.Functions = ctx.Functions[:len(c.contexts)+len(c.global.Functions)]
 
 	for _, context := range c.contexts {
+		if context.BuiltIn {
+			continue
+		}
 		ctx.Functions[slices.Index(c.global.Functions, context.Name)] = vm.CompiledFunction{
 			Instructions: Optimizer(context.Instructions),
 			Args:         len(context.Args),

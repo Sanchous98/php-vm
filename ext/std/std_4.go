@@ -6,11 +6,7 @@ import (
 )
 
 func microtime(args ...vm.Value) vm.Value {
-	asNumber := vm.Bool(false)
-
-	if args[0] != nil {
-		asNumber = args[0].(vm.Bool)
-	}
+	asNumber := args[0].(vm.Bool)
 
 	num, str := stdlib.Microtime(bool(asNumber))
 

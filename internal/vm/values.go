@@ -4,20 +4,19 @@ import (
 	"fmt"
 	"math"
 	"strconv"
-	"unsafe"
 )
 
 //go:generate stringer -type=Type -linecomment
 type Type byte
 
 const (
-	NullType   Type = iota // null
-	IntType                // integer
-	FloatType              // float
-	StringType             // string
-	ArrayType              // array
-	ObjectType             // object
-	BoolType               // boolean
+	NullType   Type = 1 << iota // null
+	IntType                     // integer
+	FloatType                   // float
+	StringType                  // string
+	ArrayType                   // array
+	ObjectType                  // object
+	BoolType                    // boolean
 )
 
 func Juggle(x, y Type) Type { return max(x, y) }
@@ -269,12 +268,14 @@ func (a Array) NextKey() Value {
 	return Int(0)
 }
 
-type Ref uintptr
+type Ref struct {
+	ref *Value
+}
 
-func NewRef(v *Value) Ref { return Ref(unsafe.Pointer(v)) }
+func NewRef(v *Value) Ref { return Ref{v} }
 
 func (r Ref) IsRef() bool                 { return true }
-func (r Ref) Deref() *Value               { return (*Value)(unsafe.Pointer(r)) }
+func (r Ref) Deref() *Value               { return r.ref }
 func (r Ref) Type() Type                  { return (*r.Deref()).Type() }
 func (r Ref) AsInt(ctx Context) Int       { return (*r.Deref()).AsInt(ctx) }
 func (r Ref) AsFloat(ctx Context) Float   { return (*r.Deref()).AsFloat(ctx) }

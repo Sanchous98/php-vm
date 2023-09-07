@@ -8,7 +8,7 @@ import (
 const PhpExtension = "php.extension"
 
 type Extensions struct {
-	exts []Extension `inject:"php.extension"`
+	Exts []Extension `inject:"php.extension"`
 }
 
 func init() {

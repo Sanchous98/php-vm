@@ -8,22 +8,44 @@ func _() {
 	// An "invalid array index" compiler error signifies that the constant values have changed.
 	// Re-run the stringer command to generate them again.
 	var x [1]struct{}
-	_ = x[NullType-0]
-	_ = x[IntType-1]
-	_ = x[FloatType-2]
-	_ = x[StringType-3]
-	_ = x[ArrayType-4]
-	_ = x[ObjectType-5]
-	_ = x[BoolType-6]
+	_ = x[NullType-1]
+	_ = x[IntType-2]
+	_ = x[FloatType-4]
+	_ = x[StringType-8]
+	_ = x[ArrayType-16]
+	_ = x[ObjectType-32]
+	_ = x[BoolType-64]
 }
 
-const _Type_name = "nullintegerfloatstringarrayobjectboolean"
+const (
+	_Type_name_0 = "nullinteger"
+	_Type_name_1 = "float"
+	_Type_name_2 = "string"
+	_Type_name_3 = "array"
+	_Type_name_4 = "object"
+	_Type_name_5 = "boolean"
+)
 
-var _Type_index = [...]uint8{0, 4, 11, 16, 22, 27, 33, 40}
+var (
+	_Type_index_0 = [...]uint8{0, 4, 11}
+)
 
 func (i Type) String() string {
-	if i >= Type(len(_Type_index)-1) {
+	switch {
+	case 1 <= i && i <= 2:
+		i -= 1
+		return _Type_name_0[_Type_index_0[i]:_Type_index_0[i+1]]
+	case i == 4:
+		return _Type_name_1
+	case i == 8:
+		return _Type_name_2
+	case i == 16:
+		return _Type_name_3
+	case i == 32:
+		return _Type_name_4
+	case i == 64:
+		return _Type_name_5
+	default:
 		return "Type(" + strconv.FormatInt(int64(i), 10) + ")"
 	}
-	return _Type_name[_Type_index[i]:_Type_index[i+1]]
 }

@@ -86,11 +86,7 @@ const (
 
 func pathinfo(args ...vm.Value) vm.Array {
 	path := string(args[0].(vm.String))
-	flags := PathinfoAll
-
-	if args[1] == nil {
-		flags = args[1].(vm.Int)
-	}
+	flags := args[1].(vm.Int)
 
 	res := vm.Array{}
 

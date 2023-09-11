@@ -1,8 +1,6 @@
 package vm
 
-import (
-	"unsafe"
-)
+import "unsafe"
 
 const stackSize = 4096
 
@@ -27,15 +25,12 @@ type Stack[T any] struct {
 func (s *Stack[T]) Init() {
 	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -unsafe.Sizeof(*s.sp)))
 }
-func (s *Stack[T]) Pop() T {
-	var d T
-
+func (s *Stack[T]) Pop() (v T) {
 	if uintptr(unsafe.Pointer(s.sp)) < uintptr(unsafe.Pointer(&s.stack[0])) {
-		return d
+		return v
 	}
 
-	v := *s.sp
-	*s.sp = d
+	v, *s.sp = *s.sp, v
 	s.MovePointer(-1)
 	return v
 }
@@ -57,12 +52,8 @@ func (s *Stack[T]) Slice(offsetX, offsetY int) []T {
 func (s *Stack[T]) Sp(pointer int) {
 	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), pointer*int(unsafe.Sizeof(*s.sp))))
 }
-func (s *Stack[T]) Top() T     { return *(s.sp) }
-func (s *Stack[T]) SetTop(v T) { *(s.sp) = v }
+func (s *Stack[T]) Top() T     { return *s.sp }
+func (s *Stack[T]) SetTop(v T) { *s.sp = v }
 func (s *Stack[T]) MovePointer(offset int) {
 	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), offset*int(unsafe.Sizeof(*s.sp))))
-}
-func (s *Stack[T]) Reset() {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -int(unsafe.Sizeof(*s.sp))))
-	clear(s.stack[:])
 }

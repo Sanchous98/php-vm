@@ -127,6 +127,14 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 			LessOrEqual(noescape(&ctx))
 		case OpCompare:
 			Compare(noescape(&ctx))
+		case OpArrayInit:
+			ArrayInit(noescape(&ctx))
+		case OpArrayLookup:
+			ArrayLookup(noescape(&ctx))
+		case OpArrayInsert:
+			ArrayInsert(noescape(&ctx))
+		case OpArrayPush:
+			ArrayPush(noescape(&ctx))
 		case OpConcat:
 			Concat(noescape(&ctx))
 		case OpRopeInit:

@@ -3,6 +3,7 @@ package vm
 import (
 	"context"
 	"io"
+	"os"
 	"sync/atomic"
 	"unsafe"
 )
@@ -37,12 +38,20 @@ type GlobalContext struct {
 	ry  unsafe.Pointer
 }
 
-func NewGlobalContext(ctx context.Context) *GlobalContext {
+func NewGlobalContext(ctx context.Context, in io.Reader, out io.Writer) *GlobalContext {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
-	return &GlobalContext{Context: ctx}
+	if in == nil {
+		in = os.Stdin
+	}
+
+	if out == nil {
+		out = os.Stdout
+	}
+
+	return &GlobalContext{Context: ctx, in: in, out: out}
 }
 
 func (g *GlobalContext) Init() {
@@ -56,7 +65,6 @@ func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[ind
 func (g *GlobalContext) Throw(error)                    {}
 func (g *GlobalContext) Run(fn CompiledFunction) Value {
 	g.Init()
-	//defer g.Reset()
 	return fn.Invoke(noescape(g))
 }
 

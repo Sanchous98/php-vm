@@ -10,7 +10,7 @@ import (
 func init() {
 	app.App().Set(di.Service(&compiler.Extension{
 		Name:    "std",
-		Version: "7.0.0",
+		Version: "8.2.0",
 		Functions: map[string]vm.Callable{
 			"bin2hex":       vm.NewBuiltInFunction(bin2hex, vm.Arg{Name: "bin", Type: vm.StringType}),
 			"sleep":         vm.NewBuiltInFunction(sleep, vm.Arg{Name: "t", Type: vm.IntType}),

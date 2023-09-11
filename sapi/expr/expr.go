@@ -82,7 +82,7 @@ func (e Expression) ExecuteContext(ctx context.Context, args map[string]any) vm.
 	}
 
 	comp := compiler.NewCompiler(&compiler.Extensions{Exts: []compiler.Extension{{Constants: consts}}})
-	global := vm.NewGlobalContext(ctx)
+	global := vm.NewGlobalContext(ctx, nil, nil)
 	fn := comp.Compile(unsafe.Slice(unsafe.StringData(string("<?php\n"+e+";")), len(e)), global)
 	return global.Run(fn)
 }

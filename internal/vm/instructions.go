@@ -89,8 +89,9 @@ const (
 	OpLessOrEqual                    // LTE
 	OpCompare                        // COMPARE
 	OpArrayInit                      // ARRAY_INIT
-	OpArrayDimLoad                   // ARRAY_DIM_LOAD
-	OpArrayDimAssign                 // ARRAY_DIM_ASSIGN
+	OpArrayLookup                    // ARRAY_LOOKUP
+	OpArrayInsert                    // ARRAY_INSERT
+	OpArrayPush                      // ARRAY_PUSH
 	OpConcat                         // CONCAT
 	OpRopeInit                       // ROPE_INIT
 	OpRopePush                       // ROPE_PUSH
@@ -129,7 +130,7 @@ const (
 
 func assignTryRef(ref *Value, v Value) {
 	if (*ref).IsRef() {
-		*(*ref).Deref() = v
+		*(*ref).(Ref).Deref() = v
 	} else {
 		*ref = v
 	}
@@ -638,7 +639,7 @@ func PreIncrement(ctx *FunctionContext) {
 	}
 
 	if (*v).IsRef() {
-		ctx.Push(*(*v).Deref())
+		ctx.Push(*(*v).(Ref).Deref())
 	} else {
 		ctx.Push(*v)
 	}
@@ -656,7 +657,7 @@ func PreDecrement(ctx *FunctionContext) {
 	}
 
 	if (*v).IsRef() {
-		ctx.Push(*(*v).Deref())
+		ctx.Push(*(*v).(Ref).Deref())
 	} else {
 		ctx.Push(*v)
 	}
@@ -667,7 +668,7 @@ func PostIncrement(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.rx]
 
 	if (*v).IsRef() {
-		ctx.Push(*(*v).Deref())
+		ctx.Push(*(*v).(Ref).Deref())
 	} else {
 		ctx.Push(*v)
 	}
@@ -685,7 +686,7 @@ func PostDecrement(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.rx]
 
 	if (*v).IsRef() {
-		ctx.Push(*(*v).Deref())
+		ctx.Push(*(*v).(Ref).Deref())
 	} else {
 		ctx.Push(*v)
 	}
@@ -719,7 +720,7 @@ func Echo(ctx *FunctionContext) {
 		values[i] = v
 	}
 
-	fmt.Print(values...)
+	fmt.Fprint(ctx.global.out, values...)
 }
 
 func IsSet(ctx *FunctionContext) {
@@ -727,6 +728,7 @@ func IsSet(ctx *FunctionContext) {
 	ctx.SetTop(Bool(v != nil && v != Null{}))
 }
 
+// RopeInit => "encapsed $str"
 func RopeInit(ctx *FunctionContext) {
 	ctx.global.ry = unsafe.Pointer(new(strings.Builder))
 }
@@ -739,4 +741,35 @@ func RopeEnd(ctx *FunctionContext) {
 	s := (*strings.Builder)(ctx.global.ry).String()
 	ctx.Push(String(s))
 	ctx.global.ry = unsafe.Pointer(uintptr(0))
+}
+
+func ArrayInit(ctx *FunctionContext) {
+	ctx.Push(Array{})
+}
+
+func ArrayLookup(ctx *FunctionContext) {
+	key := ctx.Pop()
+	arr := ctx.Pop().AsArray(ctx)
+
+	if v, ok := arr[key]; ok {
+		ctx.Push(v)
+	} else {
+		ctx.Push(Null{})
+	}
+}
+
+func ArrayPush(ctx *FunctionContext) {
+	value := ctx.Pop()
+	arr := ctx.Pop().AsArray(ctx)
+	key := arr.NextKey()
+	arr[key] = value
+	ctx.Push(arr)
+}
+
+func ArrayInsert(ctx *FunctionContext) {
+	value := ctx.Pop()
+	key := ctx.Pop()
+	arr := ctx.Pop().AsArray(ctx)
+	arr[key] = value
+	ctx.Push(arr)
 }

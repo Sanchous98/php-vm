@@ -2,7 +2,6 @@ package vm
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 )
 
@@ -23,7 +22,6 @@ func Juggle(x, y Type) Type { return max(x, y) }
 
 type Value interface {
 	IsRef() bool
-	Deref() *Value
 	AsInt(Context) Int
 	AsFloat(Context) Float
 	AsBool(Context) Bool
@@ -36,7 +34,6 @@ type Value interface {
 
 type Int int
 
-func (i Int) Deref() *Value           { panic("non-pointer dereference") }
 func (i Int) IsRef() bool             { return false }
 func (i Int) Type() Type              { return IntType }
 func (i Int) AsInt(Context) Int       { return i }
@@ -60,7 +57,7 @@ func (i Int) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return i.AsArray(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast integer to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", i.Type().String(), t.String()))
 	}
 }
 
@@ -90,15 +87,14 @@ func (f Float) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return f.AsArray(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast float to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().String(), t.String()))
 	}
 }
 
 type Bool bool
 
-func (b Bool) Deref() *Value { panic("non-pointer dereference") }
-func (b Bool) IsRef() bool   { return false }
-func (b Bool) Type() Type    { return BoolType }
+func (b Bool) IsRef() bool { return false }
+func (b Bool) Type() Type  { return BoolType }
 func (b Bool) AsInt(Context) Int {
 	if b {
 		return 1
@@ -132,15 +128,14 @@ func (b Bool) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return b.AsArray(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast boolean to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().String(), t.String()))
 	}
 }
 
 type String string
 
-func (s String) Deref() *Value { panic("non-pointer dereference") }
-func (s String) IsRef() bool   { return false }
-func (s String) Type() Type    { return StringType }
+func (s String) IsRef() bool { return false }
+func (s String) Type() Type  { return StringType }
 func (s String) AsInt(ctx Context) Int {
 	v, err := strconv.Atoi(string(s))
 
@@ -180,7 +175,7 @@ func (s String) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return s.AsArray(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast string to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().String(), t.String()))
 	}
 }
 
@@ -210,15 +205,14 @@ func (n Null) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return n.AsArray(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast null to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().String(), t.String()))
 	}
 }
 
 type Array map[Value]Value
 
-func (a Array) Deref() *Value { panic("non-pointer dereference") }
-func (a Array) IsRef() bool   { return false }
-func (a Array) Type() Type    { return ArrayType }
+func (a Array) IsRef() bool { return false }
+func (a Array) Type() Type  { return ArrayType }
 func (a Array) AsInt(Context) Int {
 	if len(a) > 0 {
 		return 1
@@ -255,22 +249,27 @@ func (a Array) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return a
 	default:
-		panic(fmt.Sprintf("cannot cast array to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", a.Type().String(), t.String()))
 	}
 }
 func (a Array) NextKey() Value {
-	for i := 0; i < math.MaxInt; i++ {
-		if _, ok := a[Int(i)]; !ok {
-			return Int(i)
+	var key Int
+
+	for k := range a {
+		switch k.(type) {
+		case Int:
+			key = max(k.(Int), key)
 		}
 	}
 
-	return Int(0)
+	if _, ok := a[key]; !ok {
+		return Int(0)
+	}
+
+	return key + 1
 }
 
-type Ref struct {
-	ref *Value
-}
+type Ref struct{ ref *Value }
 
 func NewRef(v *Value) Ref { return Ref{v} }
 
@@ -298,6 +297,6 @@ func (r Ref) Cast(ctx Context, t Type) Value {
 	case ArrayType:
 		return r.AsArray(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast array to %s", t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().String(), t.String()))
 	}
 }

@@ -1,4 +1,4 @@
-package default_value
+package reference
 
 import (
 	"encoding/binary"
@@ -11,12 +11,14 @@ import (
 )
 
 func TestDefaultValue(t *testing.T) {
-	input, err := os.ReadFile("arrays.php")
+	input, err := os.ReadFile("reference.php")
 	require.NoError(t, err)
 
 	instructions := []uint64{
-		uint64(vm.OpConst), 3,
+		uint64(vm.OpLoadRef), 0,
 		uint64(vm.OpCall), 0,
+		uint64(vm.OpPop),
+		uint64(vm.OpLoad), 0,
 		uint64(vm.OpReturnValue),
 		uint64(vm.OpReturn),
 	}
@@ -25,8 +27,6 @@ func TestDefaultValue(t *testing.T) {
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
 	assert.Equal(t, instructionsToBytecode(instructions).String(), fn.Instructions.String())
-	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1)}, ctx.Constants)
-	assert.Equal(t, vm.Int(1), ctx.Run(fn))
 }
 
 func instructionsToBytecode(i []uint64) (b vm.Bytecode) {

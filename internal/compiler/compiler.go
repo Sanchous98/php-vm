@@ -246,7 +246,9 @@ func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	if f >= 0 {
 		for i, arg := range c.contexts[f].Args {
 			if len(n.Args)-1 < i {
-				arg.Default.Accept(c)
+				if arg.Default != nil {
+					arg.Default.Accept(c)
+				}
 				continue
 			}
 
@@ -372,10 +374,11 @@ func (c *Compiler) ExprArray(n *ast.ExprArray) {
 }
 
 func (c *Compiler) ExprArrayDimFetch(n *ast.ExprArrayDimFetch) {
+	n.Var.Accept(c)
 	if n.Dim != nil {
 		n.Dim.Accept(c)
 	}
-	n.Var.Accept(c)
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayLookup))
 }
 
 func (c *Compiler) ExprArrayItem(n *ast.ExprArrayItem) {

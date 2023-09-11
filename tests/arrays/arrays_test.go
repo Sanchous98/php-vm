@@ -33,6 +33,11 @@ func TestArrays(t *testing.T) {
 		uint64(vm.OpArrayInsert),
 		uint64(vm.OpPop),
 		uint64(vm.OpLoad), 0,
+		uint64(vm.OpConst), 4,
+		uint64(vm.OpArrayLookup),
+		uint64(vm.OpAssign), 1,
+		uint64(vm.OpPop),
+		uint64(vm.OpLoad), 0,
 		uint64(vm.OpReturnValue),
 		uint64(vm.OpReturn),
 	}

@@ -2,6 +2,7 @@ package repl
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"github.com/spf13/cobra"
 	"io"
@@ -17,7 +18,9 @@ func start(in io.Reader, out io.Writer, comp *compiler.Compiler) {
 	scanner := bufio.NewScanner(in)
 	fmt.Printf(Prompt)
 
-	ctx := new(vm.GlobalContext)
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := vm.NewGlobalContext(parent, in, out)
 
 	for scanner.Scan() {
 		line := scanner.Bytes()

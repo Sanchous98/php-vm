@@ -31,6 +31,7 @@ func init() {
 			"strstr":        vm.NewBuiltInFunction(strstr, vm.Arg{Name: "str", Type: vm.StringType}, vm.Arg{Name: "sub", Type: vm.StringType}),
 			"stristr":       vm.NewBuiltInFunction(stristr, vm.Arg{Name: "str", Type: vm.StringType}, vm.Arg{Name: "sub", Type: vm.StringType}),
 			"microtime":     vm.NewBuiltInFunction(microtime, vm.Arg{Name: "as_float", Type: vm.BoolType, Default: vm.Bool(false)}),
+			"var_dump":      vm.NewBuiltInFunction(varDump, vm.Arg{Name: "value"}, vm.Arg{Name: "values", Variadic: true}),
 		},
 		Constants: map[string]vm.Value{
 			"PATHINFO_DIRNAME":   PathinfoDirname,

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"github.com/spf13/cobra"
 	"io"
@@ -23,14 +24,12 @@ func init() {
 
 			defer file.Close()
 
-			ctx := new(vm.GlobalContext)
+			parent, cancel := context.WithCancel(context.Background())
+			ctx := vm.NewGlobalContext(parent, cmd.InOrStdin(), cmd.OutOrStdout())
 			input, _ := io.ReadAll(file)
 			fn := comp.Compile(input, ctx)
-			res := ctx.Run(fn)
-
-			if res != nil {
-				fmt.Fprintln(cmd.OutOrStdout(), res)
-			}
+			ctx.Run(fn)
+			cancel()
 		},
 	})
 
@@ -46,7 +45,9 @@ func init() {
 
 			defer file.Close()
 
-			ctx := new(vm.GlobalContext)
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := vm.NewGlobalContext(parent, cmd.InOrStdin(), cmd.OutOrStdout())
 			input, _ := io.ReadAll(file)
 			fn := comp.Compile(input, ctx)
 

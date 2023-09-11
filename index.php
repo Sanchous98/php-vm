@@ -12,18 +12,19 @@ function fibonacci($n)
 
 	$prev = 1;
 	$current = 1;
+	$all = [];
 
 	for ($i = 2; $i < $n; $i++) {
 		$temp = $prev + $current;
 		$prev = $current;
 		$current = $temp;
+		$all[] = $current;
 	}
 
-	return $current;
+	return $all;
 }
 
-for ($i = 0; $i < 1000; $i++) {
-    $n = fibonacci(100000);
-}
-
-echo $n;
+$time = microtime(true);
+$n = fibonacci(10);
+var_dump($n);
+echo microtime(true) - $time;

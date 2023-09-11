@@ -1,6 +1,7 @@
 package std
 
 import (
+	"fmt"
 	"php-vm/internal/vm"
 	"php-vm/pkg/stdlib"
 )
@@ -15,4 +16,12 @@ func microtime(args ...vm.Value) vm.Value {
 	}
 
 	return vm.String(str)
+}
+
+func varDump(args ...vm.Value) vm.Value {
+	for _, arg := range args {
+		fmt.Println(arg.DebugInfo())
+	}
+
+	return nil
 }

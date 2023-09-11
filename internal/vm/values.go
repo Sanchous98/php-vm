@@ -3,6 +3,7 @@ package vm
 import (
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 //go:generate stringer -type=Type -linecomment
@@ -30,6 +31,7 @@ type Value interface {
 	AsArray(Context) Array
 	Cast(Context, Type) Value
 	Type() Type
+	DebugInfo() string
 }
 
 type Int int
@@ -60,6 +62,7 @@ func (i Int) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", i.Type().String(), t.String()))
 	}
 }
+func (i Int) DebugInfo() string { return fmt.Sprintf("int(%d)", i) }
 
 type Float float64
 
@@ -90,6 +93,7 @@ func (f Float) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().String(), t.String()))
 	}
 }
+func (f Float) DebugInfo() string { return fmt.Sprintf("float(%f)", f) }
 
 type Bool bool
 
@@ -131,6 +135,7 @@ func (b Bool) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().String(), t.String()))
 	}
 }
+func (b Bool) DebugInfo() string { return fmt.Sprintf("bool(%t)", b) }
 
 type String string
 
@@ -178,6 +183,7 @@ func (s String) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().String(), t.String()))
 	}
 }
+func (s String) DebugInfo() string { return fmt.Sprintf("string(%s)", s) }
 
 type Null struct{}
 
@@ -208,6 +214,7 @@ func (n Null) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().String(), t.String()))
 	}
 }
+func (n Null) DebugInfo() string { return "NULL" }
 
 type Array map[Value]Value
 
@@ -268,6 +275,15 @@ func (a Array) NextKey() Value {
 
 	return key + 1
 }
+func (a Array) DebugInfo() string {
+	var str strings.Builder
+	str.WriteString(fmt.Sprintf("array(%d) {\n", len(a)))
+	for key, value := range a {
+		str.WriteString(fmt.Sprintf("  [%v]=>\n  %s\n", key, value.DebugInfo()))
+	}
+	str.WriteByte('}')
+	return str.String()
+}
 
 type Ref struct{ ref *Value }
 
@@ -300,3 +316,4 @@ func (r Ref) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().String(), t.String()))
 	}
 }
+func (r Ref) DebugInfo() string { return "&" + (*r.Deref()).DebugInfo() }

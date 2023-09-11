@@ -9,10 +9,11 @@ type Callable interface {
 }
 
 type Arg struct {
-	Name    string
-	Type    Type
-	ByRef   bool
-	Default Value
+	Name     string
+	Type     Type
+	ByRef    bool
+	Variadic bool
+	Default  Value
 }
 
 type argList []Arg
@@ -23,7 +24,9 @@ func (a argList) Map(ctx Context, args []Value) []Value {
 			args[i] = arg.Default
 		}
 
-		args[i] = args[i].Cast(ctx, arg.Type)
+		if arg.Type > 0 {
+			args[i] = args[i].Cast(ctx, arg.Type)
+		}
 
 		if arg.ByRef {
 			args[i] = NewRef(&args[i])

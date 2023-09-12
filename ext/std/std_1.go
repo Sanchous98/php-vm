@@ -6,15 +6,15 @@ import (
 	"strings"
 )
 
-func strtoupper(args ...vm.Value) vm.String {
+func strtoupper(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.StrToUpper(string(args[0].(vm.String))))
 }
 
-func strtolower(args ...vm.Value) vm.String {
+func strtolower(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.StrToLower(string(args[0].(vm.String))))
 }
 
-func strpos(args ...vm.Value) vm.Value {
+func strpos(_ vm.Context, args ...vm.Value) vm.Value {
 	res := vm.Int(stdlib.StrPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
 
 	if res == -1 {
@@ -24,7 +24,7 @@ func strpos(args ...vm.Value) vm.Value {
 	return res
 }
 
-func stripos(args ...vm.Value) vm.Value {
+func stripos(_ vm.Context, args ...vm.Value) vm.Value {
 	res := vm.Int(stdlib.StrIPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
 
 	if res == -1 {
@@ -34,7 +34,7 @@ func stripos(args ...vm.Value) vm.Value {
 	return res
 }
 
-func strrpos(args ...vm.Value) vm.Value {
+func strrpos(_ vm.Context, args ...vm.Value) vm.Value {
 	res := vm.Int(stdlib.StrRPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
 
 	if res == -1 {
@@ -44,7 +44,7 @@ func strrpos(args ...vm.Value) vm.Value {
 	return res
 }
 
-func strripos(args ...vm.Value) vm.Value {
+func strripos(_ vm.Context, args ...vm.Value) vm.Value {
 	res := vm.Int(stdlib.StrRIPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
 
 	if res == -1 {
@@ -54,15 +54,15 @@ func strripos(args ...vm.Value) vm.Value {
 	return res
 }
 
-func strrev(args ...vm.Value) vm.String {
+func strrev(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.StrRev(string(args[0].(vm.String))))
 }
 
-func nl2br(args ...vm.Value) vm.String {
+func nl2br(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.Nl2Br(string(args[0].(vm.String))))
 }
 
-func basename(args ...vm.Value) vm.String {
+func basename(_ vm.Context, args ...vm.Value) vm.String {
 	var trimSuffix string
 
 	if args[1] != nil {
@@ -72,7 +72,7 @@ func basename(args ...vm.Value) vm.String {
 	return vm.String(stdlib.Basename(string(args[0].(vm.String)), trimSuffix))
 }
 
-func dirname(args ...vm.Value) vm.String {
+func dirname(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.Dirname(string(args[0].(vm.String))))
 }
 
@@ -84,7 +84,7 @@ const (
 	PathinfoAll = PathinfoDirname | PathinfoBasename | PathinfoExtension | PathinfoFilename
 )
 
-func pathinfo(args ...vm.Value) vm.Array {
+func pathinfo(_ vm.Context, args ...vm.Value) vm.Array {
 	path := string(args[0].(vm.String))
 	flags := args[1].(vm.Int)
 
@@ -109,15 +109,15 @@ func pathinfo(args ...vm.Value) vm.Array {
 	return res
 }
 
-func stripslashes(args ...vm.Value) vm.String {
+func stripslashes(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.StripSlashes(string(args[0].(vm.String))))
 }
 
-func stripcslashes(args ...vm.Value) vm.String {
+func stripcslashes(_ vm.Context, args ...vm.Value) vm.String {
 	return vm.String(stdlib.StripCSlashes(string(args[0].(vm.String))))
 }
 
-func strstr(args ...vm.Value) vm.Value {
+func strstr(_ vm.Context, args ...vm.Value) vm.Value {
 	haystack := args[0].(vm.String)
 	needle := args[1].(vm.String)
 
@@ -128,7 +128,7 @@ func strstr(args ...vm.Value) vm.Value {
 	return vm.Bool(false)
 }
 
-func stristr(args ...vm.Value) vm.Value {
+func stristr(_ vm.Context, args ...vm.Value) vm.Value {
 	haystack := args[0].(vm.String)
 	needle := args[1].(vm.String)
 

@@ -12,7 +12,7 @@ function fibonacci($n)
 
 	$prev = 1;
 	$current = 1;
-	$all = [];
+	$all = [1,1];
 
 	for ($i = 2; $i < $n; $i++) {
 		$temp = $prev + $current;
@@ -26,5 +26,6 @@ function fibonacci($n)
 
 $time = microtime(true);
 $n = fibonacci(10);
+$n[] = ["test"];
 var_dump($n);
 echo microtime(true) - $time;

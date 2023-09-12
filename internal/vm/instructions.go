@@ -137,7 +137,7 @@ func assignTryRef(ref *Value, v Value) {
 }
 
 //go:noinline
-func arrayCompare(ctx *FunctionContext, x, y Array) Int {
+func arrayCompare(ctx Context, x, y Array) Int {
 	if len(x) < len(y) {
 		return -1
 	} else if len(x) > len(y) {
@@ -155,7 +155,7 @@ func arrayCompare(ctx *FunctionContext, x, y Array) Int {
 	return 0
 }
 
-func compare(ctx *FunctionContext, x, y Value) Int {
+func compare(ctx Context, x, y Value) Int {
 	if x.Type() == ArrayType && y.Type() != ArrayType {
 		return +1
 	} else if x.Type() != ArrayType && y.Type() == ArrayType {

@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -31,7 +32,7 @@ type Value interface {
 	AsArray(Context) Array
 	Cast(Context, Type) Value
 	Type() Type
-	DebugInfo() string
+	DebugInfo(Context, int) string
 }
 
 type Int int
@@ -62,7 +63,9 @@ func (i Int) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", i.Type().String(), t.String()))
 	}
 }
-func (i Int) DebugInfo() string { return fmt.Sprintf("int(%d)", i) }
+func (i Int) DebugInfo(_ Context, level int) string {
+	return fmt.Sprintf("%sint(%d)", strings.Repeat(" ", level<<1), i)
+}
 
 type Float float64
 
@@ -93,7 +96,9 @@ func (f Float) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().String(), t.String()))
 	}
 }
-func (f Float) DebugInfo() string { return fmt.Sprintf("float(%f)", f) }
+func (f Float) DebugInfo(_ Context, level int) string {
+	return fmt.Sprintf("%sfloat(%f)", strings.Repeat(" ", level<<1), f)
+}
 
 type Bool bool
 
@@ -135,7 +140,9 @@ func (b Bool) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().String(), t.String()))
 	}
 }
-func (b Bool) DebugInfo() string { return fmt.Sprintf("bool(%t)", b) }
+func (b Bool) DebugInfo(_ Context, level int) string {
+	return fmt.Sprintf("%sbool(%t)", strings.Repeat(" ", level<<1), b)
+}
 
 type String string
 
@@ -183,7 +190,9 @@ func (s String) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().String(), t.String()))
 	}
 }
-func (s String) DebugInfo() string { return fmt.Sprintf("string(%s)", s) }
+func (s String) DebugInfo(_ Context, level int) string {
+	return fmt.Sprintf("%sstring(%s)", strings.Repeat(" ", level<<1), s)
+}
 
 type Null struct{}
 
@@ -214,7 +223,7 @@ func (n Null) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().String(), t.String()))
 	}
 }
-func (n Null) DebugInfo() string { return "NULL" }
+func (n Null) DebugInfo(_ Context, level int) string { return strings.Repeat(" ", level<<1) + "NULL" }
 
 type Array map[Value]Value
 
@@ -275,14 +284,28 @@ func (a Array) NextKey() Value {
 
 	return key + 1
 }
-func (a Array) DebugInfo() string {
+func (a Array) DebugInfo(ctx Context, level int) string {
 	var str strings.Builder
-	str.WriteString(fmt.Sprintf("array(%d) {\n", len(a)))
-	for key, value := range a {
-		str.WriteString(fmt.Sprintf("  [%v]=>\n  %s\n", key, value.DebugInfo()))
+	str.WriteString(fmt.Sprintf("%sarray(%d) {\n", strings.Repeat(" ", level<<1), len(a)))
+	level++
+	spaces := strings.Repeat(" ", level<<1)
+
+	for _, key := range a.Keys(ctx) {
+		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, a[key].DebugInfo(ctx, level)))
 	}
+
+	str.WriteString(strings.Repeat(" ", (level-1)<<1))
 	str.WriteByte('}')
+
 	return str.String()
+}
+func (a Array) Keys(ctx Context) []Value {
+	keys := make([]Value, 0, len(a))
+	for k := range a {
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b Value) int { return int(compare(ctx, a, b)) })
+	return keys
 }
 
 type Ref struct{ ref *Value }
@@ -316,4 +339,6 @@ func (r Ref) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().String(), t.String()))
 	}
 }
-func (r Ref) DebugInfo() string { return "&" + (*r.Deref()).DebugInfo() }
+func (r Ref) DebugInfo(ctx Context, level int) string {
+	return fmt.Sprintf("%s&%s", strings.Repeat(" ", level<<1), (*r.Deref()).DebugInfo(ctx, 0))
+}

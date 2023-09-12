@@ -38,16 +38,16 @@ func (a argList) Map(ctx Context, args []Value) []Value {
 
 type BuiltInFunction[RT Value] struct {
 	Args argList
-	Fn   func(...Value) RT
+	Fn   func(Context, ...Value) RT
 }
 
-func NewBuiltInFunction[RT Value, F ~func(...Value) RT](fn F, args ...Arg) BuiltInFunction[RT] {
+func NewBuiltInFunction[RT Value, F ~func(Context, ...Value) RT](fn F, args ...Arg) BuiltInFunction[RT] {
 	return BuiltInFunction[RT]{args, fn}
 }
 func (f BuiltInFunction[RT]) GetArgs() []Arg { return f.Args }
 func (f BuiltInFunction[RT]) Invoke(ctx Context) Value {
 	args := ctx.Slice(-len(f.Args), 0)
-	res := f.Fn(f.Args.Map(ctx, args)...)
+	res := f.Fn(ctx, f.Args.Map(ctx, args)...)
 	ctx.MovePointer(-len(f.Args))
 	return res
 }

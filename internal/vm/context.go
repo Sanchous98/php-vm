@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"sync/atomic"
-	"unsafe"
 )
 
 type Frame struct {
@@ -35,7 +34,7 @@ type GlobalContext struct {
 	in  io.Reader
 	out io.Writer
 	rx  uint64
-	ry  unsafe.Pointer
+	ry  uint64
 }
 
 func NewGlobalContext(ctx context.Context, in io.Reader, out io.Writer) *GlobalContext {

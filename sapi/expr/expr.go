@@ -14,7 +14,7 @@ func (e Expression) Execute(args map[string]any) vm.Value {
 	return e.ExecuteContext(context.Background(), args)
 }
 
-func convertValue(v any) vm.Value {
+func convertValue(ctx vm.Context, v any) vm.Value {
 	switch value := v.(type) {
 	case int:
 		return vm.Int(value)
@@ -47,7 +47,7 @@ func convertValue(v any) vm.Value {
 	case bool:
 		return vm.Bool(value)
 	default:
-		var arr vm.Array
+		arr := vm.NewArray(nil)
 
 		switch reflect.TypeOf(value).Kind() {
 		case reflect.Map:
@@ -57,14 +57,14 @@ func convertValue(v any) vm.Value {
 				k := iter.Key().Interface()
 				v := iter.Value().Interface()
 
-				arr[convertValue(k)] = convertValue(v)
+				arr.OffsetSet(ctx, convertValue(ctx, k), convertValue(ctx, convertValue(ctx, v)))
 			}
 
 			return arr
 		case reflect.Slice, reflect.Array:
 			iter := reflect.ValueOf(value)
 			for i := 0; i < iter.Len(); i++ {
-				arr[convertValue(i)] = convertValue(iter.Index(i).Interface())
+				arr.OffsetSet(ctx, convertValue(ctx, i), convertValue(ctx, iter.Index(i).Interface()))
 			}
 
 			return arr
@@ -75,14 +75,14 @@ func convertValue(v any) vm.Value {
 }
 
 func (e Expression) ExecuteContext(ctx context.Context, args map[string]any) vm.Value {
+	global := vm.NewGlobalContext(ctx, nil, nil)
 	consts := make(map[string]vm.Value)
 
 	for name, value := range args {
-		consts[name] = convertValue(value)
+		consts[name] = convertValue(global, value)
 	}
 
 	comp := compiler.NewCompiler(&compiler.Extensions{Exts: []compiler.Extension{{Constants: consts}}})
-	global := vm.NewGlobalContext(ctx, nil, nil)
 	fn := comp.Compile(unsafe.Slice(unsafe.StringData(string("<?php\n"+e+";")), len(e)), global)
 	return global.Run(fn)
 }

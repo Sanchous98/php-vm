@@ -66,14 +66,14 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	}
 }
 
-func fibonacci(args ...Value) Int {
+func fibonacci(ctx Context, args ...Value) Int {
 	n := args[0].(Int)
 
 	if n == 0 || n == 1 {
 		return n
 	}
 
-	return fibonacci(n-2) + fibonacci(n-1)
+	return fibonacci(ctx, n-2) + fibonacci(ctx, n-1)
 }
 
 func nativeFibonacci(n int) int {
@@ -121,7 +121,7 @@ func Benchmark_fibonacci(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		fibonacci(Int(10))
+		fibonacci(nil, Int(10))
 	}
 }
 

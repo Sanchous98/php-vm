@@ -11,7 +11,7 @@ import (
 )
 
 func TestDefaultValue(t *testing.T) {
-	input, err := os.ReadFile("arrays.php")
+	input, err := os.ReadFile("./default.php")
 	require.NoError(t, err)
 
 	instructions := []uint64{

@@ -2,6 +2,8 @@ package vm
 
 import (
 	"fmt"
+	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +24,17 @@ const (
 
 func Juggle(x, y Type) Type { return max(x, y) }
 
+type Countable interface {
+	Count(Context) Int
+}
+
+type ArrayAccess interface {
+	OffsetGet(Context, Value) Value
+	OffsetSet(Context, Value, Value)
+	OffsetIsSet(Context, Value) Bool
+	OffsetUnset(Context, Value)
+}
+
 type Value interface {
 	IsRef() bool
 	AsInt(Context) Int
@@ -29,7 +42,7 @@ type Value interface {
 	AsBool(Context) Bool
 	AsString(Context) String
 	AsNull(Context) Null
-	AsArray(Context) Array
+	AsArray(Context) *Array
 	Cast(Context, Type) Value
 	Type() Type
 	DebugInfo(Context, int) string
@@ -44,7 +57,7 @@ func (i Int) AsFloat(Context) Float   { return Float(i) }
 func (i Int) AsBool(Context) Bool     { return i != 0 }
 func (i Int) AsString(Context) String { return String(strconv.Itoa(int(i))) }
 func (i Int) AsNull(Context) Null     { return Null{} }
-func (i Int) AsArray(Context) Array   { return Array{Int(0): i} }
+func (i Int) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): i}} }
 func (i Int) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -77,7 +90,7 @@ func (f Float) AsFloat(Context) Float   { return f }
 func (f Float) AsBool(Context) Bool     { return f != 0 }
 func (f Float) AsString(Context) String { return String(strconv.FormatFloat(float64(f), 'g', -1, 64)) }
 func (f Float) AsNull(Context) Null     { return Null{} }
-func (f Float) AsArray(Context) Array   { return Array{Int(0): f} }
+func (f Float) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): f}} }
 func (f Float) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -121,7 +134,7 @@ func (b Bool) AsFloat(Context) Float {
 func (b Bool) AsBool(Context) Bool     { return b }
 func (b Bool) AsString(Context) String { return String(strconv.FormatBool(bool(b))) }
 func (b Bool) AsNull(Context) Null     { return Null{} }
-func (b Bool) AsArray(Context) Array   { return Array{Int(0): b} }
+func (b Bool) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): b}} }
 func (b Bool) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -171,7 +184,7 @@ func (s String) AsFloat(ctx Context) Float {
 func (s String) AsBool(Context) Bool     { return len(s) > 0 && s != "0" }
 func (s String) AsString(Context) String { return s }
 func (s String) AsNull(Context) Null     { return Null{} }
-func (s String) AsArray(Context) Array   { return Array{Int(0): s} }
+func (s String) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): s}} }
 func (s String) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -204,7 +217,7 @@ func (n Null) AsFloat(Context) Float   { return 0 }
 func (n Null) AsBool(Context) Bool     { return false }
 func (n Null) AsString(Context) String { return "" }
 func (n Null) AsNull(Context) Null     { return n }
-func (n Null) AsArray(Context) Array   { return Array{} }
+func (n Null) AsArray(Context) *Array  { return &Array{} }
 func (n Null) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -225,32 +238,77 @@ func (n Null) Cast(ctx Context, t Type) Value {
 }
 func (n Null) DebugInfo(_ Context, level int) string { return strings.Repeat(" ", level<<1) + "NULL" }
 
-type Array map[Value]Value
+type Array struct {
+	hash map[Value]Value
+	next Int
+}
 
-func (a Array) IsRef() bool { return false }
-func (a Array) Type() Type  { return ArrayType }
-func (a Array) AsInt(Context) Int {
-	if len(a) > 0 {
+func (a *Array) Count(Context) Int { return Int(len(a.hash)) }
+
+func (a *Array) Copy() *Array {
+	return &Array{
+		hash: maps.Clone(a.hash),
+		next: a.next,
+	}
+}
+func (a *Array) OffsetGet(ctx Context, key Value) Value {
+	if a.OffsetIsSet(ctx, key) {
+		return a.hash[key]
+	}
+
+	return Null{}
+}
+func (a *Array) OffsetSet(ctx Context, key Value, value Value) {
+	switch key.(type) {
+	case Float:
+		key = key.AsInt(ctx)
+	}
+	a.hash[key] = value
+	switch key.(type) {
+	case Int:
+		a.next = max(a.next, key.(Int)+1)
+	}
+}
+func (a *Array) OffsetIsSet(_ Context, key Value) Bool { return a.hash[key] != nil }
+func (a *Array) OffsetUnset(_ Context, key Value) {
+	delete(a.hash, key)
+}
+
+func NewArray(init map[Value]Value, next ...Int) *Array {
+	if init == nil {
+		init = map[Value]Value{}
+	}
+
+	if next == nil {
+		next = []Int{math.MinInt}
+	}
+
+	return &Array{hash: init, next: next[0]}
+}
+func (a *Array) IsRef() bool { return false }
+func (a *Array) Type() Type  { return ArrayType }
+func (a *Array) AsInt(Context) Int {
+	if len(a.hash) > 0 {
 		return 1
 	}
 
 	return 0
 }
-func (a Array) AsFloat(Context) Float {
-	if len(a) > 0 {
+func (a *Array) AsFloat(Context) Float {
+	if len(a.hash) > 0 {
 		return 1
 	}
 
 	return 0
 }
-func (a Array) AsBool(Context) Bool { return len(a) > 0 }
-func (a Array) AsString(ctx Context) String {
+func (a *Array) AsBool(Context) Bool { return len(a.hash) > 0 }
+func (a *Array) AsString(ctx Context) String {
 	ctx.Throw(fmt.Errorf("array to string conversion"))
 	return "Array"
 }
-func (a Array) AsNull(Context) Null   { return Null{} }
-func (a Array) AsArray(Context) Array { return a }
-func (a Array) Cast(ctx Context, t Type) Value {
+func (a *Array) AsNull(Context) Null    { return Null{} }
+func (a *Array) AsArray(Context) *Array { return a }
+func (a *Array) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
 		return a.AsInt(ctx)
@@ -268,30 +326,21 @@ func (a Array) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", a.Type().String(), t.String()))
 	}
 }
-func (a Array) NextKey() Value {
-	var key Int
-
-	for k := range a {
-		switch k.(type) {
-		case Int:
-			key = max(k.(Int), key)
-		}
-	}
-
-	if _, ok := a[key]; !ok {
+func (a *Array) NextKey() Value {
+	if a.next == math.MinInt {
 		return Int(0)
 	}
 
-	return key + 1
+	return a.next
 }
-func (a Array) DebugInfo(ctx Context, level int) string {
+func (a *Array) DebugInfo(ctx Context, level int) string {
 	var str strings.Builder
-	str.WriteString(fmt.Sprintf("%sarray(%d) {\n", strings.Repeat(" ", level<<1), len(a)))
+	str.WriteString(fmt.Sprintf("%sarray(%d) {\n", strings.Repeat(" ", level<<1), len(a.hash)))
 	level++
 	spaces := strings.Repeat(" ", level<<1)
 
 	for _, key := range a.Keys(ctx) {
-		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, a[key].DebugInfo(ctx, level)))
+		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, a.hash[key].DebugInfo(ctx, level)))
 	}
 
 	str.WriteString(strings.Repeat(" ", (level-1)<<1))
@@ -299,9 +348,9 @@ func (a Array) DebugInfo(ctx Context, level int) string {
 
 	return str.String()
 }
-func (a Array) Keys(ctx Context) []Value {
-	keys := make([]Value, 0, len(a))
-	for k := range a {
+func (a *Array) Keys(ctx Context) []Value {
+	keys := make([]Value, 0, len(a.hash))
+	for k := range a.hash {
 		keys = append(keys, k)
 	}
 	slices.SortFunc(keys, func(a, b Value) int { return int(compare(ctx, a, b)) })
@@ -320,7 +369,7 @@ func (r Ref) AsFloat(ctx Context) Float   { return (*r.Deref()).AsFloat(ctx) }
 func (r Ref) AsBool(ctx Context) Bool     { return (*r.Deref()).AsBool(ctx) }
 func (r Ref) AsString(ctx Context) String { return (*r.Deref()).AsString(ctx) }
 func (r Ref) AsNull(ctx Context) Null     { return (*r.Deref()).AsNull(ctx) }
-func (r Ref) AsArray(ctx Context) Array   { return (*r.Deref()).AsArray(ctx) }
+func (r Ref) AsArray(ctx Context) *Array  { return (*r.Deref()).AsArray(ctx) }
 func (r Ref) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:

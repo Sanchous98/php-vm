@@ -84,26 +84,26 @@ const (
 	PathinfoAll = PathinfoDirname | PathinfoBasename | PathinfoExtension | PathinfoFilename
 )
 
-func pathinfo(_ vm.Context, args ...vm.Value) vm.Array {
+func pathinfo(ctx vm.Context, args ...vm.Value) *vm.Array {
 	path := string(args[0].(vm.String))
 	flags := args[1].(vm.Int)
 
-	res := vm.Array{}
+	res := vm.NewArray(nil)
 
 	if flags&PathinfoDirname > 0 {
-		res[vm.String("dirname")] = vm.String(stdlib.Dirname(path))
+		res.OffsetSet(ctx, vm.String("dirname"), vm.String(stdlib.Dirname(path)))
 	}
 
 	if flags&PathinfoBasename > 0 {
-		res[vm.String("basename")] = vm.String(stdlib.Basename(path, ""))
+		res.OffsetSet(ctx, vm.String("basename"), vm.String(stdlib.Basename(path, "")))
 	}
 
 	if flags&PathinfoExtension > 0 {
-		res[vm.String("extension")] = vm.String(stdlib.Ext(path))
+		res.OffsetSet(ctx, vm.String("extension"), vm.String(stdlib.Ext(path)))
 	}
 
 	if flags&PathinfoFilename > 0 {
-		res[vm.String("filename")] = vm.String(strings.TrimPrefix(path, stdlib.Dirname(path)))
+		res.OffsetSet(ctx, vm.String("filename"), vm.String(strings.TrimPrefix(path, stdlib.Dirname(path))))
 	}
 
 	return res

@@ -11,7 +11,7 @@ import (
 )
 
 func TestArrays(t *testing.T) {
-	input, err := os.ReadFile("arrays.php")
+	input, err := os.ReadFile("./arrays.php")
 	require.NoError(t, err)
 
 	instructions := []uint64{
@@ -26,11 +26,13 @@ func TestArrays(t *testing.T) {
 		uint64(vm.OpLoad), 0,
 		uint64(vm.OpConst), 6,
 		uint64(vm.OpArrayPush),
+		uint64(vm.OpAssign), 0,
 		uint64(vm.OpPop),
 		uint64(vm.OpLoad), 0,
 		uint64(vm.OpConst), 7,
 		uint64(vm.OpConst), 8,
 		uint64(vm.OpArrayInsert),
+		uint64(vm.OpAssign), 0,
 		uint64(vm.OpPop),
 		uint64(vm.OpLoad), 0,
 		uint64(vm.OpConst), 4,
@@ -47,12 +49,12 @@ func TestArrays(t *testing.T) {
 	fn := comp.Compile(input, ctx)
 	assert.Equal(t, instructionsToBytecode(instructions).String(), fn.Instructions.String())
 	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.String("test"), vm.Int(2), vm.Int(3), vm.String("test2"), vm.Int(4)}, ctx.Constants)
-	assert.Equal(t, vm.Array{
+	assert.Equal(t, vm.NewArray(map[vm.Value]vm.Value{
 		vm.Int(0):          vm.Int(1),
 		vm.String("test"):  vm.Int(2),
 		vm.Int(1):          vm.Int(3),
 		vm.String("test2"): vm.Int(4),
-	}, ctx.Run(fn))
+	}, 2), ctx.Run(fn))
 }
 
 func instructionsToBytecode(i []uint64) (b vm.Bytecode) {

@@ -295,6 +295,8 @@ func (c *Compiler) ExprAssign(n *ast.ExprAssign) {
 			n.Expr.Accept(c)
 			*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayPush))
 		}
+		n.Var.(*ast.ExprArrayDimFetch).Var.Accept(c)
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssign))
 	case *ast.ExprPropertyFetch:
 		// TODO:
 	default:
@@ -689,18 +691,16 @@ func (c *Compiler) ScalarDnumber(n *ast.ScalarDnumber) {
 }
 
 func (c *Compiler) ScalarEncapsed(n *ast.ScalarEncapsed) {
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpRopeInit))
 	for _, part := range n.Parts {
 		part.Accept(c)
 	}
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpRopeEnd))
 }
 
 func (c *Compiler) ScalarEncapsedStringPart(n *ast.ScalarEncapsedStringPart) {
 	s := unsafe.String(unsafe.SliceData(n.Value), len(n.Value))
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.String(s))))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpRopePush))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConcat))
 }
 
 func (c *Compiler) ScalarEncapsedStringVar(n *ast.ScalarEncapsedStringVar) {
@@ -710,7 +710,7 @@ func (c *Compiler) ScalarEncapsedStringVar(n *ast.ScalarEncapsedStringVar) {
 func (c *Compiler) ScalarEncapsedStringBrackets(n *ast.ScalarEncapsedStringBrackets) {
 	n.Var.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpRopePush))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConcat))
 }
 
 func (c *Compiler) StmtEcho(n *ast.StmtEcho) {

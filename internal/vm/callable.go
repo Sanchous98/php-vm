@@ -140,12 +140,6 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 			ArrayPush(noescape(&ctx))
 		case OpConcat:
 			Concat(noescape(&ctx))
-		case OpRopeInit:
-			RopeInit(noescape(&ctx))
-		case OpRopePush:
-			RopePush(noescape(&ctx))
-		case OpRopeEnd:
-			RopeEnd(noescape(&ctx))
 		case OpAssertType:
 			AssertType(noescape(&ctx))
 		case OpAssign:

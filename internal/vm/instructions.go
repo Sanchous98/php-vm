@@ -7,7 +7,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"unsafe"
 )
 
 type Bytecode []byte
@@ -93,9 +92,6 @@ const (
 	OpArrayInsert                    // ARRAY_INSERT
 	OpArrayPush                      // ARRAY_PUSH
 	OpConcat                         // CONCAT
-	OpRopeInit                       // ROPE_INIT
-	OpRopePush                       // ROPE_PUSH
-	OpRopeEnd                        // ROPE_END
 
 	_opOneOperand      Operator = iota - 1
 	OpAssertType                // ASSERT_TYPE
@@ -137,17 +133,17 @@ func assignTryRef(ref *Value, v Value) {
 }
 
 //go:noinline
-func arrayCompare(ctx Context, x, y Array) Int {
-	if len(x) < len(y) {
+func arrayCompare(ctx Context, x, y *Array) Int {
+	if x.Count(ctx) < y.Count(ctx) {
 		return -1
-	} else if len(x) > len(y) {
+	} else if x.Count(ctx) > y.Count(ctx) {
 		return +1
 	}
 
-	for key, val := range x {
-		if v, ok := y[key]; !ok {
+	for key, val := range x.hash {
+		if y.OffsetIsSet(ctx, key) {
 			return +1
-		} else if c := compare(ctx, val, v); c != 0 {
+		} else if c := compare(ctx, val, y.OffsetGet(ctx, key)); c != 0 {
 			return c
 		}
 	}
@@ -234,7 +230,7 @@ func equal(ctx *FunctionContext, x, y Value) Bool {
 	as := Juggle(x.Type(), y.Type())
 
 	if as == ArrayType {
-		return Bool(maps.EqualFunc(x.AsArray(ctx), y.AsArray(ctx), func(x, y Value) bool {
+		return Bool(maps.EqualFunc(x.AsArray(ctx).hash, y.AsArray(ctx).hash, func(x, y Value) bool {
 			return bool(equal(ctx, x, y))
 		}))
 	}
@@ -494,10 +490,10 @@ func Add(ctx *FunctionContext) {
 }
 
 //go:noinline
-func addArray(left, right Array) Array {
-	result := maps.Clone(right)
-	maps.Copy(result, left)
-	return result
+func addArray(left, right *Array) *Array {
+	result := maps.Clone(right.hash)
+	maps.Copy(result, left.hash)
+	return &Array{hash: result, next: max(left.next, right.next)}
 }
 
 // Sub => 1 - 2
@@ -728,48 +724,28 @@ func IsSet(ctx *FunctionContext) {
 	ctx.SetTop(Bool(v != nil && v != Null{}))
 }
 
-// RopeInit => "encapsed $str"
-func RopeInit(ctx *FunctionContext) {
-	ctx.global.ry = unsafe.Pointer(new(strings.Builder))
-}
-
-func RopePush(ctx *FunctionContext) {
-	(*strings.Builder)(ctx.global.ry).WriteString(string(ctx.Pop().AsString(ctx)))
-}
-
-func RopeEnd(ctx *FunctionContext) {
-	s := (*strings.Builder)(ctx.global.ry).String()
-	ctx.Push(String(s))
-	ctx.global.ry = unsafe.Pointer(uintptr(0))
-}
-
 func ArrayInit(ctx *FunctionContext) {
-	ctx.Push(Array{})
+	ctx.Push(NewArray(nil))
 }
 
 func ArrayLookup(ctx *FunctionContext) {
 	key := ctx.Pop()
 	arr := ctx.Pop().AsArray(ctx)
-
-	if v, ok := arr[key]; ok {
-		ctx.Push(v)
-	} else {
-		ctx.Push(Null{})
-	}
+	ctx.Push(arr.OffsetGet(ctx, key))
 }
 
 func ArrayPush(ctx *FunctionContext) {
 	value := ctx.Pop()
-	arr := ctx.Pop().AsArray(ctx)
+	arr := ctx.Pop().AsArray(ctx).Copy()
 	key := arr.NextKey()
-	arr[key] = value
+	arr.OffsetSet(ctx, key, value)
 	ctx.Push(arr)
 }
 
 func ArrayInsert(ctx *FunctionContext) {
 	value := ctx.Pop()
 	key := ctx.Pop()
-	arr := ctx.Pop().AsArray(ctx)
-	arr[key] = value
+	arr := ctx.Pop().AsArray(ctx).Copy()
+	arr.OffsetSet(ctx, key, value)
 	ctx.Push(arr)
 }

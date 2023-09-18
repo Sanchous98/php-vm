@@ -14,17 +14,16 @@ func TestDefaultValue(t *testing.T) {
 	input, err := os.ReadFile("./default.php")
 	require.NoError(t, err)
 
-	instructions := []uint64{
+	instructions := [...]uint64{
 		uint64(vm.OpConst), 3,
 		uint64(vm.OpCall), 0,
 		uint64(vm.OpReturnValue),
-		uint64(vm.OpReturn),
 	}
 
 	comp := compiler.NewCompiler(nil)
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
-	assert.Equal(t, instructionsToBytecode(instructions).String(), fn.Instructions.String())
+	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), fn.Instructions.String())
 	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1)}, ctx.Constants)
 	assert.Equal(t, vm.Int(1), ctx.Run(fn))
 }

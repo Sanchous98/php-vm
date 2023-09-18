@@ -7,12 +7,6 @@ import (
 	"sync/atomic"
 )
 
-type Frame struct {
-	ctx      FunctionContext
-	bytecode Bytecode
-	fp       int
-}
-
 type Context interface {
 	context.Context
 	stackIface[Value]
@@ -33,8 +27,7 @@ type GlobalContext struct {
 
 	in  io.Reader
 	out io.Writer
-	rx  uint64
-	ry  uint64
+	r1  uint64
 }
 
 func NewGlobalContext(ctx context.Context, in io.Reader, out io.Writer) *GlobalContext {

@@ -43,6 +43,7 @@ type Value interface {
 	AsString(Context) String
 	AsNull(Context) Null
 	AsArray(Context) *Array
+	AsObject(Context) *Object
 	Cast(Context, Type) Value
 	Type() Type
 	DebugInfo(Context, int) string
@@ -50,14 +51,15 @@ type Value interface {
 
 type Int int
 
-func (i Int) IsRef() bool             { return false }
-func (i Int) Type() Type              { return IntType }
-func (i Int) AsInt(Context) Int       { return i }
-func (i Int) AsFloat(Context) Float   { return Float(i) }
-func (i Int) AsBool(Context) Bool     { return i != 0 }
-func (i Int) AsString(Context) String { return String(strconv.Itoa(int(i))) }
-func (i Int) AsNull(Context) Null     { return Null{} }
-func (i Int) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): i}} }
+func (i Int) IsRef() bool              { return false }
+func (i Int) Type() Type               { return IntType }
+func (i Int) AsInt(Context) Int        { return i }
+func (i Int) AsFloat(Context) Float    { return Float(i) }
+func (i Int) AsBool(Context) Bool      { return i != 0 }
+func (i Int) AsString(Context) String  { return String(strconv.Itoa(int(i))) }
+func (i Int) AsNull(Context) Null      { return Null{} }
+func (i Int) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): i}) }
+func (i Int) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": i}} }
 func (i Int) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -72,6 +74,8 @@ func (i Int) Cast(ctx Context, t Type) Value {
 		return i.AsNull(ctx)
 	case ArrayType:
 		return i.AsArray(ctx)
+	case ObjectType:
+		return i.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", i.Type().String(), t.String()))
 	}
@@ -82,15 +86,16 @@ func (i Int) DebugInfo(_ Context, level int) string {
 
 type Float float64
 
-func (f Float) Deref() *Value           { panic("non-pointer dereference") }
-func (f Float) IsRef() bool             { return false }
-func (f Float) Type() Type              { return FloatType }
-func (f Float) AsInt(Context) Int       { return Int(f) }
-func (f Float) AsFloat(Context) Float   { return f }
-func (f Float) AsBool(Context) Bool     { return f != 0 }
-func (f Float) AsString(Context) String { return String(strconv.FormatFloat(float64(f), 'g', -1, 64)) }
-func (f Float) AsNull(Context) Null     { return Null{} }
-func (f Float) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): f}} }
+func (f Float) Deref() *Value            { panic("non-pointer dereference") }
+func (f Float) IsRef() bool              { return false }
+func (f Float) Type() Type               { return FloatType }
+func (f Float) AsInt(Context) Int        { return Int(f) }
+func (f Float) AsFloat(Context) Float    { return f }
+func (f Float) AsBool(Context) Bool      { return f != 0 }
+func (f Float) AsString(Context) String  { return String(strconv.FormatFloat(float64(f), 'g', -1, 64)) }
+func (f Float) AsNull(Context) Null      { return Null{} }
+func (f Float) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): f}) }
+func (f Float) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": f}} }
 func (f Float) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -105,6 +110,8 @@ func (f Float) Cast(ctx Context, t Type) Value {
 		return f.AsNull(ctx)
 	case ArrayType:
 		return f.AsArray(ctx)
+	case ObjectType:
+		return f.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().String(), t.String()))
 	}
@@ -131,10 +138,11 @@ func (b Bool) AsFloat(Context) Float {
 
 	return 0
 }
-func (b Bool) AsBool(Context) Bool     { return b }
-func (b Bool) AsString(Context) String { return String(strconv.FormatBool(bool(b))) }
-func (b Bool) AsNull(Context) Null     { return Null{} }
-func (b Bool) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): b}} }
+func (b Bool) AsBool(Context) Bool      { return b }
+func (b Bool) AsString(Context) String  { return String(strconv.FormatBool(bool(b))) }
+func (b Bool) AsNull(Context) Null      { return Null{} }
+func (b Bool) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): b}) }
+func (b Bool) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": b}} }
 func (b Bool) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -149,6 +157,8 @@ func (b Bool) Cast(ctx Context, t Type) Value {
 		return b.AsNull(ctx)
 	case ArrayType:
 		return b.AsArray(ctx)
+	case ObjectType:
+		return b.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().String(), t.String()))
 	}
@@ -181,10 +191,11 @@ func (s String) AsFloat(ctx Context) Float {
 
 	return Float(v)
 }
-func (s String) AsBool(Context) Bool     { return len(s) > 0 && s != "0" }
-func (s String) AsString(Context) String { return s }
-func (s String) AsNull(Context) Null     { return Null{} }
-func (s String) AsArray(Context) *Array  { return &Array{hash: map[Value]Value{Int(0): s}} }
+func (s String) AsBool(Context) Bool      { return len(s) > 0 && s != "0" }
+func (s String) AsString(Context) String  { return s }
+func (s String) AsNull(Context) Null      { return Null{} }
+func (s String) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): s}) }
+func (s String) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": s}} }
 func (s String) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -199,25 +210,29 @@ func (s String) Cast(ctx Context, t Type) Value {
 		return s.AsNull(ctx)
 	case ArrayType:
 		return s.AsArray(ctx)
+	case ObjectType:
+		return s.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().String(), t.String()))
 	}
 }
+func (s String) String() string { return strconv.Quote(string(s)) }
 func (s String) DebugInfo(_ Context, level int) string {
 	return fmt.Sprintf("%sstring(%s)", strings.Repeat(" ", level<<1), s)
 }
 
 type Null struct{}
 
-func (n Null) Deref() *Value           { panic("non-pointer dereference") }
-func (n Null) IsRef() bool             { return false }
-func (n Null) Type() Type              { return NullType }
-func (n Null) AsInt(Context) Int       { return 0 }
-func (n Null) AsFloat(Context) Float   { return 0 }
-func (n Null) AsBool(Context) Bool     { return false }
-func (n Null) AsString(Context) String { return "" }
-func (n Null) AsNull(Context) Null     { return n }
-func (n Null) AsArray(Context) *Array  { return &Array{} }
+func (n Null) Deref() *Value            { panic("non-pointer dereference") }
+func (n Null) IsRef() bool              { return false }
+func (n Null) Type() Type               { return NullType }
+func (n Null) AsInt(Context) Int        { return 0 }
+func (n Null) AsFloat(Context) Float    { return 0 }
+func (n Null) AsBool(Context) Bool      { return false }
+func (n Null) AsString(Context) String  { return "" }
+func (n Null) AsNull(Context) Null      { return n }
+func (n Null) AsArray(Context) *Array   { return NewArray(nil) }
+func (n Null) AsObject(Context) *Object { return &Object{props: map[String]Value{}} }
 func (n Null) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -232,6 +247,8 @@ func (n Null) Cast(ctx Context, t Type) Value {
 		return n
 	case ArrayType:
 		return n.AsArray(ctx)
+	case ObjectType:
+		return n.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().String(), t.String()))
 	}
@@ -239,7 +256,7 @@ func (n Null) Cast(ctx Context, t Type) Value {
 func (n Null) DebugInfo(_ Context, level int) string { return strings.Repeat(" ", level<<1) + "NULL" }
 
 type Array struct {
-	hash map[Value]Value
+	hash map[Value]Ref
 	next Int
 }
 
@@ -251,42 +268,64 @@ func (a *Array) Copy() *Array {
 		next: a.next,
 	}
 }
-func (a *Array) OffsetGet(ctx Context, key Value) Value {
-	if a.OffsetIsSet(ctx, key) {
-		return a.hash[key]
+func (a *Array) access(key Value) (v Ref, ok bool) {
+	v, ok = a.hash[key]
+	return
+}
+func (a *Array) assign(ctx Context, key Value) Ref {
+	if key == nil {
+		if a.next == math.MinInt {
+			a.next = 0
+		}
+
+		key = a.next
 	}
 
-	return Null{}
-}
-func (a *Array) OffsetSet(ctx Context, key Value, value Value) {
-	switch key.(type) {
-	case Float:
+	if ref, ok := a.access(key); ok {
+		return ref
+	}
+
+	switch key.Type() {
+	case IntType, FloatType:
 		key = key.AsInt(ctx)
+		a.next = key.(Int) + 1
 	}
-	a.hash[key] = value
-	switch key.(type) {
-	case Int:
-		a.next = max(a.next, key.(Int)+1)
-	}
+
+	a.hash[key] = NewRef(nil)
+	return a.hash[key]
 }
-func (a *Array) OffsetIsSet(_ Context, key Value) Bool { return a.hash[key] != nil }
-func (a *Array) OffsetUnset(_ Context, key Value) {
-	delete(a.hash, key)
-}
+func (a *Array) delete(key Value) { delete(a.hash, key) }
 
 func NewArray(init map[Value]Value, next ...Int) *Array {
-	if init == nil {
-		init = map[Value]Value{}
-	}
-
 	if next == nil {
 		next = []Int{math.MinInt}
 	}
 
-	return &Array{hash: init, next: next[0]}
+	arr := &Array{hash: make(map[Value]Ref, len(init)), next: next[0]}
+
+	for k, v := range init {
+		r := v
+		arr.hash[k] = NewRef(&r)
+	}
+
+	return arr
 }
-func (a *Array) IsRef() bool { return false }
-func (a *Array) Type() Type  { return ArrayType }
+
+func (a *Array) OffsetGet(_ Context, key Value) Value {
+	if ref, ok := a.access(key); ok {
+		return *ref.Deref()
+	}
+
+	return Null{}
+}
+func (a *Array) OffsetSet(ctx Context, key Value, value Value) { *a.assign(ctx, key).Deref() = value }
+func (a *Array) OffsetIsSet(_ Context, key Value) Bool {
+	_, ok := a.access(key)
+	return Bool(ok)
+}
+func (a *Array) OffsetUnset(_ Context, key Value) { a.delete(key) }
+func (a *Array) IsRef() bool                      { return false }
+func (a *Array) Type() Type                       { return ArrayType }
 func (a *Array) AsInt(Context) Int {
 	if len(a.hash) > 0 {
 		return 1
@@ -308,6 +347,15 @@ func (a *Array) AsString(ctx Context) String {
 }
 func (a *Array) AsNull(Context) Null    { return Null{} }
 func (a *Array) AsArray(Context) *Array { return a }
+func (a *Array) AsObject(ctx Context) *Object {
+	props := make(map[String]Value, len(a.hash))
+
+	for k, v := range a.hash {
+		props[k.AsString(ctx)] = v
+	}
+
+	return &Object{props: props}
+}
 func (a *Array) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -322,6 +370,8 @@ func (a *Array) Cast(ctx Context, t Type) Value {
 		return a.AsNull(ctx)
 	case ArrayType:
 		return a
+	case ObjectType:
+		return a.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", a.Type().String(), t.String()))
 	}
@@ -340,7 +390,7 @@ func (a *Array) DebugInfo(ctx Context, level int) string {
 	spaces := strings.Repeat(" ", level<<1)
 
 	for _, key := range a.Keys(ctx) {
-		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, a.hash[key].DebugInfo(ctx, level)))
+		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, (*a.hash[key].Deref()).DebugInfo(ctx, level)))
 	}
 
 	str.WriteString(strings.Repeat(" ", (level-1)<<1))
@@ -359,17 +409,25 @@ func (a *Array) Keys(ctx Context) []Value {
 
 type Ref struct{ ref *Value }
 
-func NewRef(v *Value) Ref { return Ref{v} }
+func NewRef(v *Value) Ref {
+	if v == nil {
+		n := Value(Null{})
+		v = &n
+	}
 
-func (r Ref) IsRef() bool                 { return true }
-func (r Ref) Deref() *Value               { return r.ref }
-func (r Ref) Type() Type                  { return (*r.Deref()).Type() }
-func (r Ref) AsInt(ctx Context) Int       { return (*r.Deref()).AsInt(ctx) }
-func (r Ref) AsFloat(ctx Context) Float   { return (*r.Deref()).AsFloat(ctx) }
-func (r Ref) AsBool(ctx Context) Bool     { return (*r.Deref()).AsBool(ctx) }
-func (r Ref) AsString(ctx Context) String { return (*r.Deref()).AsString(ctx) }
-func (r Ref) AsNull(ctx Context) Null     { return (*r.Deref()).AsNull(ctx) }
-func (r Ref) AsArray(ctx Context) *Array  { return (*r.Deref()).AsArray(ctx) }
+	return Ref{v}
+}
+
+func (r Ref) IsRef() bool                  { return true }
+func (r Ref) Deref() *Value                { return r.ref }
+func (r Ref) Type() Type                   { return (*r.Deref()).Type() }
+func (r Ref) AsInt(ctx Context) Int        { return (*r.Deref()).AsInt(ctx) }
+func (r Ref) AsFloat(ctx Context) Float    { return (*r.Deref()).AsFloat(ctx) }
+func (r Ref) AsBool(ctx Context) Bool      { return (*r.Deref()).AsBool(ctx) }
+func (r Ref) AsString(ctx Context) String  { return (*r.Deref()).AsString(ctx) }
+func (r Ref) AsNull(ctx Context) Null      { return (*r.Deref()).AsNull(ctx) }
+func (r Ref) AsArray(ctx Context) *Array   { return (*r.Deref()).AsArray(ctx) }
+func (r Ref) AsObject(ctx Context) *Object { return (*r.Deref()).AsObject(ctx) }
 func (r Ref) Cast(ctx Context, t Type) Value {
 	switch t {
 	case IntType:
@@ -384,10 +442,86 @@ func (r Ref) Cast(ctx Context, t Type) Value {
 		return r.AsNull(ctx)
 	case ArrayType:
 		return r.AsArray(ctx)
+	case ObjectType:
+		return r.AsObject(ctx)
 	default:
 		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().String(), t.String()))
 	}
 }
 func (r Ref) DebugInfo(ctx Context, level int) string {
 	return fmt.Sprintf("%s&%s", strings.Repeat(" ", level<<1), (*r.Deref()).DebugInfo(ctx, 0))
+}
+
+type Object struct {
+	props map[String]Value
+}
+
+func (o *Object) OffsetGet(ctx Context, key Value) Value {
+	if o.OffsetIsSet(ctx, key.AsString(ctx)) {
+		return o.props[key.AsString(ctx)]
+	}
+
+	return Null{}
+}
+func (o *Object) OffsetSet(ctx Context, key Value, value Value) { o.props[key.AsString(ctx)] = value }
+func (o *Object) OffsetIsSet(ctx Context, key Value) Bool       { return o.props[key.AsString(ctx)] != nil }
+func (o *Object) OffsetUnset(ctx Context, key Value)            { delete(o.props, key.AsString(ctx)) }
+func (o *Object) IsRef() bool                                   { return false }
+func (o *Object) AsInt(Context) Int                             { return 1 }
+func (o *Object) AsFloat(Context) Float                         { return 1 }
+func (o *Object) AsBool(Context) Bool                           { return true }
+func (o *Object) AsString(Context) String                       { panic("cannot be converted to string") }
+func (o *Object) AsNull(Context) Null                           { return Null{} }
+func (o *Object) Type() Type                                    { return ObjectType }
+func (o *Object) AsArray(Context) *Array {
+	arr := make(map[Value]Value, len(o.props))
+
+	for k, v := range o.props {
+		arr[k] = v
+	}
+
+	return NewArray(arr)
+}
+func (o *Object) AsObject(Context) *Object { return o }
+func (o *Object) Cast(ctx Context, t Type) Value {
+	switch t {
+	case IntType:
+		return o.AsInt(ctx)
+	case FloatType:
+		return o.AsFloat(ctx)
+	case BoolType:
+		return o.AsBool(ctx)
+	case StringType:
+		return o.AsString(ctx)
+	case NullType:
+		return o.AsNull(ctx)
+	case ArrayType:
+		return o.AsArray(ctx)
+	case ObjectType:
+		return o
+	default:
+		panic(fmt.Sprintf("cannot cast %s to %s", o.Type().String(), t.String()))
+	}
+}
+func (o *Object) Keys() []String {
+	keys := make([]String, 0, len(o.props))
+	for k := range o.props {
+		keys = append(keys, k)
+	}
+	return keys
+}
+func (o *Object) DebugInfo(ctx Context, level int) string {
+	var str strings.Builder
+	str.WriteString(fmt.Sprintf("%sobject(stdClass)#%d (%d) {\n", strings.Repeat(" ", level<<1), 1, len(o.props)))
+	level++
+	spaces := strings.Repeat(" ", level<<1)
+
+	for _, key := range o.Keys() {
+		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, o.props[key].DebugInfo(ctx, level)))
+	}
+
+	str.WriteString(strings.Repeat(" ", (level-1)<<1))
+	str.WriteByte('}')
+
+	return str.String()
 }

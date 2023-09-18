@@ -3,7 +3,7 @@ module php-vm
 go 1.21
 
 require (
-	github.com/Sanchous98/go-di/v2 v2.1.1
+	github.com/Sanchous98/go-di/v2 v2.1.2
 	github.com/VKCOM/php-parser v0.8.2
 	github.com/spf13/cobra v1.7.0
 	github.com/stretchr/testify v1.8.4

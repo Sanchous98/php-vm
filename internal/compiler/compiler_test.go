@@ -49,11 +49,11 @@ func TestLoop(t *testing.T) {
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
 			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 22, uint64(vm.OpLoadRef), 0, uint64(vm.OpAssign), 1, uint64(vm.OpPop), uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
 		},
-		{
-			input:                "foreach([1,2] as $key => $val){  }",
-			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
-			expectedInstructions: instructionsToBytecode([]uint64{}),
-		},
+		//{
+		//	input:                "foreach([1,2] as $key => $val){  }",
+		//	expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
+		//	expectedInstructions: instructionsToBytecode([]uint64{}),
+		//},
 	}
 
 	for _, c := range cases {

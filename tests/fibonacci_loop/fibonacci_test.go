@@ -14,7 +14,7 @@ func TestFibonacciLoop(t *testing.T) {
 	input, err := os.ReadFile("fibonacci.php")
 	require.NoError(t, err)
 
-	instructions := []uint64{
+	instructions := [...]uint64{
 		uint64(vm.OpLoad), 0, // 00000: LOAD          0
 		uint64(vm.OpConst), 3, // 00002: CONST         3
 		uint64(vm.OpIdentical),     // 00004: IDENTICAL
@@ -61,7 +61,7 @@ func TestFibonacciLoop(t *testing.T) {
 	comp := compiler.NewCompiler(nil)
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
-	assert.Equal(t, instructionsToBytecode(instructions).String(), ctx.Functions[0].(vm.CompiledFunction).Instructions.String())
+	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), ctx.Functions[0].(vm.CompiledFunction).Instructions.String())
 	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(2), vm.Int(1), vm.Int(10)}, ctx.Constants)
 	assert.Equal(t, vm.Int(55), ctx.Run(fn))
 }

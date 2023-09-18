@@ -130,14 +130,26 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 			LessOrEqual(noescape(&ctx))
 		case OpCompare:
 			Compare(noescape(&ctx))
-		case OpArrayInit:
-			ArrayInit(noescape(&ctx))
-		case OpArrayLookup:
-			ArrayLookup(noescape(&ctx))
-		case OpArrayInsert:
-			ArrayInsert(noescape(&ctx))
-		case OpArrayPush:
-			ArrayPush(noescape(&ctx))
+		case OpAssignRef:
+			AssignRef(noescape(&ctx))
+		case OpArrayNew:
+			ArrayNew(noescape(&ctx))
+		case OpArrayAccessRead:
+			ArrayAccessRead(noescape(&ctx))
+		case OpArrayAccessWrite:
+			ArrayAccessWrite(noescape(&ctx))
+		case OpArrayAccessPush:
+			ArrayAccessPush(noescape(&ctx))
+		case OpArrayUnset:
+			ArrayUnset(noescape(&ctx))
+		case OpPropertyGet:
+			PropertyGet(noescape(&ctx))
+		case OpPropertySet:
+			PropertySet(noescape(&ctx))
+		case OpPropertyIsSet:
+			PropertyIsSet(noescape(&ctx))
+		case OpPropertyUnset:
+			PropertyUnset(noescape(&ctx))
 		case OpConcat:
 			Concat(noescape(&ctx))
 		case OpAssertType:

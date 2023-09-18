@@ -1,5 +1,5 @@
-github.com/Sanchous98/go-di/v2 v2.1.1 h1:tAbsEU5wKRDHYYYt8NLGBSahXOwZ6oL7X/XQ45tmijU=
-github.com/Sanchous98/go-di/v2 v2.1.1/go.mod h1:MLQYdks0Z1NRP1TSbTdz9gmTNFoWxEFIIHNFDd+RXeo=
+github.com/Sanchous98/go-di/v2 v2.1.2 h1:NdjxPznCzwBEuKlREXPJPBliSZpdT3uSrH+8Q8wkiZk=
+github.com/Sanchous98/go-di/v2 v2.1.2/go.mod h1:MLQYdks0Z1NRP1TSbTdz9gmTNFoWxEFIIHNFDd+RXeo=
 github.com/VKCOM/php-parser v0.8.2 h1:2wNlV2AT8rCA5FOROlYoS/yVc5fA2TBbBLAe0ApKDXI=
 github.com/VKCOM/php-parser v0.8.2/go.mod h1:wLtaD4M5K8bJPwjkl4BVone8dbMiG1OApbMKdjubCEw=
 github.com/cpuguy83/go-md2man/v2 v2.0.2/go.mod h1:tgQtvFlXSQOSOSIRvRPT7W67SCa46tRHOmNcaadrF8o=

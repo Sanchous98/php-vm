@@ -56,13 +56,14 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturnValue))
 
+	fn := CompiledFunction{
+		Instructions: bytecode,
+	}
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		ctx.Run(CompiledFunction{
-			Instructions: bytecode,
-		})
+		ctx.Run(fn)
 	}
 }
 

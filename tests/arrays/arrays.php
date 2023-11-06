@@ -1,7 +1,5 @@
 <?php
 
-$time = microtime(true);
-
 for ($i = 0; $i < 100000; $i++) {
     $arr = [1, "test" => 2];
     $arr[] = 3;
@@ -10,5 +8,3 @@ for ($i = 0; $i < 100000; $i++) {
     $arr["test3"] = 6;
     $read = $arr["test"];
 }
-
-echo microtime(true) - $time;

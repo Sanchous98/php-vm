@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
-	"sync/atomic"
+	"sync"
 )
 
 type Context interface {
@@ -23,7 +23,7 @@ type GlobalContext struct {
 
 	Constants   []Value
 	Functions   []Callable
-	initialized atomic.Bool
+	initialized sync.Once
 
 	in  io.Reader
 	out io.Writer
@@ -46,11 +46,7 @@ func NewGlobalContext(ctx context.Context, in io.Reader, out io.Writer) *GlobalC
 	return &GlobalContext{Context: ctx, in: in, out: out}
 }
 
-func (g *GlobalContext) Init() {
-	if !g.initialized.Swap(true) {
-		g.Stack.Init()
-	}
-}
+func (g *GlobalContext) Init()                          { g.initialized.Do(g.Stack.Init) }
 func (g *GlobalContext) Parent() Context                { return nil }
 func (g *GlobalContext) Global() *GlobalContext         { return g }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
@@ -63,9 +59,8 @@ func (g *GlobalContext) Run(fn CompiledFunction) Value {
 type FunctionContext struct {
 	Context
 
-	global     *GlobalContext
+	global     *GlobalContext // faster access to GlobalContext
 	vars, args []Value
-	symbols    map[String]int
 	pc, fp     int // Registers
 }
 

@@ -27,17 +27,17 @@ func TestLoop(t *testing.T) {
 		{
 			input:                "while($i<5){ $i++; }",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(5)},
-			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpLoad), 0, uint64(vm.OpConst), 3, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 12, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 0, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpLoad), 0, uint64(vm.OpConst), 3, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 12, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 0, uint64(vm.OpReturn)}),
 		},
 		{
 			input:                "for($i=0;$i<5;$i++){}",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
-			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 17, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 17, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpReturn)}),
 		},
 		{
 			input:                "for($i=0;$i<5;$i++){}",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
-			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 17, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 17, uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpReturn)}),
 		},
 		{
 			input:                "do{ $i++; } while($i < 5)",
@@ -47,13 +47,8 @@ func TestLoop(t *testing.T) {
 		{
 			input:                "for($i=0;$i<5;$i++){ $x = &$i; }",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
-			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 22, uint64(vm.OpLoadRef), 0, uint64(vm.OpAssign), 1, uint64(vm.OpPop), uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpAssign), 0, uint64(vm.OpPop), uint64(vm.OpLoad), 0, uint64(vm.OpConst), 4, uint64(vm.OpLess), uint64(vm.OpJumpFalse), 22, uint64(vm.OpLoadRef), 0, uint64(vm.OpAssign), 1, uint64(vm.OpPop), uint64(vm.OpPostIncrement), 0, uint64(vm.OpPop), uint64(vm.OpJump), 5, uint64(vm.OpReturn)}),
 		},
-		//{
-		//	input:                "foreach([1,2] as $key => $val){  }",
-		//	expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(5)},
-		//	expectedInstructions: instructionsToBytecode([]uint64{}),
-		//},
 	}
 
 	for _, c := range cases {
@@ -172,7 +167,7 @@ func TestBranches(t *testing.T) {
 		{
 			input:                "if (true) {}\n",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}},
-			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 0, uint64(vm.OpJumpFalse), 4, uint64(vm.OpNoop), uint64(vm.OpReturn)}),
+			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 0, uint64(vm.OpJumpFalse), 4, uint64(vm.OpReturn)}),
 		},
 	}
 
@@ -248,6 +243,31 @@ func TestArithmetic(t *testing.T) {
 			input:                "2 >> 1",
 			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(2), vm.Int(1)},
 			expectedInstructions: instructionsToBytecode([]uint64{uint64(vm.OpConst), 3, uint64(vm.OpConst), 4, uint64(vm.OpShiftRight), uint64(vm.OpPop), uint64(vm.OpReturn)}),
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.input, func(t *testing.T) {
+			compiler := NewCompiler(nil)
+			ctx := new(vm.GlobalContext)
+			fn := compiler.Compile([]byte(fmt.Sprintf("<?php\n%s;", c.input)), ctx)
+			assert.Equal(t, c.expectedInstructions, fn.Instructions)
+			assert.Equal(t, c.expectedConstants, ctx.Constants)
+		})
+	}
+}
+
+func TestIterators(t *testing.T) {
+	cases := [...]compilerTestCase{
+		{
+			input:                "foreach([1,2] as $key => $val){  }",
+			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
+			expectedInstructions: instructionsToBytecode([]uint64{}),
+		},
+		{
+			input:                "foreach([1,2] as $val){  }",
+			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
+			expectedInstructions: instructionsToBytecode([]uint64{}),
 		},
 	}
 

@@ -1,14 +1,9 @@
 <?php
 
-function test($n) {
-    $n[] = 1;
+function test(int $i): int {
+    echo $i, "\n";
 }
 
-$x = [];
-
-$time = microtime(true);
-for ($i = 0; $i < 100000; $i++) {
-    test($x);
+for ($i = 0; $i < 1000; $i++) {
+    test($i);
 }
-
-echo microtime(true) - $time;

@@ -58,11 +58,9 @@ type CompiledFunction struct {
 }
 
 func (f CompiledFunction) Invoke(parent Context) Value {
-	global := parent.Global()
-
 	ctx := FunctionContext{}
 	ctx.Context = parent
-	ctx.global = global
+	ctx.global = parent.Global()
 	ctx.vars = ctx.global.Slice(-f.Args, f.Vars)
 
 	for i := range ctx.vars {
@@ -80,6 +78,8 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 		switch f.Instructions.ReadOperation(noescape(&ctx)) {
 		case OpPop:
 			Pop(noescape(&ctx))
+		case OpPop2:
+			Pop2(noescape(&ctx))
 		case OpReturn:
 			Return(noescape(&ctx))
 			return nil
@@ -142,16 +142,16 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 			ArrayAccessPush(noescape(&ctx))
 		case OpArrayUnset:
 			ArrayUnset(noescape(&ctx))
-		case OpPropertyGet:
-			PropertyGet(noescape(&ctx))
-		case OpPropertySet:
-			PropertySet(noescape(&ctx))
-		case OpPropertyIsSet:
-			PropertyIsSet(noescape(&ctx))
-		case OpPropertyUnset:
-			PropertyUnset(noescape(&ctx))
 		case OpConcat:
 			Concat(noescape(&ctx))
+		case OpUnset:
+			// TODO: Unset
+		case OpForEachInit:
+			ForEachInit(noescape(&ctx))
+		case OpForEachNext:
+			ForEachNext(noescape(&ctx))
+		case OpForEachValid:
+			ForEachValid(noescape(&ctx))
 		case OpAssertType:
 			AssertType(noescape(&ctx))
 		case OpAssign:
@@ -208,6 +208,12 @@ func (f CompiledFunction) Invoke(parent Context) Value {
 			Echo(noescape(&ctx))
 		case OpIsSet:
 			IsSet(noescape(&ctx))
+		case OpForEachKey:
+			ForEachKey(noescape(&ctx))
+		case OpForEachValue:
+			ForEachValue(noescape(&ctx))
+		case OpForEachValueRef:
+			ForEachValueRef(noescape(&ctx))
 		}
 	}
 

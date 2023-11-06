@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/binary"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
@@ -296,4 +297,39 @@ func BenchmarkLoad(b *testing.B) {
 		Load(noescape(&ctx))
 		ctx.Pop()
 	}
+}
+
+func Test(t *testing.T) {
+	var g GlobalContext
+	g.Init()
+	g.Constants = []Value{Int(1), Int(2)}
+
+	fn := CompiledFunction{Vars: 2, Instructions: instructionsToBytecode([]uint64{
+		uint64(OpArrayNew),
+		uint64(OpArrayAccessPush),
+		uint64(OpConst), 0,
+		uint64(OpAssignRef),
+		uint64(OpPop),
+		uint64(OpArrayAccessPush),
+		uint64(OpConst), 1,
+		uint64(OpAssignRef),
+		uint64(OpPop),
+		uint64(OpForEachInit),
+		uint64(OpForEachValid),
+		uint64(OpJumpFalse), 23,
+		uint64(OpForEachValueRef), 1,
+		uint64(OpForEachKey), 0,
+		uint64(OpForEachNext),
+		uint64(OpJump), 12,
+	})}
+
+	g.Run(fn)
+}
+
+func instructionsToBytecode(i []uint64) (b Bytecode) {
+	for _, instruction := range i {
+		b = binary.NativeEndian.AppendUint64(b, instruction)
+	}
+
+	return
 }

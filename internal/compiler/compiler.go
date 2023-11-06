@@ -215,11 +215,8 @@ func (c *Compiler) StmtFor(n *ast.StmtFor) {
 }
 
 func (c *Compiler) StmtForeach(n *ast.StmtForeach) {
-	if n.Key != nil {
-		n.Key.Accept(c)
-	}
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachInit))
 
-	n.Var.Accept(c)
 }
 
 func (c *Compiler) StmtWhile(n *ast.StmtWhile) {
@@ -273,17 +270,7 @@ func (c *Compiler) StmtEcho(n *ast.StmtEcho) {
 }
 
 func (c *Compiler) StmtUnset(n *ast.StmtUnset) {
-	for _, v := range n.Vars {
-		v.Accept(c)
-		switch v.(type) {
-		case *ast.ExprArrayDimFetch:
-			binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpArrayAccessWrite))
-		case *ast.ExprPropertyFetch:
-			binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpPropertyUnset))
-		default:
-			binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpUnset))
-		}
-	}
+	panic("not implemented")
 }
 
 func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
@@ -729,9 +716,7 @@ func (c *Compiler) ExprCastUnset(n *ast.ExprCastUnset) {
 }
 
 func (c *Compiler) ExprPropertyFetch(n *ast.ExprPropertyFetch) {
-	n.Var.Accept(c)
-	n.Prop.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPropertyGet))
+	panic("not implemented")
 }
 
 func (c *Compiler) ExprStaticPropertyFetch(n *ast.ExprStaticPropertyFetch) { panic("not implemented") }

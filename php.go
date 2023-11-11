@@ -20,5 +20,7 @@ func main() {
 		}
 	}()
 
-	log.Fatal(app.App().ExecuteContext(ctx))
+	if err := app.App().ExecuteContext(ctx); err != nil {
+		log.Fatal(err)
+	}
 }

@@ -5,10 +5,10 @@ function test($n) {
 }
 
 $x = [];
-
 $time = microtime(true);
+
 for ($i = 0; $i < 100000; $i++) {
     test($x);
 }
 
-echo microtime(true) - $time;
+echo microtime(true) - $time , "\r\n";

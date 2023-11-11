@@ -12,6 +12,7 @@ import (
 	"php-vm/internal/vm"
 	"slices"
 	"strconv"
+	"strings"
 	"unsafe"
 )
 
@@ -22,6 +23,8 @@ var builtInTypeAsserts = map[string]vm.Type{
 	"array":  vm.ArrayType,
 	"object": vm.ObjectType,
 }
+
+var posixReplacer = strings.NewReplacer("\\a", "\a", "\\b", "\b", "\\n", "\n", "\\r", "\r", "\\t", "\t", "\\v", "\v", "\\f", "\f")
 
 const (
 	FunctionAliasType = "function"
@@ -224,7 +227,13 @@ func (c *Compiler) StmtForeach(n *ast.StmtForeach) {
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), 0)
 
 	n.Var.Accept(c)
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValue))
+
+	if n.AmpersandTkn == nil {
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValue))
+	} else {
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValueRef))
+	}
+
 	if n.Key != nil {
 		n.Key.Accept(c)
 		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachKey))
@@ -793,7 +802,8 @@ func (c *Compiler) ScalarString(n *ast.ScalarString) {
 			n.Value = n.Value[1 : len(n.Value)-1]
 		}
 	}
-	s := unsafe.String(unsafe.SliceData(n.Value), len(n.Value))
+
+	s := posixReplacer.Replace(unsafe.String(unsafe.SliceData(n.Value), len(n.Value)))
 
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.String(s))))

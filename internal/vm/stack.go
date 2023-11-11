@@ -18,11 +18,10 @@ type stackIface[T any] interface {
 
 type Stack[T any] struct {
 	sp    *T
-	stack *[stackSize]T
+	stack [stackSize]T
 }
 
 func (s *Stack[T]) Init() {
-	s.stack = new([stackSize]T)
 	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -unsafe.Sizeof(*s.sp)))
 }
 func (s *Stack[T]) Pop() (v T) {

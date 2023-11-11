@@ -475,12 +475,11 @@ func Call(ctx *FunctionContext) {
 }
 
 func Pop(ctx *FunctionContext) {
-	ctx.Pop()
+	ctx.MovePointer(-1)
 }
 
 func Pop2(ctx *FunctionContext) {
-	ctx.Pop()
-	ctx.Pop()
+	ctx.MovePointer(-2)
 }
 
 // ReturnValue => return 0;
@@ -733,7 +732,9 @@ func Echo(ctx *FunctionContext) {
 	values := make([]any, count)
 
 	for i, v := range ctx.Slice(-int(count), 0) {
-		values[i] = v
+		// Need to convert every value to native Go string,
+		// because fmt doesn't print POSIX control characters included in value of underlying type
+		values[i] = string(v.AsString(ctx))
 	}
 
 	fmt.Fprint(ctx.global.out, values...)

@@ -215,8 +215,27 @@ func (c *Compiler) StmtFor(n *ast.StmtFor) {
 }
 
 func (c *Compiler) StmtForeach(n *ast.StmtForeach) {
+	n.Expr.Accept(c)
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachInit))
+	pos := len(*c.context.Bytecode()) >> 3
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachValid))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJumpFalse))
+	iter := len(*c.context.Bytecode())
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), 0)
 
+	n.Var.Accept(c)
+	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValue))
+	if n.Key != nil {
+		n.Key.Accept(c)
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachKey))
+	}
+
+	n.Stmt.Accept(c)
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachNext))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJump))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(pos))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
+	binary.NativeEndian.PutUint64((*c.context.Bytecode())[iter:], uint64(len(*c.context.Bytecode()))>>3)
 }
 
 func (c *Compiler) StmtWhile(n *ast.StmtWhile) {

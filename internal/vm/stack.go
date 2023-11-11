@@ -17,9 +17,8 @@ type stackIface[T any] interface {
 }
 
 type Stack[T any] struct {
-	sp           *T
-	stack        *[stackSize]T
-	defaultValue T
+	sp    *T
+	stack *[stackSize]T
 }
 
 func (s *Stack[T]) Init() {

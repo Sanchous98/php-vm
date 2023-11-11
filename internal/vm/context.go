@@ -53,7 +53,7 @@ func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[ind
 func (g *GlobalContext) Throw(error)                    {}
 func (g *GlobalContext) Run(fn CompiledFunction) Value {
 	g.Init()
-	return fn.Invoke(noescape(g))
+	return fn.Invoke(g)
 }
 
 type FunctionContext struct {

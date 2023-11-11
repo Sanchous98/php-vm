@@ -260,14 +260,74 @@ func TestArithmetic(t *testing.T) {
 func TestIterators(t *testing.T) {
 	cases := [...]compilerTestCase{
 		{
-			input:                "foreach([1,2] as $key => $val){  }",
-			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
-			expectedInstructions: instructionsToBytecode([]uint64{}),
+			input:             "foreach([1,2] as $key => $val){  }",
+			expectedConstants: []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
+			expectedInstructions: instructionsToBytecode([]uint64{
+				uint64(vm.OpArrayNew),
+				uint64(vm.OpArrayAccessPush),
+				uint64(vm.OpConst), 3,
+				uint64(vm.OpAssignRef),
+				uint64(vm.OpPop),
+				uint64(vm.OpArrayAccessPush),
+				uint64(vm.OpConst), 4,
+				uint64(vm.OpAssignRef),
+				uint64(vm.OpPop),
+				uint64(vm.OpForEachInit),
+				uint64(vm.OpForEachValid),
+				uint64(vm.OpJumpFalse), 23,
+				uint64(vm.OpForEachValue), 0,
+				uint64(vm.OpForEachKey), 1,
+				uint64(vm.OpForEachNext),
+				uint64(vm.OpJump), 12,
+				uint64(vm.OpPop),
+				uint64(vm.OpReturn),
+			}),
 		},
 		{
-			input:                "foreach([1,2] as $val){  }",
-			expectedConstants:    []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
-			expectedInstructions: instructionsToBytecode([]uint64{}),
+			input:             "foreach([1,2] as $val){  }",
+			expectedConstants: []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
+			expectedInstructions: instructionsToBytecode([]uint64{
+				uint64(vm.OpArrayNew),
+				uint64(vm.OpArrayAccessPush),
+				uint64(vm.OpConst), 3,
+				uint64(vm.OpAssignRef),
+				uint64(vm.OpPop),
+				uint64(vm.OpArrayAccessPush),
+				uint64(vm.OpConst), 4,
+				uint64(vm.OpAssignRef),
+				uint64(vm.OpPop),
+				uint64(vm.OpForEachInit),
+				uint64(vm.OpForEachValid),
+				uint64(vm.OpJumpFalse), 21,
+				uint64(vm.OpForEachValue), 0,
+				uint64(vm.OpForEachNext),
+				uint64(vm.OpJump), 12,
+				uint64(vm.OpPop),
+				uint64(vm.OpReturn),
+			}),
+		},
+		{
+			input:             "foreach([1,2] as &$val){  }",
+			expectedConstants: []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(1), vm.Int(2)},
+			expectedInstructions: instructionsToBytecode([]uint64{
+				uint64(vm.OpArrayNew),
+				uint64(vm.OpArrayAccessPush),
+				uint64(vm.OpConst), 3,
+				uint64(vm.OpAssignRef),
+				uint64(vm.OpPop),
+				uint64(vm.OpArrayAccessPush),
+				uint64(vm.OpConst), 4,
+				uint64(vm.OpAssignRef),
+				uint64(vm.OpPop),
+				uint64(vm.OpForEachInit),
+				uint64(vm.OpForEachValid),
+				uint64(vm.OpJumpFalse), 21,
+				uint64(vm.OpForEachValueRef), 0,
+				uint64(vm.OpForEachNext),
+				uint64(vm.OpJump), 12,
+				uint64(vm.OpPop),
+				uint64(vm.OpReturn),
+			}),
 		},
 	}
 
@@ -276,7 +336,7 @@ func TestIterators(t *testing.T) {
 			compiler := NewCompiler(nil)
 			ctx := new(vm.GlobalContext)
 			fn := compiler.Compile([]byte(fmt.Sprintf("<?php\n%s;", c.input)), ctx)
-			assert.Equal(t, c.expectedInstructions, fn.Instructions)
+			assert.Equal(t, c.expectedInstructions.String(), fn.Instructions.String())
 			assert.Equal(t, c.expectedConstants, ctx.Constants)
 		})
 	}

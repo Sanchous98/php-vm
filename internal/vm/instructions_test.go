@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"encoding/binary"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
@@ -52,7 +51,7 @@ func BenchmarkAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ctx.Push(Int(1))
 		ctx.Push(Int(2))
-		Add(noescape(&ctx))
+		Add(&ctx)
 		ctx.Pop()
 	}
 }
@@ -277,9 +276,9 @@ func BenchmarkPostIncrement(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		PostIncrement(noescape(&ctx))
+		PostIncrement(&ctx)
 		ctx.vars[0] = ctx.vars[0].(Int) - 1
-		Pop(noescape(&ctx))
+		Pop(&ctx)
 	}
 }
 
@@ -294,42 +293,7 @@ func BenchmarkLoad(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		Load(noescape(&ctx))
+		Load(&ctx)
 		ctx.Pop()
 	}
-}
-
-func Test(t *testing.T) {
-	var g GlobalContext
-	g.Init()
-	g.Constants = []Value{Int(1), Int(2)}
-
-	fn := CompiledFunction{Vars: 2, Instructions: instructionsToBytecode([]uint64{
-		uint64(OpArrayNew),
-		uint64(OpArrayAccessPush),
-		uint64(OpConst), 0,
-		uint64(OpAssignRef),
-		uint64(OpPop),
-		uint64(OpArrayAccessPush),
-		uint64(OpConst), 1,
-		uint64(OpAssignRef),
-		uint64(OpPop),
-		uint64(OpForEachInit),
-		uint64(OpForEachValid),
-		uint64(OpJumpFalse), 23,
-		uint64(OpForEachValueRef), 1,
-		uint64(OpForEachKey), 0,
-		uint64(OpForEachNext),
-		uint64(OpJump), 12,
-	})}
-
-	g.Run(fn)
-}
-
-func instructionsToBytecode(i []uint64) (b Bytecode) {
-	for _, instruction := range i {
-		b = binary.NativeEndian.AppendUint64(b, instruction)
-	}
-
-	return
 }

@@ -5,7 +5,6 @@ import (
 	"php-vm/internal/compiler"
 	"php-vm/internal/vm"
 	"reflect"
-	"unsafe"
 )
 
 type Expression string
@@ -83,6 +82,6 @@ func (e Expression) ExecuteContext(ctx context.Context, args map[string]any) vm.
 	}
 
 	comp := compiler.NewCompiler(&compiler.Extensions{Exts: []compiler.Extension{{Constants: consts}}})
-	fn := comp.Compile(unsafe.Slice(unsafe.StringData(string("<?php\n"+e+";")), len(e)), global)
+	fn := comp.Compile([]byte("<?php\n"+e+";"), global)
 	return global.Run(fn)
 }

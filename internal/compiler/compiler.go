@@ -12,6 +12,7 @@ import (
 	"php-vm/internal/vm"
 	"slices"
 	"strconv"
+	"strings"
 	"unsafe"
 )
 
@@ -22,6 +23,8 @@ var builtInTypeAsserts = map[string]vm.Type{
 	"array":  vm.ArrayType,
 	"object": vm.ObjectType,
 }
+
+var posixReplacer = strings.NewReplacer("\\a", "\a", "\\b", "\b", "\\n", "\n", "\\r", "\r", "\\t", "\t", "\\v", "\v", "\\f", "\f")
 
 const (
 	FunctionAliasType = "function"
@@ -215,11 +218,33 @@ func (c *Compiler) StmtFor(n *ast.StmtFor) {
 }
 
 func (c *Compiler) StmtForeach(n *ast.StmtForeach) {
-	if n.Key != nil {
-		n.Key.Accept(c)
-	}
+	n.Expr.Accept(c)
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachInit))
+	pos := len(*c.context.Bytecode()) >> 3
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachValid))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJumpFalse))
+	iter := len(*c.context.Bytecode())
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), 0)
 
 	n.Var.Accept(c)
+
+	if n.AmpersandTkn == nil {
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValue))
+	} else {
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValueRef))
+	}
+
+	if n.Key != nil {
+		n.Key.Accept(c)
+		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachKey))
+	}
+
+	n.Stmt.Accept(c)
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachNext))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJump))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(pos))
+	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
+	binary.NativeEndian.PutUint64((*c.context.Bytecode())[iter:], uint64(len(*c.context.Bytecode()))>>3)
 }
 
 func (c *Compiler) StmtWhile(n *ast.StmtWhile) {
@@ -273,17 +298,7 @@ func (c *Compiler) StmtEcho(n *ast.StmtEcho) {
 }
 
 func (c *Compiler) StmtUnset(n *ast.StmtUnset) {
-	for _, v := range n.Vars {
-		v.Accept(c)
-		switch v.(type) {
-		case *ast.ExprArrayDimFetch:
-			binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpArrayAccessWrite))
-		case *ast.ExprPropertyFetch:
-			binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpPropertyUnset))
-		default:
-			binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpUnset))
-		}
-	}
+	panic("not implemented")
 }
 
 func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
@@ -729,9 +744,7 @@ func (c *Compiler) ExprCastUnset(n *ast.ExprCastUnset) {
 }
 
 func (c *Compiler) ExprPropertyFetch(n *ast.ExprPropertyFetch) {
-	n.Var.Accept(c)
-	n.Prop.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPropertyGet))
+	panic("not implemented")
 }
 
 func (c *Compiler) ExprStaticPropertyFetch(n *ast.ExprStaticPropertyFetch) { panic("not implemented") }
@@ -789,7 +802,8 @@ func (c *Compiler) ScalarString(n *ast.ScalarString) {
 			n.Value = n.Value[1 : len(n.Value)-1]
 		}
 	}
-	s := unsafe.String(unsafe.SliceData(n.Value), len(n.Value))
+
+	s := posixReplacer.Replace(unsafe.String(unsafe.SliceData(n.Value), len(n.Value)))
 
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
 	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.String(s))))

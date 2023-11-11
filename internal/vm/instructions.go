@@ -63,6 +63,7 @@ type Operator uint64
 const (
 	OpNoop             Operator = iota // NOOP
 	OpPop                              // POP
+	OpPop2                             // POP2
 	OpReturn                           // RETURN
 	OpReturnValue                      // RETURN_VAL
 	OpAdd                              // ADD
@@ -93,12 +94,12 @@ const (
 	OpArrayAccessWrite                 // ARRAY_ACCESS_WRITE
 	OpArrayAccessPush                  // ARRAY_ACCESS_PUSH
 	OpArrayUnset                       // ARRAY_UNSET
-	OpPropertyGet                      // PROPERTY_GET
-	OpPropertySet                      // PROPERTY_SET
-	OpPropertyIsSet                    // PROPERTY_ISSET
-	OpPropertyUnset                    // PROPERTY_UNSET
 	OpConcat                           // CONCAT
 	OpUnset                            // UNSET
+	OpForEachInit                      // FE_INIT
+	OpForEachNext                      // FE_NEXT
+	OpForEachValid                     // FE_VALID
+	OpForEachReset                     // FE_RESET
 
 	_opOneOperand      Operator = iota - 1
 	OpAssertType                // ASSERT_TYPE
@@ -129,6 +130,9 @@ const (
 	OpCall                      // CALL
 	OpEcho                      // ECHO
 	OpIsSet                     // ISSET
+	OpForEachKey                // FE_KEY
+	OpForEachValue              // FE_VALUE
+	OpForEachValueRef           // FE_VALUE_REF
 )
 
 func assignTryRef(ref *Value, v Value) {
@@ -235,13 +239,18 @@ func NotEqual(ctx *FunctionContext) {
 func equal(ctx *FunctionContext, x, y Value) Bool {
 	as := Juggle(x.Type(), y.Type())
 
-	if as == ArrayType {
-		return Bool(maps.EqualFunc(x.AsArray(ctx).hash, y.AsArray(ctx).hash, func(x, y Ref) bool {
-			return bool(equal(ctx, x, y))
-		}))
+	if as != ArrayType {
+		return x.Cast(ctx, as) == y.Cast(ctx, as)
 	}
 
-	return x.Cast(ctx, as) == y.Cast(ctx, as)
+	return arrayEqual(ctx, x.AsArray(ctx), y.AsArray(ctx))
+}
+
+//go:noinline
+func arrayEqual(ctx *FunctionContext, x, y *Array) Bool {
+	return Bool(maps.EqualFunc(x.AsArray(ctx).hash, y.AsArray(ctx).hash, func(x, y Ref) bool {
+		return bool(equal(ctx, x, y))
+	}))
 }
 
 // LessOrEqual => $x <= $y
@@ -466,7 +475,11 @@ func Call(ctx *FunctionContext) {
 }
 
 func Pop(ctx *FunctionContext) {
-	ctx.Pop()
+	ctx.MovePointer(-1)
+}
+
+func Pop2(ctx *FunctionContext) {
+	ctx.MovePointer(-2)
 }
 
 // ReturnValue => return 0;
@@ -709,6 +722,7 @@ func Concat(ctx *FunctionContext) {
 
 // AssertType => fn(int $a)
 func AssertType(ctx *FunctionContext) {
+	// TODO: check if strict types
 	*ctx.global.sp = (*ctx.global.sp).Cast(ctx, Type(ctx.global.r1))
 }
 
@@ -718,7 +732,9 @@ func Echo(ctx *FunctionContext) {
 	values := make([]any, count)
 
 	for i, v := range ctx.Slice(-int(count), 0) {
-		values[i] = v
+		// Need to convert every value to native Go string,
+		// because fmt doesn't print POSIX control characters included in value of underlying type
+		values[i] = string(v.AsString(ctx))
 	}
 
 	fmt.Fprint(ctx.global.out, values...)
@@ -783,32 +799,40 @@ func ArrayUnset(ctx *FunctionContext) {
 	ctx.Push(arr)
 }
 
-// PropertyGet => $x->y;
-func PropertyGet(ctx *FunctionContext) {
-	prop := ctx.Pop()
-	obj := ctx.Pop().AsObject(ctx)
-	ctx.Push(obj.OffsetGet(ctx, prop))
+func ForEachInit(ctx *FunctionContext) {
+	iterable := ctx.Pop()
+	switch iterable.(type) {
+	case Iterator:
+	case IteratorAggregate:
+		iterable = iterable.(IteratorAggregate).GetIterator(ctx)
+	}
+	iterable.(Iterator).Rewind(ctx)
+	ctx.Push(iterable)
 }
 
-// PropertySet => $x->y = 1;
-func PropertySet(ctx *FunctionContext) {
-	value := ctx.Pop()
-	prop := ctx.Pop()
-	obj := ctx.Pop().AsObject(ctx)
-	obj.OffsetSet(ctx, prop, value)
-	ctx.Push(value)
+func ForEachKey(ctx *FunctionContext) {
+	v := &ctx.vars[ctx.global.r1]
+	assignTryRef(v, ctx.Top().(Iterator).Key(ctx))
 }
 
-// PropertyIsSet => isset($x->y);
-func PropertyIsSet(ctx *FunctionContext) {
-	prop := ctx.Pop()
-	obj := ctx.Pop().AsObject(ctx)
-	ctx.Push(obj.OffsetIsSet(ctx, prop))
+func ForEachValue(ctx *FunctionContext) {
+	variable := &ctx.vars[ctx.global.r1]
+	value := ctx.Top().(Iterator).Current(ctx)
+	if value.IsRef() {
+		value = *value.(Ref).Deref()
+	}
+	assignTryRef(variable, value)
 }
 
-// PropertyUnset => unset($x->y);
-func PropertyUnset(ctx *FunctionContext) {
-	prop := ctx.Pop()
-	obj := ctx.Pop().AsObject(ctx)
-	obj.OffsetUnset(ctx, prop)
+func ForEachValueRef(ctx *FunctionContext) {
+	v := &ctx.vars[ctx.global.r1]
+	assignTryRef(v, ctx.Top().(Iterator).Current(ctx))
+}
+
+func ForEachNext(ctx *FunctionContext) {
+	ctx.Top().(Iterator).Next(ctx)
+}
+
+func ForEachValid(ctx *FunctionContext) {
+	ctx.Push(ctx.Top().(Iterator).Valid(ctx))
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	_ "php-vm/ext"
 	"php-vm/internal/app"
 	_ "php-vm/sapi/cli"
@@ -15,11 +16,11 @@ func main() {
 	defer func() {
 		if err := recover(); err != nil {
 			cancel()
-			panic(err)
+			log.Fatal(err)
 		}
 	}()
 
 	if err := app.App().ExecuteContext(ctx); err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
 }

@@ -17,29 +17,20 @@ type stackIface[T any] interface {
 }
 
 type Stack[T any] struct {
-	sp           *T
-	stack        [stackSize]T
-	defaultValue T
+	sp    *T
+	stack [stackSize]T
 }
 
 func (s *Stack[T]) Init() {
 	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -unsafe.Sizeof(*s.sp)))
 }
 func (s *Stack[T]) Pop() (v T) {
-	if uintptr(unsafe.Pointer(s.sp)) < uintptr(unsafe.Pointer(&s.stack[0])) {
-		return v
-	}
-
 	v, *s.sp = *s.sp, v
-	s.MovePointer(-1)
-	return v
+	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), -unsafe.Sizeof(*s.sp)))
+	return
 }
 func (s *Stack[T]) Push(v T) {
-	if s.sp == &s.stack[stackSize-1] {
-		panic("stack overflow")
-	}
-
-	s.MovePointer(1)
+	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), unsafe.Sizeof(*s.sp)))
 	s.SetTop(v)
 }
 func (s *Stack[T]) TopIndex() int {

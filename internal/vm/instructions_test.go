@@ -51,7 +51,7 @@ func BenchmarkAdd(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ctx.Push(Int(1))
 		ctx.Push(Int(2))
-		Add(noescape(&ctx))
+		Add(&ctx)
 		ctx.Pop()
 	}
 }
@@ -276,9 +276,9 @@ func BenchmarkPostIncrement(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		PostIncrement(noescape(&ctx))
+		PostIncrement(&ctx)
 		ctx.vars[0] = ctx.vars[0].(Int) - 1
-		Pop(noescape(&ctx))
+		Pop(&ctx)
 	}
 }
 
@@ -293,7 +293,7 @@ func BenchmarkLoad(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		Load(noescape(&ctx))
+		Load(&ctx)
 		ctx.Pop()
 	}
 }

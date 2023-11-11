@@ -26,6 +26,7 @@ func TestDefaultValue(t *testing.T) {
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
 	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), fn.Instructions.String())
+	assert.Equal(t, vm.Int(1), ctx.Run(fn))
 }
 
 func instructionsToBytecode(i []uint64) (b vm.Bytecode) {

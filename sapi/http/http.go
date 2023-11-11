@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/spf13/cobra"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"php-vm/internal/app"
@@ -26,25 +27,33 @@ func init() {
 
 			processLimiter := make(chan struct{}, 120)
 
-			return http.ListenAndServe(addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				processLimiter <- struct{}{}
-				defer func() { <-processLimiter }()
-				comp := app.App().Get((*compiler.Compiler)(nil)).(*compiler.Compiler)
-				file, err := os.Open("index.php")
+			srv := &http.Server{
+				ConnContext: func(parent context.Context, c net.Conn) context.Context {
+					ctx, _ := context.WithTimeout(parent, 30*time.Second)
+					return ctx
+				},
+				Addr: addr,
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					processLimiter <- struct{}{}
+					defer func() { <-processLimiter }()
 
-				if err != nil {
-					panic(err)
-				}
+					comp := app.App().Get((*compiler.Compiler)(nil)).(*compiler.Compiler)
+					file, err := os.Open("index.php")
 
-				input, _ := io.ReadAll(file)
-				file.Close()
+					if err != nil {
+						panic(err)
+					}
 
-				parent, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				ctx := vm.NewGlobalContext(parent, nil, w)
-				fn := comp.Compile(input, ctx)
-				ctx.Run(fn)
-			}))
+					input, _ := io.ReadAll(file)
+					_ = file.Close()
+
+					ctx := vm.NewGlobalContext(r.Context(), nil, w)
+					fn := comp.Compile(input, ctx)
+					ctx.Run(fn)
+				}),
+			}
+
+			return srv.ListenAndServe()
 		},
 	}
 	cmd.PersistentFlags().String("addr", ":80", "")

@@ -77,7 +77,8 @@ func (i Int) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return i.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", i.Type().String(), t.String()))
+		ctx.Throw(fmt.Errorf("cannot cast %s to %s", i.Type().String(), t.String()))
+		return nil
 	}
 }
 func (i Int) DebugInfo(_ Context, level int) string {
@@ -258,6 +259,20 @@ func (n Null) DebugInfo(_ Context, level int) string { return strings.Repeat(" "
 type Array struct {
 	hash map[Value]Ref
 	next Int
+}
+
+func (a *Array) GetIterator(ctx Context) Iterator {
+	keys := a.Keys(ctx)
+	i := 0
+
+	return InternalIterator[*Array]{
+		this:      a,
+		nextFn:    func(ctx Context, array *Array) { i++ },
+		currentFn: func(ctx Context, array *Array) Value { return array.hash[keys[i]] },
+		keyFn:     func(ctx Context, array *Array) Value { return keys[i] },
+		validFn:   func(ctx Context, array *Array) Bool { return i < len(keys) },
+		rewindFn:  func(ctx Context, array *Array) { i = 0 },
+	}
 }
 
 func (a *Array) Count(Context) Int { return Int(len(a.hash)) }
@@ -456,23 +471,13 @@ type Object struct {
 	props map[String]Value
 }
 
-func (o *Object) OffsetGet(ctx Context, key Value) Value {
-	if o.OffsetIsSet(ctx, key.AsString(ctx)) {
-		return o.props[key.AsString(ctx)]
-	}
-
-	return Null{}
-}
-func (o *Object) OffsetSet(ctx Context, key Value, value Value) { o.props[key.AsString(ctx)] = value }
-func (o *Object) OffsetIsSet(ctx Context, key Value) Bool       { return o.props[key.AsString(ctx)] != nil }
-func (o *Object) OffsetUnset(ctx Context, key Value)            { delete(o.props, key.AsString(ctx)) }
-func (o *Object) IsRef() bool                                   { return false }
-func (o *Object) AsInt(Context) Int                             { return 1 }
-func (o *Object) AsFloat(Context) Float                         { return 1 }
-func (o *Object) AsBool(Context) Bool                           { return true }
-func (o *Object) AsString(Context) String                       { panic("cannot be converted to string") }
-func (o *Object) AsNull(Context) Null                           { return Null{} }
-func (o *Object) Type() Type                                    { return ObjectType }
+func (o *Object) IsRef() bool             { return false }
+func (o *Object) AsInt(Context) Int       { return 1 }
+func (o *Object) AsFloat(Context) Float   { return 1 }
+func (o *Object) AsBool(Context) Bool     { return true }
+func (o *Object) AsString(Context) String { panic("cannot be converted to string") }
+func (o *Object) AsNull(Context) Null     { return Null{} }
+func (o *Object) Type() Type              { return ObjectType }
 func (o *Object) AsArray(Context) *Array {
 	arr := make(map[Value]Value, len(o.props))
 

@@ -2,7 +2,7 @@ package vm
 
 import "unsafe"
 
-const stackSize = 4096
+const stackSize = 512
 
 type stackIface[T any] interface {
 	Init()

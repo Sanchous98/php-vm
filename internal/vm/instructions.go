@@ -143,12 +143,15 @@ func assignTryRef(ref *Value, v Value) {
 	}
 }
 
+func intSign[T ~int](x T) T { return (x >> 63) | T(uint(-x)>>63) }
+
 //go:noinline
 func arrayCompare(ctx Context, x, y *Array) Int {
-	if x.Count(ctx) < y.Count(ctx) {
-		return -1
-	} else if x.Count(ctx) > y.Count(ctx) {
-		return +1
+	xCount := x.Count(ctx)
+	yCount := y.Count(ctx)
+
+	if sign := intSign(xCount - yCount); sign != 0 {
+		return sign
 	}
 
 	for key, val := range x.hash {
@@ -171,31 +174,15 @@ func compare(ctx Context, x, y Value) Int {
 
 	switch Juggle(x.Type(), y.Type()) {
 	case IntType:
-		if x.AsInt(ctx) < y.AsInt(ctx) {
-			return -1
-		} else if x.AsInt(ctx) > y.AsInt(ctx) {
-			return +1
-		}
+		return intSign(x.AsInt(ctx) - y.AsInt(ctx))
 	case FloatType:
-		if x.AsFloat(ctx) < y.AsFloat(ctx) {
-			return -1
-		} else if x.AsFloat(ctx) > y.AsFloat(ctx) {
-			return +1
-		}
+		return intSign(Int(x.AsFloat(ctx) - y.AsFloat(ctx)))
 	case StringType:
-		if x.AsString(ctx) < y.AsString(ctx) {
-			return -1
-		} else if x.AsString(ctx) > y.AsString(ctx) {
-			return +1
-		}
+		return Int(strings.Compare(string(x.AsString(ctx)), string(y.AsString(ctx))))
 	case NullType:
 		// Is possible if only both are null, so always equal
 	case BoolType:
-		if x.AsBool(ctx) && !y.AsBool(ctx) {
-			return +1
-		} else if !x.AsBool(ctx) && y.AsBool(ctx) {
-			return -1
-		}
+		return x.AsBool(ctx).AsInt(ctx) - y.AsBool(ctx).AsInt(ctx)
 	case ArrayType:
 		return arrayCompare(ctx, x.AsArray(ctx), y.AsArray(ctx))
 	}
@@ -226,31 +213,14 @@ func Not(ctx *FunctionContext) {
 func Equal(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := *ctx.global.sp
-	*ctx.global.sp = equal(ctx, left, right)
+	*ctx.global.sp = Bool(compare(ctx, left, right) == 0)
 }
 
 // NotEqual => $x != $y
 func NotEqual(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := *ctx.global.sp
-	*ctx.global.sp = !equal(ctx, left, right)
-}
-
-func equal(ctx *FunctionContext, x, y Value) Bool {
-	as := Juggle(x.Type(), y.Type())
-
-	if as != ArrayType {
-		return x.Cast(ctx, as) == y.Cast(ctx, as)
-	}
-
-	return arrayEqual(ctx, x.AsArray(ctx), y.AsArray(ctx))
-}
-
-//go:noinline
-func arrayEqual(ctx *FunctionContext, x, y *Array) Bool {
-	return Bool(maps.EqualFunc(x.AsArray(ctx).hash, y.AsArray(ctx).hash, func(x, y Ref) bool {
-		return bool(equal(ctx, x, y))
-	}))
+	*ctx.global.sp = Bool(compare(ctx, left, right) != 0)
 }
 
 // LessOrEqual => $x <= $y
@@ -306,7 +276,7 @@ func LoadRef(ctx *FunctionContext) {
 // Assign => $a = 0
 func Assign(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
-	assignTryRef(v, ctx.Top())
+	assignTryRef(v, *ctx.global.sp)
 }
 
 func AssignRef(ctx *FunctionContext) {
@@ -317,7 +287,7 @@ func AssignRef(ctx *FunctionContext) {
 
 // AssignAdd => $a += 1
 func AssignAdd(ctx *FunctionContext) {
-	right := ctx.Top()
+	right := *ctx.global.sp
 	v := &ctx.vars[ctx.global.r1]
 
 	switch Juggle((*v).Type(), right.Type()) {
@@ -334,7 +304,7 @@ func AssignAdd(ctx *FunctionContext) {
 
 // AssignSub => $a -= 1
 func AssignSub(ctx *FunctionContext) {
-	right := ctx.Top()
+	right := *ctx.global.sp
 	v := &ctx.vars[ctx.global.r1]
 
 	switch FloatType {
@@ -348,12 +318,12 @@ func AssignSub(ctx *FunctionContext) {
 
 // AssignMul => $a *= 1
 func AssignMul(ctx *FunctionContext) {
-	right := ctx.Top()
+	right := *ctx.global.sp
 	v := &ctx.vars[ctx.global.r1]
 
 	switch FloatType {
 	case (*v).Type(), right.Type():
-		assignTryRef(&ctx.vars[ctx.global.r1], ctx.vars[ctx.global.r1].AsFloat(ctx)*right.AsFloat(ctx))
+		assignTryRef(v, ctx.vars[ctx.global.r1].AsFloat(ctx)*right.AsFloat(ctx))
 	default:
 		assignTryRef(v, (*v).AsInt(ctx)*right.AsInt(ctx))
 	}
@@ -362,7 +332,7 @@ func AssignMul(ctx *FunctionContext) {
 
 // AssignDiv => $a /= 1
 func AssignDiv(ctx *FunctionContext) {
-	right := ctx.Top()
+	right := *ctx.global.sp
 	v := &ctx.vars[ctx.global.r1]
 
 	if res := (*v).AsFloat(ctx) / right.AsFloat(ctx); res == Float(int(res)) {
@@ -375,70 +345,74 @@ func AssignDiv(ctx *FunctionContext) {
 
 // AssignPow => $a **= 1
 func AssignPow(ctx *FunctionContext) {
-	right := ctx.Top()
+	right := *ctx.global.sp
 	v := &ctx.vars[ctx.global.r1]
 	as := Juggle((*v).Type(), right.Type())
 
-	if as == BoolType {
-		assignTryRef(v, (!right.AsBool(ctx) || (*v).AsBool(ctx)).AsInt(ctx))
-	} else {
-		res := Float(math.Pow(float64((*v).AsFloat(ctx)), float64(right.AsFloat(ctx))))
-		assignTryRef(v, res.Cast(ctx, as))
+	var res Value
+
+	switch as {
+	case BoolType:
+		res = (!right.AsBool(ctx) || (*v).AsBool(ctx)).AsInt(ctx)
+	default:
+		res = Float(math.Pow(float64((*v).AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as)
 	}
-	ctx.SetTop(*v)
+
+	assignTryRef(v, res)
+	*ctx.global.sp = *v
 }
 
 // AssignBwAnd => $a &= 1
 func AssignBwAnd(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
+	right := (*ctx.global.sp).AsInt(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, (*v).AsInt(ctx)&right)
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // AssignBwOr => $a |= 1
 func AssignBwOr(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
+	right := (*ctx.global.sp).AsInt(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, (*v).AsInt(ctx)|right)
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // AssignBwXor => $a ^= 1
 func AssignBwXor(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
+	right := (*ctx.global.sp).AsInt(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, (*v).AsInt(ctx)^right)
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // AssignConcat => $a .= 1
 func AssignConcat(ctx *FunctionContext) {
-	right := ctx.Top().AsString(ctx)
+	right := (*ctx.global.sp).AsString(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, (*v).AsString(ctx)+right)
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // AssignShiftLeft => $a <<= 1
 func AssignShiftLeft(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
+	right := (*ctx.global.sp).AsInt(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, (*v).AsInt(ctx)<<right)
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // AssignShiftRight => $a >>= 1
 func AssignShiftRight(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
+	right := (*ctx.global.sp).AsInt(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, (*v).AsInt(ctx)>>right)
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // AssignMod => $a %= 1
 func AssignMod(ctx *FunctionContext) {
-	right := ctx.Top().AsFloat(ctx)
+	right := (*ctx.global.sp).AsFloat(ctx)
 	v := &ctx.vars[ctx.global.r1]
 	left := (*v).AsFloat(ctx)
 
@@ -447,7 +421,7 @@ func AssignMod(ctx *FunctionContext) {
 	} else {
 		assignTryRef(v, res)
 	}
-	ctx.SetTop(*v)
+	*ctx.global.sp = *v
 }
 
 // Jump unconditional jump
@@ -484,7 +458,7 @@ func Pop2(ctx *FunctionContext) {
 
 // ReturnValue => return 0;
 func ReturnValue(ctx *FunctionContext) {
-	v := ctx.Top()
+	v := *ctx.global.sp
 	Return(ctx)
 	ctx.Push(v)
 }
@@ -549,24 +523,25 @@ func Mul(ctx *FunctionContext) {
 // Div => 1 / 2
 func Div(ctx *FunctionContext) {
 	right := ctx.Pop()
-	left := ctx.Pop()
+	left := *ctx.global.sp
 	res := left.AsFloat(ctx) / right.AsFloat(ctx)
 
 	switch FloatType {
 	case left.Type(), right.Type():
 	default:
 		if res == Float(int(res)) {
-			ctx.Push(res.AsInt(ctx))
+			*ctx.global.sp = res.AsInt(ctx)
+			return
 		}
 	}
 
-	ctx.Push(res)
+	*ctx.global.sp = res
 }
 
 // Mod => 1 % 2
 func Mod(ctx *FunctionContext) {
 	right := ctx.Pop()
-	left := ctx.Top()
+	left := *ctx.global.sp
 	as := Juggle(left.Type(), right.Type())
 
 	switch as {
@@ -574,24 +549,23 @@ func Mod(ctx *FunctionContext) {
 		if !right.AsBool(ctx) {
 			panic("modulo by zero error")
 		}
-		ctx.SetTop(Int(0))
+		*ctx.global.sp = Int(0)
 	default:
-		res := Float(math.Mod(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx))))
-		ctx.SetTop(res.Cast(ctx, as))
+		*ctx.global.sp = Float(math.Mod(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as)
 	}
 }
 
 // Pow => 1 ** 2
 func Pow(ctx *FunctionContext) {
 	right := ctx.Pop()
-	left := ctx.Top()
+	left := *ctx.global.sp
 	as := Juggle(left.Type(), right.Type())
 
-	if as == BoolType {
-		ctx.SetTop((!right.AsBool(ctx) || left.AsBool(ctx)).AsInt(ctx))
-	} else {
-		res := Float(math.Pow(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx))))
-		ctx.SetTop(res.Cast(ctx, as))
+	switch as {
+	case BoolType:
+		*ctx.global.sp = (!right.AsBool(ctx) || left.AsBool(ctx)).AsInt(ctx)
+	default:
+		*ctx.global.sp = Float(math.Pow(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as)
 	}
 }
 
@@ -636,7 +610,7 @@ func ShiftRight(ctx *FunctionContext) {
 	*ctx.global.sp = left >> right
 }
 
-// Cast => (type)$x
+// Cast => (_type_)$x
 func Cast(ctx *FunctionContext) {
 	*ctx.global.sp = (*ctx.global.sp).Cast(ctx, Type(ctx.global.r1))
 }
@@ -645,36 +619,36 @@ func Cast(ctx *FunctionContext) {
 func PreIncrement(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
 
-	switch (*v).Type() {
-	case FloatType:
-		assignTryRef(v, (*v).AsFloat(ctx)+1)
-	default:
-		assignTryRef(v, (*v).AsInt(ctx)+1)
+	if (*v).IsRef() {
+		v = (*v).(Ref).Deref()
 	}
 
-	if (*v).IsRef() {
-		ctx.Push(*(*v).(Ref).Deref())
-	} else {
-		ctx.Push(*v)
+	switch (*v).Type() {
+	case FloatType:
+		*v = (*v).AsFloat(ctx) + 1
+	default:
+		*v = (*v).AsInt(ctx) + 1
 	}
+
+	ctx.Push(*v)
 }
 
 // PreDecrement => --$x
 func PreDecrement(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
 
-	switch (*v).Type() {
-	case FloatType:
-		assignTryRef(v, (*v).AsFloat(ctx)-1)
-	default:
-		assignTryRef(v, (*v).AsInt(ctx)-1)
+	if (*v).IsRef() {
+		v = (*v).(Ref).Deref()
 	}
 
-	if (*v).IsRef() {
-		ctx.Push(*(*v).(Ref).Deref())
-	} else {
-		ctx.Push(*v)
+	switch (*v).Type() {
+	case FloatType:
+		*v = (*v).AsFloat(ctx) - 1
+	default:
+		*v = (*v).AsInt(ctx) - 1
 	}
+
+	ctx.Push(*v)
 }
 
 // PostIncrement => $x++
@@ -682,16 +656,16 @@ func PostIncrement(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
 
 	if (*v).IsRef() {
-		ctx.Push(*(*v).(Ref).Deref())
-	} else {
-		ctx.Push(*v)
+		v = (*v).(Ref).Deref()
 	}
+
+	ctx.Push(*v)
 
 	switch (*v).Type() {
 	case FloatType:
-		assignTryRef(v, (*v).AsFloat(ctx)+1)
+		*v = (*v).AsFloat(ctx) + 1
 	default:
-		assignTryRef(v, (*v).AsInt(ctx)+1)
+		*v = (*v).AsInt(ctx) + 1
 	}
 }
 
@@ -700,16 +674,16 @@ func PostDecrement(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
 
 	if (*v).IsRef() {
-		ctx.Push(*(*v).(Ref).Deref())
-	} else {
-		ctx.Push(*v)
+		v = (*v).(Ref).Deref()
 	}
+
+	ctx.Push(*v)
 
 	switch (*v).Type() {
 	case FloatType:
-		assignTryRef(v, (*v).AsFloat(ctx)-1)
+		*v = (*v).AsFloat(ctx) - 1
 	default:
-		assignTryRef(v, (*v).AsInt(ctx)-1)
+		*v = (*v).AsInt(ctx) - 1
 	}
 }
 
@@ -799,6 +773,7 @@ func ArrayUnset(ctx *FunctionContext) {
 	ctx.Push(arr)
 }
 
+// ForEachInit => foreach([1,2] as ...)
 func ForEachInit(ctx *FunctionContext) {
 	iterable := ctx.Pop()
 	switch iterable.(type) {
@@ -810,11 +785,13 @@ func ForEachInit(ctx *FunctionContext) {
 	ctx.Push(iterable)
 }
 
+// ForEachKey => foreach(... as $key => ...)
 func ForEachKey(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, ctx.Top().(Iterator).Key(ctx))
 }
 
+// ForEachValue => foreach(... as $value)
 func ForEachValue(ctx *FunctionContext) {
 	variable := &ctx.vars[ctx.global.r1]
 	value := ctx.Top().(Iterator).Current(ctx)
@@ -824,6 +801,7 @@ func ForEachValue(ctx *FunctionContext) {
 	assignTryRef(variable, value)
 }
 
+// ForEachValueRef => foreach(... as &$value)
 func ForEachValueRef(ctx *FunctionContext) {
 	v := &ctx.vars[ctx.global.r1]
 	assignTryRef(v, ctx.Top().(Iterator).Current(ctx))

@@ -87,7 +87,6 @@ func (i Int) DebugInfo(_ Context, level int) string {
 
 type Float float64
 
-func (f Float) Deref() *Value            { panic("non-pointer dereference") }
 func (f Float) IsRef() bool              { return false }
 func (f Float) Type() Type               { return FloatType }
 func (f Float) AsInt(Context) Int        { return Int(f) }
@@ -224,7 +223,6 @@ func (s String) DebugInfo(_ Context, level int) string {
 
 type Null struct{}
 
-func (n Null) Deref() *Value            { panic("non-pointer dereference") }
 func (n Null) IsRef() bool              { return false }
 func (n Null) Type() Type               { return NullType }
 func (n Null) AsInt(Context) Int        { return 0 }
@@ -435,7 +433,7 @@ func NewRef(v *Value) Ref {
 
 func (r Ref) IsRef() bool                  { return true }
 func (r Ref) Deref() *Value                { return r.ref }
-func (r Ref) Type() Type                   { return (*r.Deref()).Type() }
+func (r Ref) Type() Type                   { return (*r.ref).Type() }
 func (r Ref) AsInt(ctx Context) Int        { return (*r.Deref()).AsInt(ctx) }
 func (r Ref) AsFloat(ctx Context) Float    { return (*r.Deref()).AsFloat(ctx) }
 func (r Ref) AsBool(ctx Context) Bool      { return (*r.Deref()).AsBool(ctx) }

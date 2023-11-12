@@ -5,57 +5,6 @@ import (
 	"testing"
 )
 
-func BenchmarkEqual(b *testing.B) {
-	b.ReportAllocs()
-
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
-	ctx.Init()
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		ctx.Push(Int(1))
-		ctx.Push(Bool(true))
-		Equal(ctx)
-		ctx.Pop()
-	}
-}
-
-func BenchmarkIdentical(b *testing.B) {
-	b.ReportAllocs()
-
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
-	ctx.Init()
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		ctx.Push(Int(1))
-		ctx.Push(Bool(true))
-		Identical(ctx)
-		ctx.Pop()
-	}
-}
-
-func BenchmarkAdd(b *testing.B) {
-	b.ReportAllocs()
-
-	g := GlobalContext{}
-	ctx := FunctionContext{Context: &g, global: &g}
-	ctx.Init()
-
-	b.ResetTimer()
-
-	for i := 0; i < b.N; i++ {
-		ctx.Push(Int(1))
-		ctx.Push(Int(2))
-		Add(&ctx)
-		ctx.Pop()
-	}
-}
-
 func TestEqual(t *testing.T) {
 	tests := [...]struct {
 		name        string
@@ -157,7 +106,7 @@ func TestEqual(t *testing.T) {
 	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
-	for _, tt := range tests {
+	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
@@ -186,7 +135,7 @@ func TestAdd(t *testing.T) {
 	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
-	for _, tt := range tests {
+	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
@@ -197,7 +146,7 @@ func TestAdd(t *testing.T) {
 }
 
 func TestCompare(t *testing.T) {
-	tests := []struct {
+	tests := [...]struct {
 		name        string
 		left, right Value
 		result      Int
@@ -255,11 +204,39 @@ func TestCompare(t *testing.T) {
 	ctx := &FunctionContext{Context: g, global: g}
 	ctx.Init()
 
-	for _, tt := range tests {
+	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
 			Compare(ctx)
+			assert.Equal(t, tt.result, ctx.Pop())
+		})
+	}
+}
+
+func TestDiv(t *testing.T) {
+	tests := [...]struct {
+		name        string
+		left, right Value
+		result      Value
+	}{
+		{"int / int = int", Int(1), Int(2), Float(0.5)},
+		{"int / float = float", Int(1), Float(2), Float(0.5)},
+		{"float / float = float", Float(1), Float(2), Float(0.5)},
+		{"bool / bool = int", Bool(false), Bool(true), Int(0)},
+		{"bool / int = int", Bool(false), Int(1), Int(0)},
+		{"bool / float = float", Bool(false), Float(1), Float(0)},
+	}
+
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
+	ctx.Init()
+
+	for _, tt := range &tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx.Push(tt.left)
+			ctx.Push(tt.right)
+			Div(ctx)
 			assert.Equal(t, tt.result, ctx.Pop())
 		})
 	}
@@ -294,6 +271,57 @@ func BenchmarkLoad(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		Load(&ctx)
+		ctx.Pop()
+	}
+}
+
+func BenchmarkEqual(b *testing.B) {
+	b.ReportAllocs()
+
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
+	ctx.Init()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		ctx.Push(Int(1))
+		ctx.Push(Bool(true))
+		Equal(ctx)
+		ctx.Pop()
+	}
+}
+
+func BenchmarkIdentical(b *testing.B) {
+	b.ReportAllocs()
+
+	g := &GlobalContext{}
+	ctx := &FunctionContext{Context: g, global: g}
+	ctx.Init()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		ctx.Push(Int(1))
+		ctx.Push(Bool(true))
+		Identical(ctx)
+		ctx.Pop()
+	}
+}
+
+func BenchmarkAdd(b *testing.B) {
+	b.ReportAllocs()
+
+	g := GlobalContext{}
+	ctx := FunctionContext{Context: &g, global: &g}
+	ctx.Init()
+
+	b.ResetTimer()
+
+	for i := 0; i < b.N; i++ {
+		ctx.Push(Int(1))
+		ctx.Push(Int(2))
+		Add(&ctx)
 		ctx.Pop()
 	}
 }

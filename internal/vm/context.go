@@ -14,7 +14,7 @@ type Context interface {
 	Parent() Context
 	Global() *GlobalContext
 	GetFunction(int) Callable
-	Throw(error)
+	Throw(Throwable)
 }
 
 type GlobalContext struct {
@@ -50,7 +50,7 @@ func (g *GlobalContext) Init()                          { g.initialized.Do(g.Sta
 func (g *GlobalContext) Parent() Context                { return nil }
 func (g *GlobalContext) Global() *GlobalContext         { return g }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
-func (g *GlobalContext) Throw(error)                    {}
+func (g *GlobalContext) Throw(Throwable)                {}
 func (g *GlobalContext) Run(fn CompiledFunction) Value {
 	g.Init()
 	return fn.Invoke(noescape(g))
@@ -64,12 +64,13 @@ type FunctionContext struct {
 	pc, fp     int // Registers
 }
 
-func (ctx *FunctionContext) Arg(num int) Value      { return ctx.args[num] }
-func (ctx *FunctionContext) Parent() Context        { return ctx.Context }
-func (ctx *FunctionContext) Global() *GlobalContext { return ctx.global }
-func (ctx *FunctionContext) Pop() Value             { return ctx.global.Pop() }
-func (ctx *FunctionContext) Push(v Value)           { ctx.global.Push(v) }
-func (ctx *FunctionContext) TopIndex() int          { return ctx.global.TopIndex() }
+func (ctx *FunctionContext) Throw(throwable Throwable) { ctx.global.Throw(throwable) }
+func (ctx *FunctionContext) Arg(num int) Value         { return ctx.args[num] }
+func (ctx *FunctionContext) Parent() Context           { return ctx.Context }
+func (ctx *FunctionContext) Global() *GlobalContext    { return ctx.global }
+func (ctx *FunctionContext) Pop() Value                { return ctx.global.Pop() }
+func (ctx *FunctionContext) Push(v Value)              { ctx.global.Push(v) }
+func (ctx *FunctionContext) TopIndex() int             { return ctx.global.TopIndex() }
 func (ctx *FunctionContext) Slice(offsetX, offsetY int) []Value {
 	return ctx.global.Slice(offsetX, offsetY)
 }

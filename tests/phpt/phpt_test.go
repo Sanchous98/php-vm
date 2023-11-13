@@ -70,7 +70,7 @@ func expectfToRegex(wanted string) *regexp.Regexp {
 	).Replace(wantedRe))
 }
 
-func RunTest(t *testing.T, phpt *PhpT) {
+func (phpt *PhpT) RunTest(t *testing.T) {
 	t.Run(phpt.Test, func(t *testing.T) {
 		output := bytes.NewBuffer(nil)
 

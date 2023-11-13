@@ -77,8 +77,7 @@ func (i Int) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return i.AsObject(ctx)
 	default:
-		ctx.Throw(fmt.Errorf("cannot cast %s to %s", i.Type().String(), t.String()))
-		return nil
+		panic(fmt.Errorf("cannot cast %s to %s", i.Type().String(), t.String()))
 	}
 }
 func (i Int) DebugInfo(_ Context, level int) string {
@@ -117,7 +116,7 @@ func (f Float) Cast(ctx Context, t Type) Value {
 	}
 }
 func (f Float) DebugInfo(_ Context, level int) string {
-	return fmt.Sprintf("%sfloat(%f)", strings.Repeat(" ", level<<1), f)
+	return fmt.Sprintf("%sfloat(%g)", strings.Repeat(" ", level<<1), f)
 }
 
 type Bool bool
@@ -171,21 +170,23 @@ type String string
 
 func (s String) IsRef() bool { return false }
 func (s String) Type() Type  { return StringType }
-func (s String) AsInt(ctx Context) Int {
+func (s String) AsInt(Context) Int {
+	if s == "" {
+		return 0
+	}
+
 	v, err := strconv.Atoi(string(s))
 
 	if err != nil {
-		ctx.Throw(err)
 		return 0
 	}
 
 	return Int(v)
 }
-func (s String) AsFloat(ctx Context) Float {
+func (s String) AsFloat(Context) Float {
 	v, err := strconv.ParseFloat(string(s), 64)
 
 	if err != nil {
-		ctx.Throw(err)
 		return 0
 	}
 
@@ -255,6 +256,8 @@ func (n Null) Cast(ctx Context, t Type) Value {
 func (n Null) DebugInfo(_ Context, level int) string { return strings.Repeat(" ", level<<1) + "NULL" }
 
 type Array struct {
+	// Value type is Ref because assigning a value to map even in go stdlib is done through returning a pointer to new value in map.
+	// We should do something similar and keep in mind the data evacuation in go maps
 	hash map[Value]Ref
 	next Int
 }
@@ -355,7 +358,7 @@ func (a *Array) AsFloat(Context) Float {
 }
 func (a *Array) AsBool(Context) Bool { return len(a.hash) > 0 }
 func (a *Array) AsString(ctx Context) String {
-	ctx.Throw(fmt.Errorf("array to string conversion"))
+	ctx.Throw(NewThrowable("array to string conversion", EWarning))
 	return "Array"
 }
 func (a *Array) AsNull(Context) Null    { return Null{} }

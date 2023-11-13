@@ -8,6 +8,6 @@ func TestBasic(t *testing.T) {
 	}
 
 	for _, test := range &tests {
-		RunTest(t, &test)
+		test.RunTest(t)
 	}
 }

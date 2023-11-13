@@ -213,14 +213,26 @@ func Not(ctx *FunctionContext) {
 func Equal(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := *ctx.global.sp
-	*ctx.global.sp = Bool(compare(ctx, left, right) == 0)
+	*ctx.global.sp = equal(ctx, left, right)
 }
 
 // NotEqual => $x != $y
 func NotEqual(ctx *FunctionContext) {
 	right := ctx.Pop()
 	left := *ctx.global.sp
-	*ctx.global.sp = Bool(compare(ctx, left, right) != 0)
+	*ctx.global.sp = !equal(ctx, left, right)
+}
+
+func equal(ctx *FunctionContext, x, y Value) Bool {
+	as := Juggle(x.Type(), y.Type())
+
+	if as == ArrayType {
+		return Bool(maps.EqualFunc(x.AsArray(ctx).hash, y.AsArray(ctx).hash, func(x, y Ref) bool {
+			return bool(equal(ctx, x, y))
+		}))
+	}
+
+	return x.Cast(ctx, as) == y.Cast(ctx, as)
 }
 
 // LessOrEqual => $x <= $y

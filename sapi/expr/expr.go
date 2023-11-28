@@ -83,5 +83,10 @@ func (e Expression) ExecuteContext(ctx context.Context, args map[string]any) vm.
 
 	comp := compiler.NewCompiler(&compiler.Extensions{Exts: []compiler.Extension{{Constants: consts}}})
 	fn := comp.Compile([]byte("<?php\n"+e+";"), global)
-	return global.Run(fn)
+	global.Run(fn)
+	if global.TopIndex() == 0 {
+		return global.Pop()
+	}
+
+	return vm.Null{}
 }

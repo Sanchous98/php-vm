@@ -99,7 +99,7 @@ const (
 	OpForEachInit                      // FE_INIT
 	OpForEachNext                      // FE_NEXT
 	OpForEachValid                     // FE_VALID
-	OpForEachReset                     // FE_RESET
+	OpThrow                            // THROW
 
 	_opOneOperand      Operator = iota - 1
 	OpAssertType                // ASSERT_TYPE
@@ -457,7 +457,7 @@ func JumpFalse(ctx *FunctionContext) {
 
 // Call => $b = someFunction($a, $x)
 func Call(ctx *FunctionContext) {
-	ctx.Push(ctx.global.Functions[ctx.global.r1].Invoke(ctx))
+	ctx.global.Functions[ctx.global.r1].Invoke(ctx)
 }
 
 func Pop(ctx *FunctionContext) {
@@ -477,7 +477,8 @@ func ReturnValue(ctx *FunctionContext) {
 
 // Return => return;
 func Return(ctx *FunctionContext) {
-	ctx.Sp(ctx.fp)
+	f := ctx.PopFrame()
+	ctx.Sp(f.fp)
 }
 
 // Add => 1 + 2
@@ -723,7 +724,7 @@ func Echo(ctx *FunctionContext) {
 		values[i] = string(v.AsString(ctx))
 	}
 
-	fmt.Fprint(ctx.global.out, values...)
+	fmt.Fprint(ctx.Output(), values...)
 }
 
 // IsSet => isset($x)
@@ -792,6 +793,9 @@ func ForEachInit(ctx *FunctionContext) {
 	case Iterator:
 	case IteratorAggregate:
 		iterable = iterable.(IteratorAggregate).GetIterator(ctx)
+	default:
+		ctx.Throw(NewThrowable("not iterable", EError))
+		return
 	}
 	iterable.(Iterator).Rewind(ctx)
 	ctx.Push(iterable)
@@ -823,6 +827,10 @@ func ForEachNext(ctx *FunctionContext) {
 	ctx.Top().(Iterator).Next(ctx)
 }
 
+// ForEachValid checks if there are items in iterator
 func ForEachValid(ctx *FunctionContext) {
 	ctx.Push(ctx.Top().(Iterator).Valid(ctx))
 }
+
+// Throw => throw new Exception();
+func Throw(ctx *FunctionContext) {}

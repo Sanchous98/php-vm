@@ -1,9 +1,7 @@
 package vm
 
-import "unsafe"
-
 type Callable interface {
-	Invoke(Context) Value
+	Invoke(Context)
 }
 
 type Arg struct {
@@ -43,11 +41,11 @@ func NewBuiltInFunction[RT Value, F ~func(Context, ...Value) RT](fn F, args ...A
 	return BuiltInFunction[RT]{args, fn}
 }
 func (f BuiltInFunction[RT]) GetArgs() []Arg { return f.Args }
-func (f BuiltInFunction[RT]) Invoke(ctx Context) Value {
+func (f BuiltInFunction[RT]) Invoke(ctx Context) {
 	args := ctx.Slice(-len(f.Args), 0)
 	res := f.Fn(ctx, f.Args.Map(ctx, args)...)
 	ctx.MovePointer(-len(f.Args))
-	return res
+	ctx.Push(res)
 }
 
 type CompiledFunction struct {
@@ -55,169 +53,23 @@ type CompiledFunction struct {
 	Args, Vars   int
 }
 
-func (f CompiledFunction) Invoke(parent Context) Value {
-	ctx := FunctionContext{}
-	ctx.Context = parent
-	ctx.global = parent.Global()
-	ctx.vars = ctx.global.Slice(-f.Args, f.Vars)
+func (f CompiledFunction) Invoke(parent Context) {
+	global := parent.Global()
+	frame := global.NextFrame()
+	frame.ctx.Context = parent
+	frame.ctx.global = global
+	frame.ctx.vars = frame.ctx.global.Slice(-f.Args, f.Vars)
 
-	for i := range ctx.vars {
-		v := &ctx.vars[i]
+	for i := range frame.ctx.vars {
+		v := &frame.ctx.vars[i]
 		if *v == nil {
 			*v = Null{}
 		}
 	}
 
-	ctx.args = ctx.vars[:len(ctx.vars)-f.Vars]
-	ctx.fp = parent.TopIndex() - f.Args
+	frame.ctx.pc = -1
+	frame.ctx.args = frame.ctx.vars[:len(frame.ctx.vars)-f.Vars]
+	frame.fp = parent.TopIndex() - f.Args
+	frame.bytecode = f.Instructions
 	parent.MovePointer(f.Vars + f.Args)
-
-	for ctx.pc = 0; ctx.pc<<3 < len(f.Instructions); ctx.pc++ {
-		switch f.Instructions.ReadOperation(noescape(&ctx)) {
-		case OpPop:
-			Pop(noescape(&ctx))
-		case OpPop2:
-			Pop2(noescape(&ctx))
-		case OpReturn:
-			Return(noescape(&ctx))
-			return nil
-		case OpReturnValue:
-			ReturnValue(noescape(&ctx))
-			return ctx.Pop()
-		case OpAdd:
-			Add(noescape(&ctx))
-		case OpSub:
-			Sub(noescape(&ctx))
-		case OpMul:
-			Mul(noescape(&ctx))
-		case OpDiv:
-			Div(noescape(&ctx))
-		case OpMod:
-			Mod(noescape(&ctx))
-		case OpPow:
-			Pow(noescape(&ctx))
-		case OpBwAnd:
-			BwAnd(noescape(&ctx))
-		case OpBwOr:
-			BwOr(noescape(&ctx))
-		case OpBwXor:
-			BwXor(noescape(&ctx))
-		case OpBwNot:
-			BwNot(noescape(&ctx))
-		case OpShiftLeft:
-			ShiftLeft(noescape(&ctx))
-		case OpShiftRight:
-			ShiftRight(noescape(&ctx))
-		case OpEqual:
-			Equal(noescape(&ctx))
-		case OpNotEqual:
-			NotEqual(noescape(&ctx))
-		case OpIdentical:
-			Identical(noescape(&ctx))
-		case OpNotIdentical:
-			NotIdentical(noescape(&ctx))
-		case OpNot:
-			Not(noescape(&ctx))
-		case OpGreater:
-			Greater(noescape(&ctx))
-		case OpLess:
-			Less(noescape(&ctx))
-		case OpGreaterOrEqual:
-			GreaterOrEqual(noescape(&ctx))
-		case OpLessOrEqual:
-			LessOrEqual(noescape(&ctx))
-		case OpCompare:
-			Compare(noescape(&ctx))
-		case OpAssignRef:
-			AssignRef(noescape(&ctx))
-		case OpArrayNew:
-			ArrayNew(noescape(&ctx))
-		case OpArrayAccessRead:
-			ArrayAccessRead(noescape(&ctx))
-		case OpArrayAccessWrite:
-			ArrayAccessWrite(noescape(&ctx))
-		case OpArrayAccessPush:
-			ArrayAccessPush(noescape(&ctx))
-		case OpArrayUnset:
-			ArrayUnset(noescape(&ctx))
-		case OpConcat:
-			Concat(noescape(&ctx))
-		case OpUnset:
-			// TODO: Unset
-		case OpForEachInit:
-			ForEachInit(noescape(&ctx))
-		case OpForEachNext:
-			ForEachNext(noescape(&ctx))
-		case OpForEachValid:
-			ForEachValid(noescape(&ctx))
-		case OpAssertType:
-			AssertType(noescape(&ctx))
-		case OpAssign:
-			Assign(noescape(&ctx))
-		case OpAssignAdd:
-			AssignAdd(noescape(&ctx))
-		case OpAssignSub:
-			AssignSub(noescape(&ctx))
-		case OpAssignMul:
-			AssignMul(noescape(&ctx))
-		case OpAssignDiv:
-			AssignDiv(noescape(&ctx))
-		case OpAssignMod:
-			AssignMod(noescape(&ctx))
-		case OpAssignPow:
-			AssignPow(noescape(&ctx))
-		case OpAssignBwAnd:
-			AssignBwAnd(noescape(&ctx))
-		case OpAssignBwOr:
-			AssignBwOr(noescape(&ctx))
-		case OpAssignBwXor:
-			AssignBwXor(noescape(&ctx))
-		case OpAssignConcat:
-			AssignConcat(noescape(&ctx))
-		case OpAssignShiftLeft:
-			AssignShiftLeft(noescape(&ctx))
-		case OpAssignShiftRight:
-			AssignShiftRight(noescape(&ctx))
-		case OpCast:
-			Cast(noescape(&ctx))
-		case OpPreIncrement:
-			PreIncrement(noescape(&ctx))
-		case OpPostIncrement:
-			PostIncrement(noescape(&ctx))
-		case OpPreDecrement:
-			PreDecrement(noescape(&ctx))
-		case OpPostDecrement:
-			PostDecrement(noescape(&ctx))
-		case OpLoad:
-			Load(noescape(&ctx))
-		case OpLoadRef:
-			LoadRef(noescape(&ctx))
-		case OpConst:
-			Const(noescape(&ctx))
-		case OpJump:
-			Jump(noescape(&ctx))
-		case OpJumpTrue:
-			JumpTrue(noescape(&ctx))
-		case OpJumpFalse:
-			JumpFalse(noescape(&ctx))
-		case OpCall:
-			Call(noescape(&ctx))
-		case OpEcho:
-			Echo(noescape(&ctx))
-		case OpIsSet:
-			IsSet(noescape(&ctx))
-		case OpForEachKey:
-			ForEachKey(noescape(&ctx))
-		case OpForEachValue:
-			ForEachValue(noescape(&ctx))
-		case OpForEachValueRef:
-			ForEachValueRef(noescape(&ctx))
-		}
-	}
-
-	return nil
-}
-
-func noescape[T any](v *T) *T {
-	return (*T)(unsafe.Pointer(uintptr(unsafe.Pointer(v)) ^ 0))
 }

@@ -63,7 +63,8 @@ func TestFibonacciLoop(t *testing.T) {
 	fn := comp.Compile(input, ctx)
 	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), ctx.Functions[0].(vm.CompiledFunction).Instructions.String())
 	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(2), vm.Int(1), vm.Int(10)}, ctx.Constants)
-	assert.Equal(t, vm.Int(55), ctx.Run(fn))
+	ctx.Run(fn)
+	assert.Equal(t, vm.Int(55), ctx.Pop())
 }
 
 func instructionsToBytecode(i []uint64) (b vm.Bytecode) {

@@ -260,20 +260,28 @@ type Array struct {
 	// We should do something similar and keep in mind the data evacuation in go maps
 	hash map[Value]Ref
 	next Int
+
+	iterator struct {
+		i    int
+		iter Iterator
+	}
 }
 
 func (a *Array) GetIterator(ctx Context) Iterator {
-	keys := a.Keys(ctx)
-	i := 0
+	if a.iterator.iter == nil {
+		keys := a.Keys(ctx)
 
-	return InternalIterator[*Array]{
-		this:      a,
-		nextFn:    func(ctx Context, array *Array) { i++ },
-		currentFn: func(ctx Context, array *Array) Value { return array.hash[keys[i]] },
-		keyFn:     func(ctx Context, array *Array) Value { return keys[i] },
-		validFn:   func(ctx Context, array *Array) Bool { return i < len(keys) },
-		rewindFn:  func(ctx Context, array *Array) { i = 0 },
+		a.iterator.iter = &InternalIterator[*Array]{
+			this:      a,
+			nextFn:    func(ctx Context, array *Array) { array.iterator.i++ },
+			currentFn: func(ctx Context, array *Array) Value { return array.hash[keys[array.iterator.i]] },
+			keyFn:     func(ctx Context, array *Array) Value { return keys[array.iterator.i] },
+			validFn:   func(ctx Context, array *Array) Bool { return array.iterator.i < len(keys) },
+			rewindFn:  func(ctx Context, array *Array) { array.iterator.i = 0 },
+		}
 	}
+
+	return a.iterator.iter
 }
 
 func (a *Array) Count(Context) Int { return Int(len(a.hash)) }

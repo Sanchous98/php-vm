@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestDefaultValue(t *testing.T) {
+func TestReference(t *testing.T) {
 	input, err := os.ReadFile("reference.php")
 	require.NoError(t, err)
 
@@ -26,7 +26,8 @@ func TestDefaultValue(t *testing.T) {
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
 	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), fn.Instructions.String())
-	assert.Equal(t, vm.Int(1), ctx.Run(fn))
+	ctx.Run(fn)
+	assert.Equal(t, vm.Int(1), ctx.Pop())
 }
 
 func instructionsToBytecode(i []uint64) (b vm.Bytecode) {

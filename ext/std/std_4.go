@@ -20,7 +20,7 @@ func microtime(_ vm.Context, args ...vm.Value) vm.Value {
 
 func varDump(ctx vm.Context, args ...vm.Value) vm.Value {
 	for _, arg := range args {
-		fmt.Println(arg.DebugInfo(ctx, 0))
+		fmt.Fprintln(ctx.Output(), arg.DebugInfo(ctx, 0))
 	}
 
 	return nil

@@ -25,9 +25,10 @@ func start(in io.Reader, out io.Writer, comp *compiler.Compiler) {
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		fn := comp.Compile(line, ctx)
-		ret := ctx.Run(fn)
-		if ret != nil {
-			fmt.Fprintln(out, ret)
+		ctx.Run(fn)
+
+		if ctx.TopIndex() == 0 {
+			fmt.Fprintln(out, ctx.Pop())
 		}
 
 		fmt.Printf(Prompt)

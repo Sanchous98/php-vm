@@ -54,7 +54,7 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(IntType))
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpCall))
 	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturnValue))
+	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturn))
 
 	fn := CompiledFunction{
 		Instructions: bytecode,

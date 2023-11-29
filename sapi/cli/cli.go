@@ -27,7 +27,7 @@ func init() {
 			parent, cancel := context.WithCancel(context.Background())
 			ctx := vm.NewGlobalContext(parent, cmd.InOrStdin(), cmd.OutOrStdout())
 			input, _ := io.ReadAll(file)
-			fn := comp.Compile(input, ctx)
+			fn := comp.Compile(input, &ctx)
 			ctx.Run(fn)
 			cancel()
 		},
@@ -49,7 +49,7 @@ func init() {
 			defer cancel()
 			ctx := vm.NewGlobalContext(parent, cmd.InOrStdin(), cmd.OutOrStdout())
 			input, _ := io.ReadAll(file)
-			fn := comp.Compile(input, ctx)
+			fn := comp.Compile(input, &ctx)
 
 			fmt.Printf("main(args=%d, vars=%d)", fn.Args, fn.Vars)
 			fmt.Println(fn.Instructions.String())

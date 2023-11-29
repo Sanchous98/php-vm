@@ -44,7 +44,7 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpAdd))
 	f.Instructions = binary.NativeEndian.AppendUint64(f.Instructions, uint64(OpReturnValue))
 
-	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10), Int(0), Int(1), Int(2)}}
+	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(20), Int(0), Int(1), Int(2)}}
 	ctx.Init()
 
 	var bytecode Bytecode

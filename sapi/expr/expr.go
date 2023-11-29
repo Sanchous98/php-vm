@@ -78,11 +78,11 @@ func (e Expression) ExecuteContext(ctx context.Context, args map[string]any) vm.
 	consts := make(map[string]vm.Value)
 
 	for name, value := range args {
-		consts[name] = convertValue(global, value)
+		consts[name] = convertValue(&global, value)
 	}
 
 	comp := compiler.NewCompiler(&compiler.Extensions{Exts: []compiler.Extension{{Constants: consts}}})
-	fn := comp.Compile([]byte("<?php\n"+e+";"), global)
+	fn := comp.Compile([]byte("<?php\n"+e+";"), &global)
 	global.Run(fn)
 	if global.TopIndex() == 0 {
 		return global.Pop()

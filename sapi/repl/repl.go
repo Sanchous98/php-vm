@@ -24,7 +24,7 @@ func start(in io.Reader, out io.Writer, comp *compiler.Compiler) {
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-		fn := comp.Compile(line, ctx)
+		fn := comp.Compile(line, &ctx)
 		ctx.Run(fn)
 
 		if ctx.TopIndex() == 0 {

@@ -76,7 +76,7 @@ func (phpt *PhpT) RunTest(t *testing.T) {
 
 		ctx := vm.NewGlobalContext(context.Background(), nil, output)
 		comp := compiler.NewCompiler(nil)
-		fn := comp.Compile([]byte(phpt.File), ctx)
+		fn := comp.Compile([]byte(phpt.File), &ctx)
 		ctx.Run(fn)
 		if len(phpt.Expect) > 0 {
 			assert.Equal(t, phpt.Expect, output.String())

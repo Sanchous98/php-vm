@@ -46,7 +46,7 @@ type Value interface {
 	AsObject(Context) *Object
 	Cast(Context, Type) Value
 	Type() Type
-	DebugInfo(Context, int) string
+	DebugInfo(Context) string
 }
 
 type Int int
@@ -80,9 +80,7 @@ func (i Int) Cast(ctx Context, t Type) Value {
 		panic(fmt.Errorf("cannot cast %s to %s", i.Type().String(), t.String()))
 	}
 }
-func (i Int) DebugInfo(_ Context, level int) string {
-	return fmt.Sprintf("%sint(%d)", strings.Repeat(" ", level<<1), i)
-}
+func (i Int) DebugInfo(Context) string { return fmt.Sprintf("int(%d)", i) }
 
 type Float float64
 
@@ -115,9 +113,7 @@ func (f Float) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().String(), t.String()))
 	}
 }
-func (f Float) DebugInfo(_ Context, level int) string {
-	return fmt.Sprintf("%sfloat(%g)", strings.Repeat(" ", level<<1), f)
-}
+func (f Float) DebugInfo(Context) string { return fmt.Sprintf("float(%g)", f) }
 
 type Bool bool
 
@@ -162,9 +158,7 @@ func (b Bool) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().String(), t.String()))
 	}
 }
-func (b Bool) DebugInfo(_ Context, level int) string {
-	return fmt.Sprintf("%sbool(%t)", strings.Repeat(" ", level<<1), b)
-}
+func (b Bool) DebugInfo(Context) string { return fmt.Sprintf("bool(%t)", b) }
 
 type String string
 
@@ -217,10 +211,8 @@ func (s String) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().String(), t.String()))
 	}
 }
-func (s String) String() string { return strconv.Quote(string(s)) }
-func (s String) DebugInfo(_ Context, level int) string {
-	return fmt.Sprintf("%sstring(%s)", strings.Repeat(" ", level<<1), s)
-}
+func (s String) String() string           { return strconv.Quote(string(s)) }
+func (s String) DebugInfo(Context) string { return fmt.Sprintf("string(%s)", s) }
 
 type Null struct{}
 
@@ -253,7 +245,7 @@ func (n Null) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().String(), t.String()))
 	}
 }
-func (n Null) DebugInfo(_ Context, level int) string { return strings.Repeat(" ", level<<1) + "NULL" }
+func (n Null) DebugInfo(Context) string { return "NULL" }
 
 type Array struct {
 	// Value type is Ref because assigning a value to map even in go stdlib is done through returning a pointer to new value in map.
@@ -321,7 +313,7 @@ func (a *Array) assign(ctx Context, key Value) Ref {
 func (a *Array) delete(key Value) { delete(a.hash, key) }
 
 func NewArray(init map[Value]Value, next ...Int) *Array {
-	if next == nil {
+	if len(next) == 0 {
 		next = []Int{math.MinInt}
 	}
 
@@ -407,18 +399,15 @@ func (a *Array) NextKey() Value {
 
 	return a.next
 }
-func (a *Array) DebugInfo(ctx Context, level int) string {
+func (a *Array) DebugInfo(ctx Context) string {
 	var str strings.Builder
-	str.WriteString(fmt.Sprintf("%sarray(%d) {\n", strings.Repeat(" ", level<<1), len(a.hash)))
-	level++
-	spaces := strings.Repeat(" ", level<<1)
+	str.WriteString(fmt.Sprintf("array(%d) {", len(a.hash)))
 
 	for _, key := range a.Keys(ctx) {
-		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, (*a.hash[key].Deref()).DebugInfo(ctx, level)))
+		str.WriteString(stringIndent(fmt.Sprintf("\n[%v]=>\n%s", key, (*a.hash[key].Deref()).DebugInfo(ctx)), 2))
 	}
 
-	str.WriteString(strings.Repeat(" ", (level-1)<<1))
-	str.WriteByte('}')
+	str.WriteString("\n}")
 
 	return str.String()
 }
@@ -472,9 +461,7 @@ func (r Ref) Cast(ctx Context, t Type) Value {
 		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().String(), t.String()))
 	}
 }
-func (r Ref) DebugInfo(ctx Context, level int) string {
-	return fmt.Sprintf("%s&%s", strings.Repeat(" ", level<<1), (*r.Deref()).DebugInfo(ctx, 0))
-}
+func (r Ref) DebugInfo(ctx Context) string { return fmt.Sprintf("&%s", (*r.Deref()).DebugInfo(ctx)) }
 
 type Object struct {
 	props map[String]Value
@@ -524,18 +511,19 @@ func (o *Object) Keys() []String {
 	}
 	return keys
 }
-func (o *Object) DebugInfo(ctx Context, level int) string {
+func (o *Object) DebugInfo(ctx Context) string {
 	var str strings.Builder
-	str.WriteString(fmt.Sprintf("%sobject(stdClass)#%d (%d) {\n", strings.Repeat(" ", level<<1), 1, len(o.props)))
-	level++
-	spaces := strings.Repeat(" ", level<<1)
+	str.WriteString(fmt.Sprintf("object(stdClass)#%d (%d) {", 1, len(o.props)))
 
 	for _, key := range o.Keys() {
-		str.WriteString(fmt.Sprintf("%s[%v]=>\n%s\n", spaces, key, o.props[key].DebugInfo(ctx, level)))
+		str.WriteString(stringIndent(fmt.Sprintf("\n[%v]=>\n%s\n", key, o.props[key].DebugInfo(ctx)), 2))
 	}
 
-	str.WriteString(strings.Repeat(" ", (level-1)<<1))
-	str.WriteByte('}')
+	str.WriteString("\n}")
 
 	return str.String()
+}
+
+func stringIndent(str string, count int) string {
+	return strings.ReplaceAll(str, "\n", "\n"+strings.Repeat(" ", count))
 }

@@ -14,7 +14,11 @@ type Arg struct {
 
 type argList []Arg
 
-func (a argList) Map(ctx Context, args []Value) []Value {
+func (a argList) Map(ctx Context, args []Value) ([]Value, Throwable) {
+	if len(args) < len(a) {
+		return nil, NewThrowable("not enough arguments", EError)
+	}
+
 	for i, arg := range a {
 		if args[i] == nil {
 			args[i] = arg.Default
@@ -29,7 +33,7 @@ func (a argList) Map(ctx Context, args []Value) []Value {
 		}
 	}
 
-	return args
+	return args, nil
 }
 
 type BuiltInFunction[RT Value] struct {
@@ -43,7 +47,14 @@ func NewBuiltInFunction[RT Value, F ~func(Context, ...Value) RT](fn F, args ...A
 func (f BuiltInFunction[RT]) GetArgs() []Arg { return f.Args }
 func (f BuiltInFunction[RT]) Invoke(ctx Context) {
 	args := ctx.Slice(-len(f.Args), 0)
-	res := f.Fn(ctx, f.Args.Map(ctx, args)...)
+	mapped, err := f.Args.Map(ctx, args)
+
+	if err != nil {
+		ctx.Throw(err)
+		return
+	}
+
+	res := f.Fn(ctx, mapped...)
 	ctx.MovePointer(-len(f.Args))
 	ctx.Push(res)
 }
@@ -60,7 +71,7 @@ func (f CompiledFunction) Invoke(parent Context) {
 	frame.ctx.global = global
 	frame.ctx.vars = frame.ctx.global.Slice(-f.Args, f.Vars)
 
-	for i := range frame.ctx.vars {
+	for i := 0; i < len(frame.ctx.vars); i++ {
 		v := &frame.ctx.vars[i]
 		if *v == nil {
 			*v = Null{}

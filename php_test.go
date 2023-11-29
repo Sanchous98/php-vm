@@ -22,7 +22,7 @@ func BenchmarkPhp(b *testing.B) {
 
 	comp := compiler.NewCompiler(&compiler.Extensions{Exts: []compiler.Extension{std.Ext}})
 	ctx := vm.NewGlobalContext(context.Background(), nil, nil)
-	fn := comp.Compile(input, ctx)
+	fn := comp.Compile(input, &ctx)
 
 	b.ReportAllocs()
 	b.ResetTimer()

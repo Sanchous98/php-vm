@@ -33,9 +33,7 @@ func (i InternalIterator[T]) AsArray(ctx Context) *Array     { return i.this.AsA
 func (i InternalIterator[T]) AsObject(ctx Context) *Object   { return i.this.AsObject(ctx) }
 func (i InternalIterator[T]) Cast(ctx Context, t Type) Value { return i.this.Cast(ctx, t) }
 func (i InternalIterator[T]) Type() Type                     { return i.this.Type() }
-func (i InternalIterator[T]) DebugInfo(ctx Context, level int) string {
-	return i.this.DebugInfo(ctx, level)
-}
+func (i InternalIterator[T]) DebugInfo(ctx Context) string   { return i.this.DebugInfo(ctx) }
 
 func (i InternalIterator[T]) Next(ctx Context)          { i.nextFn(ctx, i.this) }
 func (i InternalIterator[T]) Current(ctx Context) Value { return i.currentFn(ctx, i.this) }

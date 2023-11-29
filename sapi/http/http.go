@@ -48,7 +48,7 @@ func init() {
 					_ = file.Close()
 
 					ctx := vm.NewGlobalContext(r.Context(), nil, w)
-					fn := comp.Compile(input, ctx)
+					fn := comp.Compile(input, &ctx)
 					ctx.Run(fn)
 				}),
 			}

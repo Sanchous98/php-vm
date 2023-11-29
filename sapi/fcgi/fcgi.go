@@ -51,7 +51,7 @@ func init() {
 				parent, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 				ctx := vm.NewGlobalContext(parent, nil, w)
-				fn := comp.Compile(input, ctx)
+				fn := comp.Compile(input, &ctx)
 				ctx.Run(fn)
 			}))
 		},

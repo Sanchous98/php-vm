@@ -51,13 +51,13 @@ func init() {
 			input, _ := io.ReadAll(file)
 			fn := comp.Compile(input, &ctx)
 
-			fmt.Printf("main(args=%d, vars=%d)", fn.Args, fn.Vars)
+			fmt.Printf("main(vars=%d)", fn.Vars)
 			fmt.Println(fn.Instructions.String())
 
-			for i, f := range ctx.Functions {
+			for _, f := range ctx.Functions {
 				switch f := f.(type) {
 				case vm.CompiledFunction:
-					fmt.Printf("%d(args=%d, vars=%d)", i, f.Args, f.Vars)
+					fmt.Printf("%s(vars=%d)", f.Name, f.Vars)
 					fmt.Println(f.Instructions.String())
 				}
 			}

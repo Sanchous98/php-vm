@@ -6,10 +6,11 @@ import (
 	"php-vm/pkg/stdlib"
 )
 
-func microtime(_ vm.Context, args ...vm.Value) vm.Value {
-	asNumber := args[0].(vm.Bool)
+func microtime(ctx *vm.FunctionContext) vm.Value {
+	var asNumber bool
+	vm.ParseParameters(ctx, &asNumber)
 
-	num, str := stdlib.Microtime(bool(asNumber))
+	num, str := stdlib.Microtime(asNumber)
 
 	if asNumber {
 		return vm.Float(num)
@@ -18,8 +19,14 @@ func microtime(_ vm.Context, args ...vm.Value) vm.Value {
 	return vm.String(str)
 }
 
-func varDump(ctx vm.Context, args ...vm.Value) vm.Value {
-	for _, arg := range args {
+func varDump(ctx *vm.FunctionContext) vm.Value {
+	var value vm.Value
+	var values vm.Array
+	vm.ParseParameters(ctx, &value, &values)
+	fmt.Fprintln(ctx.Output(), value.DebugInfo(ctx))
+
+	for it := values.GetIterator(ctx); it.Valid(ctx); it.Next(ctx) {
+		arg := it.Current(ctx)
 		fmt.Fprintln(ctx.Output(), arg.DebugInfo(ctx))
 	}
 

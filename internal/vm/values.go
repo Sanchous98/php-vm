@@ -4,25 +4,29 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 )
 
-//go:generate stringer -type=Type -linecomment
-type Type byte
+//go:generate stringer -type=TypeShape -linecomment
+type TypeShape byte
 
 const (
-	NullType   Type = 1 << iota // null
-	IntType                     // integer
-	FloatType                   // float
-	StringType                  // string
-	ArrayType                   // array
-	ObjectType                  // object
-	BoolType                    // boolean
+	NullType   TypeShape = 1 << iota // null
+	IntType                          // integer
+	FloatType                        // float
+	StringType                       // string
+	ArrayType                        // array
+	ObjectType                       // object
+	BoolType                         // boolean
 )
 
-func Juggle(x, y Type) Type { return max(x, y) }
+func Juggle(x, y TypeShape) TypeShape { return max(x, y) }
+
+type Type struct {
+	class Class
+	shape TypeShape
+}
 
 type Countable interface {
 	Count(Context) Int
@@ -44,23 +48,30 @@ type Value interface {
 	AsNull(Context) Null
 	AsArray(Context) *Array
 	AsObject(Context) *Object
-	Cast(Context, Type) Value
+	Cast(Context, TypeShape) Value
 	Type() Type
-	DebugInfo(Context) string
+	DebugInfo(Context) String
 }
 
 type Int int
 
-func (i Int) IsRef() bool              { return false }
-func (i Int) Type() Type               { return IntType }
-func (i Int) AsInt(Context) Int        { return i }
-func (i Int) AsFloat(Context) Float    { return Float(i) }
-func (i Int) AsBool(Context) Bool      { return i != 0 }
-func (i Int) AsString(Context) String  { return String(strconv.Itoa(int(i))) }
-func (i Int) AsNull(Context) Null      { return Null{} }
-func (i Int) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): i}) }
-func (i Int) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": i}} }
-func (i Int) Cast(ctx Context, t Type) Value {
+func (i Int) IsRef() bool             { return false }
+func (i Int) Type() Type              { return Type{shape: IntType} }
+func (i Int) AsInt(Context) Int       { return i }
+func (i Int) AsFloat(Context) Float   { return Float(i) }
+func (i Int) AsBool(Context) Bool     { return i != 0 }
+func (i Int) AsString(Context) String { return String(strconv.Itoa(int(i))) }
+func (i Int) AsNull(Context) Null     { return Null{} }
+func (i Int) AsArray(Context) *Array  { return NewArray(map[Value]Value{String("scalar"): i}) }
+func (i Int) AsObject(ctx Context) *Object {
+	return &Object{
+		class: ctx.ClassByName("stdClass"),
+		props: HashTable[String, Value]{
+			internal: map[String]*htValue[Value]{"scalar": {i}},
+		},
+	}
+}
+func (i Int) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return i
@@ -77,23 +88,30 @@ func (i Int) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return i.AsObject(ctx)
 	default:
-		panic(fmt.Errorf("cannot cast %s to %s", i.Type().String(), t.String()))
+		panic(fmt.Errorf("cannot cast %s to %s", i.Type().shape.String(), t.String()))
 	}
 }
-func (i Int) DebugInfo(Context) string { return fmt.Sprintf("int(%d)", i) }
+func (i Int) DebugInfo(Context) String { return "int(" + String(strconv.Itoa(int(i))) + ")" }
 
 type Float float64
 
-func (f Float) IsRef() bool              { return false }
-func (f Float) Type() Type               { return FloatType }
-func (f Float) AsInt(Context) Int        { return Int(f) }
-func (f Float) AsFloat(Context) Float    { return f }
-func (f Float) AsBool(Context) Bool      { return f != 0 }
-func (f Float) AsString(Context) String  { return String(strconv.FormatFloat(float64(f), 'g', -1, 64)) }
-func (f Float) AsNull(Context) Null      { return Null{} }
-func (f Float) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): f}) }
-func (f Float) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": f}} }
-func (f Float) Cast(ctx Context, t Type) Value {
+func (f Float) IsRef() bool             { return false }
+func (f Float) Type() Type              { return Type{shape: FloatType} }
+func (f Float) AsInt(Context) Int       { return Int(f) }
+func (f Float) AsFloat(Context) Float   { return f }
+func (f Float) AsBool(Context) Bool     { return f != 0 }
+func (f Float) AsString(Context) String { return String(strconv.FormatFloat(float64(f), 'g', -1, 64)) }
+func (f Float) AsNull(Context) Null     { return Null{} }
+func (f Float) AsArray(Context) *Array  { return NewArray(map[Value]Value{String("scalar"): f}) }
+func (f Float) AsObject(ctx Context) *Object {
+	return &Object{
+		class: ctx.ClassByName("stdClass"),
+		props: HashTable[String, Value]{
+			internal: map[String]*htValue[Value]{"scalar": {f}},
+		},
+	}
+}
+func (f Float) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return f.AsInt(ctx)
@@ -110,15 +128,17 @@ func (f Float) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return f.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", f.Type().shape.String(), t.String()))
 	}
 }
-func (f Float) DebugInfo(Context) string { return fmt.Sprintf("float(%g)", f) }
+func (f Float) DebugInfo(Context) String {
+	return "float(" + String(strconv.FormatFloat(float64(f), 'g', -1, 64)) + ")"
+}
 
 type Bool bool
 
 func (b Bool) IsRef() bool { return false }
-func (b Bool) Type() Type  { return BoolType }
+func (b Bool) Type() Type  { return Type{shape: BoolType} }
 func (b Bool) AsInt(Context) Int {
 	if b {
 		return 1
@@ -133,12 +153,19 @@ func (b Bool) AsFloat(Context) Float {
 
 	return 0
 }
-func (b Bool) AsBool(Context) Bool      { return b }
-func (b Bool) AsString(Context) String  { return String(strconv.FormatBool(bool(b))) }
-func (b Bool) AsNull(Context) Null      { return Null{} }
-func (b Bool) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): b}) }
-func (b Bool) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": b}} }
-func (b Bool) Cast(ctx Context, t Type) Value {
+func (b Bool) AsBool(Context) Bool     { return b }
+func (b Bool) AsString(Context) String { return String(strconv.FormatBool(bool(b))) }
+func (b Bool) AsNull(Context) Null     { return Null{} }
+func (b Bool) AsArray(Context) *Array  { return NewArray(map[Value]Value{String("scalar"): b}) }
+func (b Bool) AsObject(ctx Context) *Object {
+	return &Object{
+		class: ctx.ClassByName("stdClass"),
+		props: HashTable[String, Value]{
+			internal: map[String]*htValue[Value]{"scalar": {b}},
+		},
+	}
+}
+func (b Bool) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return b.AsInt(ctx)
@@ -155,15 +182,15 @@ func (b Bool) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return b.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", b.Type().shape.String(), t.String()))
 	}
 }
-func (b Bool) DebugInfo(Context) string { return fmt.Sprintf("bool(%t)", b) }
+func (b Bool) DebugInfo(Context) String { return "bool(" + String(strconv.FormatBool(bool(b))) + ")" }
 
 type String string
 
 func (s String) IsRef() bool { return false }
-func (s String) Type() Type  { return StringType }
+func (s String) Type() Type  { return Type{shape: StringType} }
 func (s String) AsInt(Context) Int {
 	if s == "" {
 		return 0
@@ -186,12 +213,19 @@ func (s String) AsFloat(Context) Float {
 
 	return Float(v)
 }
-func (s String) AsBool(Context) Bool      { return len(s) > 0 && s != "0" }
-func (s String) AsString(Context) String  { return s }
-func (s String) AsNull(Context) Null      { return Null{} }
-func (s String) AsArray(Context) *Array   { return NewArray(map[Value]Value{String("scalar"): s}) }
-func (s String) AsObject(Context) *Object { return &Object{props: map[String]Value{"scalar": s}} }
-func (s String) Cast(ctx Context, t Type) Value {
+func (s String) AsBool(Context) Bool     { return len(s) > 0 && s != "0" }
+func (s String) AsString(Context) String { return s }
+func (s String) AsNull(Context) Null     { return Null{} }
+func (s String) AsArray(Context) *Array  { return NewArray(map[Value]Value{String("scalar"): s}) }
+func (s String) AsObject(ctx Context) *Object {
+	return &Object{
+		class: ctx.ClassByName("stdClass"),
+		props: HashTable[String, Value]{
+			internal: map[String]*htValue[Value]{"scalar": {s}},
+		},
+	}
+}
+func (s String) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return s.AsInt(ctx)
@@ -208,24 +242,31 @@ func (s String) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return s.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", s.Type().shape.String(), t.String()))
 	}
 }
 func (s String) String() string           { return strconv.Quote(string(s)) }
-func (s String) DebugInfo(Context) string { return fmt.Sprintf("string(%s)", s) }
+func (s String) DebugInfo(Context) String { return "string(\"" + s + "\")" }
 
 type Null struct{}
 
-func (n Null) IsRef() bool              { return false }
-func (n Null) Type() Type               { return NullType }
-func (n Null) AsInt(Context) Int        { return 0 }
-func (n Null) AsFloat(Context) Float    { return 0 }
-func (n Null) AsBool(Context) Bool      { return false }
-func (n Null) AsString(Context) String  { return "" }
-func (n Null) AsNull(Context) Null      { return n }
-func (n Null) AsArray(Context) *Array   { return NewArray(nil) }
-func (n Null) AsObject(Context) *Object { return &Object{props: map[String]Value{}} }
-func (n Null) Cast(ctx Context, t Type) Value {
+func (n Null) IsRef() bool             { return false }
+func (n Null) Type() Type              { return Type{shape: NullType} }
+func (n Null) AsInt(Context) Int       { return 0 }
+func (n Null) AsFloat(Context) Float   { return 0 }
+func (n Null) AsBool(Context) Bool     { return false }
+func (n Null) AsString(Context) String { return "" }
+func (n Null) AsNull(Context) Null     { return n }
+func (n Null) AsArray(Context) *Array  { return NewArray(nil) }
+func (n Null) AsObject(ctx Context) *Object {
+	return &Object{
+		class: ctx.ClassByName("stdClass"),
+		props: HashTable[String, Value]{
+			internal: map[String]*htValue[Value]{},
+		},
+	}
+}
+func (n Null) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return n.AsInt(ctx)
@@ -242,15 +283,15 @@ func (n Null) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return n.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", n.Type().shape.String(), t.String()))
 	}
 }
-func (n Null) DebugInfo(Context) string { return "NULL" }
+func (n Null) DebugInfo(Context) String { return "NULL" }
 
 type Array struct {
 	// Value type is Ref because assigning a value to map even in go stdlib is done through returning a pointer to new value in map.
 	// We should do something similar and keep in mind the data evacuation in go maps
-	hash map[Value]Ref
+	hash HashTable[Value, Value]
 	next Int
 
 	iterator struct {
@@ -261,12 +302,12 @@ type Array struct {
 
 func (a *Array) GetIterator(ctx Context) Iterator {
 	if a.iterator.iter == nil {
-		keys := a.Keys(ctx)
+		keys := a.hash.keys(func(x, y Value) int { return int(compare(ctx, x, y)) })
 
 		a.iterator.iter = &InternalIterator[*Array]{
 			this:      a,
 			nextFn:    func(ctx Context, array *Array) { array.iterator.i++ },
-			currentFn: func(ctx Context, array *Array) Value { return array.hash[keys[array.iterator.i]] },
+			currentFn: func(ctx Context, array *Array) Value { return array.hash.internal[keys[array.iterator.i]].v },
 			keyFn:     func(ctx Context, array *Array) Value { return keys[array.iterator.i] },
 			validFn:   func(ctx Context, array *Array) Bool { return array.iterator.i < len(keys) },
 			rewindFn:  func(ctx Context, array *Array) { array.iterator.i = 0 },
@@ -276,17 +317,17 @@ func (a *Array) GetIterator(ctx Context) Iterator {
 	return a.iterator.iter
 }
 
-func (a *Array) Count(Context) Int { return Int(len(a.hash)) }
+func (a *Array) Count(Context) Int { return Int(len(a.hash.internal)) }
 
 func (a *Array) Copy() *Array {
 	return &Array{
-		hash: maps.Clone(a.hash),
+		hash: HashTable[Value, Value]{maps.Clone(a.hash.internal)},
 		next: a.next,
 	}
 }
-func (a *Array) access(key Value) (v Ref, ok bool) {
-	v, ok = a.hash[key]
-	return
+func (a *Array) access(key Value) (Ref, bool) {
+	v, ok := a.hash.access(key)
+	return NewRef(v), ok
 }
 func (a *Array) assign(ctx Context, key Value) Ref {
 	if key == nil {
@@ -301,27 +342,27 @@ func (a *Array) assign(ctx Context, key Value) Ref {
 		return ref
 	}
 
-	switch key.Type() {
+	switch key.Type().shape {
 	case IntType, FloatType:
-		key = key.AsInt(ctx)
-		a.next = key.(Int) + 1
+		defer func() {
+			key = key.AsInt(ctx)
+			a.next = key.(Int) + 1
+		}()
 	}
 
-	a.hash[key] = NewRef(nil)
-	return a.hash[key]
+	return NewRef(a.hash.assign(key))
 }
-func (a *Array) delete(key Value) { delete(a.hash, key) }
+func (a *Array) delete(key Value) { a.hash.delete(key) }
 
 func NewArray(init map[Value]Value, next ...Int) *Array {
 	if len(next) == 0 {
 		next = []Int{math.MinInt}
 	}
 
-	arr := &Array{hash: make(map[Value]Ref, len(init)), next: next[0]}
+	arr := &Array{hash: HashTable[Value, Value]{make(map[Value]*htValue[Value], len(init))}, next: next[0]}
 
 	for k, v := range init {
-		r := v
-		arr.hash[k] = NewRef(&r)
+		arr.hash.internal[k] = &htValue[Value]{v}
 	}
 
 	return arr
@@ -340,23 +381,24 @@ func (a *Array) OffsetIsSet(_ Context, key Value) Bool {
 	return Bool(ok)
 }
 func (a *Array) OffsetUnset(_ Context, key Value) { a.delete(key) }
-func (a *Array) IsRef() bool                      { return false }
-func (a *Array) Type() Type                       { return ArrayType }
+
+func (a *Array) IsRef() bool { return false }
+func (a *Array) Type() Type  { return Type{shape: ArrayType} }
 func (a *Array) AsInt(Context) Int {
-	if len(a.hash) > 0 {
+	if len(a.hash.internal) > 0 {
 		return 1
 	}
 
 	return 0
 }
 func (a *Array) AsFloat(Context) Float {
-	if len(a.hash) > 0 {
+	if len(a.hash.internal) > 0 {
 		return 1
 	}
 
 	return 0
 }
-func (a *Array) AsBool(Context) Bool { return len(a.hash) > 0 }
+func (a *Array) AsBool(Context) Bool { return len(a.hash.internal) > 0 }
 func (a *Array) AsString(ctx Context) String {
 	ctx.Throw(NewThrowable("array to string conversion", EWarning))
 	return "Array"
@@ -364,15 +406,16 @@ func (a *Array) AsString(ctx Context) String {
 func (a *Array) AsNull(Context) Null    { return Null{} }
 func (a *Array) AsArray(Context) *Array { return a }
 func (a *Array) AsObject(ctx Context) *Object {
-	props := make(map[String]Value, len(a.hash))
+	props := make(map[String]Value, len(a.hash.internal))
 
-	for k, v := range a.hash {
-		props[k.AsString(ctx)] = v
+	for k, v := range a.hash.internal {
+		props[k.AsString(ctx)] = v.v
 	}
 
-	return &Object{props: props}
+	//return NewObject(ctx.ClassByName("stdClass"), props)
+	return nil
 }
-func (a *Array) Cast(ctx Context, t Type) Value {
+func (a *Array) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return a.AsInt(ctx)
@@ -389,7 +432,7 @@ func (a *Array) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return a.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", a.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", a.Type().shape.String(), t.String()))
 	}
 }
 func (a *Array) NextKey() Value {
@@ -399,25 +442,17 @@ func (a *Array) NextKey() Value {
 
 	return a.next
 }
-func (a *Array) DebugInfo(ctx Context) string {
+func (a *Array) DebugInfo(ctx Context) String {
 	var str strings.Builder
-	str.WriteString(fmt.Sprintf("array(%d) {", len(a.hash)))
+	str.WriteString(fmt.Sprintf("array(%d) {", len(a.hash.internal)))
 
-	for _, key := range a.Keys(ctx) {
-		str.WriteString(stringIndent(fmt.Sprintf("\n[%v]=>\n%s", key, (*a.hash[key].Deref()).DebugInfo(ctx)), 2))
+	for _, key := range a.hash.keys(func(x, y Value) int { return int(compare(ctx, x, y)) }) {
+		str.WriteString(stringIndent(fmt.Sprintf("\n[%v]=>\n", key)+string(a.hash.internal[key].v.DebugInfo(ctx)), 2))
 	}
 
 	str.WriteString("\n}")
 
-	return str.String()
-}
-func (a *Array) Keys(ctx Context) []Value {
-	keys := make([]Value, 0, len(a.hash))
-	for k := range a.hash {
-		keys = append(keys, k)
-	}
-	slices.SortFunc(keys, func(a, b Value) int { return int(compare(ctx, a, b)) })
-	return keys
+	return String(str.String())
 }
 
 type Ref struct{ ref *Value }
@@ -441,7 +476,7 @@ func (r Ref) AsString(ctx Context) String  { return (*r.Deref()).AsString(ctx) }
 func (r Ref) AsNull(ctx Context) Null      { return (*r.Deref()).AsNull(ctx) }
 func (r Ref) AsArray(ctx Context) *Array   { return (*r.Deref()).AsArray(ctx) }
 func (r Ref) AsObject(ctx Context) *Object { return (*r.Deref()).AsObject(ctx) }
-func (r Ref) Cast(ctx Context, t Type) Value {
+func (r Ref) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return r.AsInt(ctx)
@@ -458,33 +493,46 @@ func (r Ref) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return r.AsObject(ctx)
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", r.Type().shape.String(), t.String()))
 	}
 }
-func (r Ref) DebugInfo(ctx Context) string { return fmt.Sprintf("&%s", (*r.Deref()).DebugInfo(ctx)) }
+func (r Ref) DebugInfo(ctx Context) String { return "&" + (*r.Deref()).DebugInfo(ctx) }
 
 type Object struct {
-	props map[String]Value
+	class Class
+	props HashTable[String, Value]
 }
 
-func (o *Object) IsRef() bool             { return false }
-func (o *Object) AsInt(Context) Int       { return 1 }
-func (o *Object) AsFloat(Context) Float   { return 1 }
-func (o *Object) AsBool(Context) Bool     { return true }
-func (o *Object) AsString(Context) String { panic("cannot be converted to string") }
-func (o *Object) AsNull(Context) Null     { return Null{} }
-func (o *Object) Type() Type              { return ObjectType }
-func (o *Object) AsArray(Context) *Array {
-	arr := make(map[Value]Value, len(o.props))
+func NewObject(class Class, init HashTable[String, Value]) *Object {
+	return &Object{class: class, props: init}
+}
 
-	for k, v := range o.props {
-		arr[k] = v
+func (o *Object) Count(ctx Context) Int {
+	if _, ok := o.class.(Countable); ok {
+		return o.class.(Countable).Count(ctx)
+	}
+
+	panic("does not implement countable")
+}
+func (o *Object) Invoke(ctx Context)          { o.class.Invoke(ctx, o) }
+func (o *Object) IsRef() bool                 { return false }
+func (o *Object) AsInt(Context) Int           { return 1 }
+func (o *Object) AsFloat(Context) Float       { return 1 }
+func (o *Object) AsBool(Context) Bool         { return true }
+func (o *Object) AsString(ctx Context) String { return o.class.ToString(ctx, o) }
+func (o *Object) AsNull(Context) Null         { return Null{} }
+func (o *Object) Type() Type                  { return Type{class: o.class, shape: ObjectType} }
+func (o *Object) AsArray(Context) *Array {
+	arr := make(map[Value]Value, len(o.props.internal))
+
+	for k, v := range o.props.internal {
+		arr[k] = v.v
 	}
 
 	return NewArray(arr)
 }
 func (o *Object) AsObject(Context) *Object { return o }
-func (o *Object) Cast(ctx Context, t Type) Value {
+func (o *Object) Cast(ctx Context, t TypeShape) Value {
 	switch t {
 	case IntType:
 		return o.AsInt(ctx)
@@ -501,29 +549,11 @@ func (o *Object) Cast(ctx Context, t Type) Value {
 	case ObjectType:
 		return o
 	default:
-		panic(fmt.Sprintf("cannot cast %s to %s", o.Type().String(), t.String()))
+		panic(fmt.Sprintf("cannot cast %s to %s", o.Type().shape.String(), t.String()))
 	}
 }
-func (o *Object) Keys() []String {
-	keys := make([]String, 0, len(o.props))
-	for k := range o.props {
-		keys = append(keys, k)
-	}
-	return keys
-}
-func (o *Object) DebugInfo(ctx Context) string {
-	var str strings.Builder
-	str.WriteString(fmt.Sprintf("object(stdClass)#%d (%d) {", 1, len(o.props)))
+func (o *Object) DebugInfo(ctx Context) String { return o.class.DebugInfo(ctx, o) }
 
-	for _, key := range o.Keys() {
-		str.WriteString(stringIndent(fmt.Sprintf("\n[%v]=>\n%s\n", key, o.props[key].DebugInfo(ctx)), 2))
-	}
-
-	str.WriteString("\n}")
-
-	return str.String()
-}
-
-func stringIndent(str string, count int) string {
-	return strings.ReplaceAll(str, "\n", "\n"+strings.Repeat(" ", count))
+func stringIndent(s string, n int) string {
+	return strings.ReplaceAll(s, "\n", "\n"+strings.Repeat(" ", n))
 }

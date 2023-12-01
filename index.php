@@ -1,11 +1,11 @@
 <?php
 
-function fibonacci($n) {
-    if ($n == 0) {
+function fibonacci(int $n) {
+    if ($n === 0) {
         return 0;
     }
 
-    if ($n == 1) {
+    if ($n === 1) {
         return 1;
     }
 
@@ -13,5 +13,6 @@ function fibonacci($n) {
 }
 
 $time = microtime(true);
-fibonacci(20);
+$x = 35;
+fibonacci($x);
 echo microtime(true) - $time;

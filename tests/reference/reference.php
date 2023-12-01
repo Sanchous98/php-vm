@@ -5,4 +5,3 @@ function test(&$n) {
 }
 
 test($x);
-return $x;

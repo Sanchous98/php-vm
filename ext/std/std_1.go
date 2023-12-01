@@ -6,16 +6,22 @@ import (
 	"strings"
 )
 
-func strtoupper(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.StrToUpper(string(args[0].(vm.String))))
+func strtoupper(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, &str)
+	return vm.String(stdlib.StrToUpper(str))
 }
 
-func strtolower(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.StrToLower(string(args[0].(vm.String))))
+func strtolower(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, &str)
+	return vm.String(stdlib.StrToLower(str))
 }
 
-func strpos(_ vm.Context, args ...vm.Value) vm.Value {
-	res := vm.Int(stdlib.StrPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
+func strpos(ctx *vm.FunctionContext) vm.Value {
+	var str, substr string
+	vm.ParseParameters(ctx, &str, &substr)
+	res := vm.Int(stdlib.StrPos(str, substr))
 
 	if res == -1 {
 		return vm.Bool(false)
@@ -24,8 +30,10 @@ func strpos(_ vm.Context, args ...vm.Value) vm.Value {
 	return res
 }
 
-func stripos(_ vm.Context, args ...vm.Value) vm.Value {
-	res := vm.Int(stdlib.StrIPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
+func stripos(ctx *vm.FunctionContext) vm.Value {
+	var str, substr string
+	vm.ParseParameters(ctx, &str, &substr)
+	res := vm.Int(stdlib.StrIPos(str, substr))
 
 	if res == -1 {
 		return vm.Bool(false)
@@ -34,8 +42,10 @@ func stripos(_ vm.Context, args ...vm.Value) vm.Value {
 	return res
 }
 
-func strrpos(_ vm.Context, args ...vm.Value) vm.Value {
-	res := vm.Int(stdlib.StrRPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
+func strrpos(ctx *vm.FunctionContext) vm.Value {
+	var str, substr string
+	vm.ParseParameters(ctx, &str, &substr)
+	res := vm.Int(stdlib.StrRPos(str, substr))
 
 	if res == -1 {
 		return vm.Bool(false)
@@ -44,8 +54,10 @@ func strrpos(_ vm.Context, args ...vm.Value) vm.Value {
 	return res
 }
 
-func strripos(_ vm.Context, args ...vm.Value) vm.Value {
-	res := vm.Int(stdlib.StrRIPos(string(args[0].(vm.String)), string(args[1].(vm.String))))
+func strripos(ctx *vm.FunctionContext) vm.Value {
+	var str, substr string
+	vm.ParseParameters(ctx, &str, &substr)
+	res := vm.Int(stdlib.StrRIPos(str, substr))
 
 	if res == -1 {
 		return vm.Bool(false)
@@ -54,26 +66,29 @@ func strripos(_ vm.Context, args ...vm.Value) vm.Value {
 	return res
 }
 
-func strrev(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.StrRev(string(args[0].(vm.String))))
+func strrev(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, &str)
+	return vm.String(stdlib.StrRev(str))
 }
 
-func nl2br(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.Nl2Br(string(args[0].(vm.String))))
+func nl2br(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, &str)
+	return vm.String(stdlib.Nl2Br(str))
 }
 
-func basename(_ vm.Context, args ...vm.Value) vm.String {
-	var trimSuffix string
+func basename(ctx *vm.FunctionContext) vm.String {
+	var str, trimSuffix string
+	vm.ParseParameters(ctx, &str, trimSuffix)
 
-	if args[1] != nil {
-		trimSuffix = string(args[1].(vm.String))
-	}
-
-	return vm.String(stdlib.Basename(string(args[0].(vm.String)), trimSuffix))
+	return vm.String(stdlib.Basename(str, trimSuffix))
 }
 
-func dirname(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.Dirname(string(args[0].(vm.String))))
+func dirname(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, &str)
+	return vm.String(stdlib.Dirname(str))
 }
 
 const (
@@ -84,9 +99,10 @@ const (
 	PathinfoAll = PathinfoDirname | PathinfoBasename | PathinfoExtension | PathinfoFilename
 )
 
-func pathinfo(ctx vm.Context, args ...vm.Value) *vm.Array {
-	path := string(args[0].(vm.String))
-	flags := args[1].(vm.Int)
+func pathinfo(ctx *vm.FunctionContext) *vm.Array {
+	var path string
+	var flags vm.Int
+	vm.ParseParameters(ctx, &path, &flags)
 
 	res := vm.NewArray(nil)
 
@@ -109,30 +125,36 @@ func pathinfo(ctx vm.Context, args ...vm.Value) *vm.Array {
 	return res
 }
 
-func stripslashes(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.StripSlashes(string(args[0].(vm.String))))
+func stripslashes(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, str)
+	return vm.String(stdlib.StripSlashes(str))
 }
 
-func stripcslashes(_ vm.Context, args ...vm.Value) vm.String {
-	return vm.String(stdlib.StripCSlashes(string(args[0].(vm.String))))
+func stripcslashes(ctx *vm.FunctionContext) vm.String {
+	var str string
+	vm.ParseParameters(ctx, str)
+	return vm.String(stdlib.StripCSlashes(str))
 }
 
-func strstr(_ vm.Context, args ...vm.Value) vm.Value {
-	haystack := args[0].(vm.String)
-	needle := args[1].(vm.String)
+func strstr(ctx *vm.FunctionContext) vm.Value {
+	var haystack, needle string
+	var beforeNeedle bool
+	vm.ParseParameters(ctx, &haystack, &needle, &beforeNeedle)
 
-	if res, found := stdlib.StrStr(string(haystack), string(needle), args[2] != nil && bool(args[2].(vm.Bool))); found {
+	if res, found := stdlib.StrStr(haystack, needle, beforeNeedle); found {
 		return vm.String(res)
 	}
 
 	return vm.Bool(false)
 }
 
-func stristr(_ vm.Context, args ...vm.Value) vm.Value {
-	haystack := args[0].(vm.String)
-	needle := args[1].(vm.String)
+func stristr(ctx *vm.FunctionContext) vm.Value {
+	var haystack, needle string
+	var beforeNeedle bool
+	vm.ParseParameters(ctx, &haystack, &needle, &beforeNeedle)
 
-	if res, found := stdlib.StrIStr(string(haystack), string(needle), args[2] != nil && bool(args[2].(vm.Bool))); found {
+	if res, found := stdlib.StrIStr(haystack, needle, beforeNeedle); found {
 		return vm.String(res)
 	}
 

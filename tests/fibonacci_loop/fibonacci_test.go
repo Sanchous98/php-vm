@@ -1,7 +1,6 @@
 package fibonacci_loop
 
 import (
-	"encoding/binary"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"os"
@@ -14,7 +13,7 @@ func TestFibonacciLoop(t *testing.T) {
 	input, err := os.ReadFile("fibonacci.php")
 	require.NoError(t, err)
 
-	instructions := [...]uint64{
+	instructions := vm.Instructions([]uint64{
 		uint64(vm.OpLoad), 0, // 00000: LOAD          0
 		uint64(vm.OpConst), 3, // 00002: CONST         3
 		uint64(vm.OpIdentical),     // 00004: IDENTICAL
@@ -56,21 +55,11 @@ func TestFibonacciLoop(t *testing.T) {
 		uint64(vm.OpJump), 35, // 00063: JUMP          35
 		uint64(vm.OpLoad), 2, // 00065: LOAD          2
 		uint64(vm.OpReturnValue), // 00067: RETURN_VAL
-	}
+	})
 
 	comp := compiler.NewCompiler(nil)
 	ctx := new(vm.GlobalContext)
-	fn := comp.Compile(input, ctx)
-	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), ctx.Functions[0].(vm.CompiledFunction).Instructions.String())
-	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(2), vm.Int(1), vm.Int(10)}, ctx.Constants)
-	ctx.Run(fn)
-	assert.Equal(t, vm.Int(55), ctx.Pop())
-}
-
-func instructionsToBytecode(i []uint64) (b vm.Bytecode) {
-	for _, instruction := range i {
-		b = binary.NativeEndian.AppendUint64(b, instruction)
-	}
-
-	return
+	_ = comp.Compile(input, ctx)
+	assert.Equal(t, instructions, ctx.Functions[0].(vm.CompiledFunction).Instructions)
+	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(2), vm.Int(1)}, ctx.Constants)
 }

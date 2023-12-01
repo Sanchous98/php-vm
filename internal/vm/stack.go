@@ -1,50 +1,24 @@
 package vm
 
-import "unsafe"
-
 const stackSize = 512
 
-type stackIface[T any] interface {
-	Init()
-	Pop() T
-	Push(T)
-	TopIndex() int
-	Slice(int, int) []T
-	Sp(int)
-	Top() T
-	SetTop(T)
-	MovePointer(int)
-}
-
 type Stack[T any] struct {
-	sp    *T
+	sp    int
 	stack [stackSize]T
 }
 
-func (s *Stack[T]) Init() {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), -unsafe.Sizeof(*s.sp)))
-}
+func (s *Stack[T]) Init() { s.sp = -1 }
 func (s *Stack[T]) Pop() (v T) {
-	v, *s.sp = *s.sp, v
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), -unsafe.Sizeof(*s.sp)))
+	v = s.stack[s.sp]
+	s.sp--
 	return
 }
 func (s *Stack[T]) Push(v T) {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), unsafe.Sizeof(*s.sp)))
-	s.SetTop(v)
+	s.sp++
+	s.stack[s.sp] = v
 }
-func (s *Stack[T]) TopIndex() int {
-	return int(uintptr(unsafe.Pointer(s.sp))-uintptr(unsafe.Pointer(&s.stack[0]))) / int(unsafe.Sizeof(*s.sp))
-}
-func (s *Stack[T]) Slice(offsetX, offsetY int) []T {
-	length := s.TopIndex() + 1
-	return s.stack[length+offsetX : length+offsetY]
-}
-func (s *Stack[T]) Sp(pointer int) {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(&s.stack[0]), pointer*int(unsafe.Sizeof(*s.sp))))
-}
-func (s *Stack[T]) Top() T     { return *s.sp }
-func (s *Stack[T]) SetTop(v T) { *s.sp = v }
-func (s *Stack[T]) MovePointer(offset int) {
-	s.sp = (*T)(unsafe.Add(unsafe.Pointer(s.sp), offset*int(unsafe.Sizeof(*s.sp))))
-}
+func (s *Stack[T]) TopIndex() int                  { return s.sp }
+func (s *Stack[T]) Slice(offsetX, offsetY int) []T { return s.stack[s.sp+1+offsetX : s.sp+1+offsetY] }
+func (s *Stack[T]) Sp(pointer int)                 { s.sp = pointer }
+func (s *Stack[T]) Top() T                         { return s.stack[s.sp] }
+func (s *Stack[T]) SetTop(v T)                     { s.stack[s.sp] = v }

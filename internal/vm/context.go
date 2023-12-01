@@ -14,24 +14,42 @@ const frameSize = int(unsafe.Sizeof(Frame{}))
 
 type Frame struct {
 	ctx      FunctionContext
-	bytecode Bytecode
+	bytecode Instructions
 	fp       int
+}
+
+type Try struct {
+	frame, fp, pc int
 }
 
 type Context interface {
 	context.Context
-	stackIface[Value]
+	Init()
+	Pop() Value
+	Push(Value)
+	TopIndex() int
+	Slice(int, int) []Value
+	Sp(int)
+	Top() Value
+	SetTop(Value)
 
 	NextFrame() *Frame
 	PopFrame() *Frame
+	Child(*FunctionContext, int, Class, *Object)
 
 	Parent() Context
 	Global() *GlobalContext
 	GetFunction(int) Callable
 	FunctionByName(String) Callable
-	Throw(Throwable)
+	GetClass(int) Class
+	ClassByName(String) Class
+
 	Input() io.Reader
 	Output() io.Writer
+
+	Throw(Throwable)
+	Scope() Class
+	This() *Object
 }
 
 type GlobalContext struct {
@@ -39,11 +57,13 @@ type GlobalContext struct {
 	Stack[Value]
 
 	frames [999]Frame
-	frame  *Frame
+	frame  int
 
 	Constants     []Value
 	Functions     []Callable
+	Classes       []Class
 	FunctionNames []String
+	ClassNames    []String
 	initialized   sync.Once
 
 	in  io.Reader
@@ -76,203 +96,231 @@ func (g *GlobalContext) FunctionByName(name String) Callable {
 
 	return g.GetFunction(slices.Index(g.FunctionNames, name))
 }
+func (g *GlobalContext) ClassByName(name String) Class {
+	defer func() {
+		if err := recover(); err != nil {
+			g.Throw(NewThrowable(fmt.Sprintf("Class \"%s\" does not exist", name), EError))
+		}
+	}()
+
+	return g.GetClass(slices.Index(g.ClassNames, name))
+}
 func (g *GlobalContext) Init() {
 	g.initialized.Do(func() {
 		g.Stack.Init()
-		g.frame = (*Frame)(unsafe.Add(unsafe.Pointer(&g.frames[0]), -frameSize))
+		for i := range g.stack {
+			g.stack[i] = Null{}
+		}
+		g.frame = -1
 	})
 }
+func (g *GlobalContext) Scope() Class                   { return nil }
+func (g *GlobalContext) This() *Object                  { return nil }
 func (g *GlobalContext) Parent() Context                { return nil }
 func (g *GlobalContext) Global() *GlobalContext         { return g }
 func (g *GlobalContext) GetFunction(index int) Callable { return g.Functions[index] }
-func (g *GlobalContext) Throw(Throwable)                { /* TODO */ }
+func (g *GlobalContext) GetClass(index int) Class       { return g.Classes[index] }
+func (g *GlobalContext) Throw(Throwable)                { /* TODO: Keep try/catch stack and jump to t */ }
 func (g *GlobalContext) NextFrame() *Frame {
-	g.frame = (*Frame)(unsafe.Add(unsafe.Pointer(g.frame), frameSize))
-	return g.frame
+	g.frame++
+	return &g.frames[g.frame]
 }
 func (g *GlobalContext) PopFrame() *Frame {
-	frame := g.frame
-	g.frame = (*Frame)(unsafe.Add(unsafe.Pointer(g.frame), -frameSize))
+	frame := &g.frames[g.frame]
+	g.frame--
 	return frame
 }
 func (g *GlobalContext) Run(fn CompiledFunction) {
 	g.Init()
-	fn.Invoke(g)
+	fn.Invoke(g, nil, nil)
 
-	for uintptr(unsafe.Pointer(g.frame)) >= uintptr(unsafe.Pointer(&g.frames[0])) && uintptr(unsafe.Pointer(g.frame)) <= uintptr(unsafe.Pointer(&g.frames[996])) {
-		g.frame.ctx.pc++
+	for g.frame >= 0 && g.frame < len(g.frames) {
+		g.frames[g.frame].ctx.pc++
 
-		switch g.frame.bytecode.ReadOperation(&g.frame.ctx) {
+		if g.frames[g.frame].ctx.pc >= len(g.frames[g.frame].bytecode) {
+			g.PopFrame()
+			return
+		}
+
+		switch g.frames[g.frame].bytecode.ReadOperation(&g.frames[g.frame].ctx) {
 		case OpPop:
-			Pop(&g.frame.ctx)
+			Pop(&g.frames[g.frame].ctx)
 		case OpPop2:
-			Pop2(&g.frame.ctx)
+			Pop2(&g.frames[g.frame].ctx)
 		case OpReturn:
-			Return(&g.frame.ctx)
+			Return(&g.frames[g.frame].ctx)
 		case OpReturnValue:
-			ReturnValue(&g.frame.ctx)
+			ReturnValue(&g.frames[g.frame].ctx)
 		case OpAdd:
-			Add(&g.frame.ctx)
+			Add(&g.frames[g.frame].ctx)
 		case OpSub:
-			Sub(&g.frame.ctx)
+			Sub(&g.frames[g.frame].ctx)
 		case OpMul:
-			Mul(&g.frame.ctx)
+			Mul(&g.frames[g.frame].ctx)
 		case OpDiv:
-			Div(&g.frame.ctx)
+			Div(&g.frames[g.frame].ctx)
 		case OpMod:
-			Mod(&g.frame.ctx)
+			Mod(&g.frames[g.frame].ctx)
 		case OpPow:
-			Pow(&g.frame.ctx)
+			Pow(&g.frames[g.frame].ctx)
 		case OpBwAnd:
-			BwAnd(&g.frame.ctx)
+			BwAnd(&g.frames[g.frame].ctx)
 		case OpBwOr:
-			BwOr(&g.frame.ctx)
+			BwOr(&g.frames[g.frame].ctx)
 		case OpBwXor:
-			BwXor(&g.frame.ctx)
+			BwXor(&g.frames[g.frame].ctx)
 		case OpBwNot:
-			BwNot(&g.frame.ctx)
+			BwNot(&g.frames[g.frame].ctx)
 		case OpShiftLeft:
-			ShiftLeft(&g.frame.ctx)
+			ShiftLeft(&g.frames[g.frame].ctx)
 		case OpShiftRight:
-			ShiftRight(&g.frame.ctx)
+			ShiftRight(&g.frames[g.frame].ctx)
 		case OpEqual:
-			Equal(&g.frame.ctx)
+			Equal(&g.frames[g.frame].ctx)
 		case OpNotEqual:
-			NotEqual(&g.frame.ctx)
+			NotEqual(&g.frames[g.frame].ctx)
 		case OpIdentical:
-			Identical(&g.frame.ctx)
+			Identical(&g.frames[g.frame].ctx)
 		case OpNotIdentical:
-			NotIdentical(&g.frame.ctx)
+			NotIdentical(&g.frames[g.frame].ctx)
 		case OpNot:
-			Not(&g.frame.ctx)
+			Not(&g.frames[g.frame].ctx)
 		case OpGreater:
-			Greater(&g.frame.ctx)
+			Greater(&g.frames[g.frame].ctx)
 		case OpLess:
-			Less(&g.frame.ctx)
+			Less(&g.frames[g.frame].ctx)
 		case OpGreaterOrEqual:
-			GreaterOrEqual(&g.frame.ctx)
+			GreaterOrEqual(&g.frames[g.frame].ctx)
 		case OpLessOrEqual:
-			LessOrEqual(&g.frame.ctx)
+			LessOrEqual(&g.frames[g.frame].ctx)
 		case OpCompare:
-			Compare(&g.frame.ctx)
+			Compare(&g.frames[g.frame].ctx)
+		case OpCoalesce:
+			Coalesce(&g.frames[g.frame].ctx)
 		case OpAssignRef:
-			AssignRef(&g.frame.ctx)
+			AssignRef(&g.frames[g.frame].ctx)
 		case OpArrayNew:
-			ArrayNew(&g.frame.ctx)
+			ArrayNew(&g.frames[g.frame].ctx)
 		case OpArrayAccessRead:
-			ArrayAccessRead(&g.frame.ctx)
+			ArrayAccessRead(&g.frames[g.frame].ctx)
 		case OpArrayAccessWrite:
-			ArrayAccessWrite(&g.frame.ctx)
+			ArrayAccessWrite(&g.frames[g.frame].ctx)
 		case OpArrayAccessPush:
-			ArrayAccessPush(&g.frame.ctx)
+			ArrayAccessPush(&g.frames[g.frame].ctx)
 		case OpArrayUnset:
-			ArrayUnset(&g.frame.ctx)
+			ArrayUnset(&g.frames[g.frame].ctx)
 		case OpConcat:
-			Concat(&g.frame.ctx)
+			Concat(&g.frames[g.frame].ctx)
 		case OpUnset:
 			// TODO: Unset
 		case OpForEachInit:
-			ForEachInit(&g.frame.ctx)
+			ForEachInit(&g.frames[g.frame].ctx)
 		case OpForEachNext:
-			ForEachNext(&g.frame.ctx)
+			ForEachNext(&g.frames[g.frame].ctx)
 		case OpForEachValid:
-			ForEachValid(&g.frame.ctx)
+			ForEachValid(&g.frames[g.frame].ctx)
 		case OpThrow:
-			Throw(&g.frame.ctx)
-		case OpCallByName:
-			CallByName(&g.frame.ctx)
-		case OpAssertType:
-			AssertType(&g.frame.ctx)
+			Throw(&g.frames[g.frame].ctx)
+		case OpInitCallByName:
+			InitCallByName(&g.frames[g.frame].ctx)
 		case OpAssign:
-			Assign(&g.frame.ctx)
+			Assign(&g.frames[g.frame].ctx)
 		case OpAssignAdd:
-			AssignAdd(&g.frame.ctx)
+			AssignAdd(&g.frames[g.frame].ctx)
 		case OpAssignSub:
-			AssignSub(&g.frame.ctx)
+			AssignSub(&g.frames[g.frame].ctx)
 		case OpAssignMul:
-			AssignMul(&g.frame.ctx)
+			AssignMul(&g.frames[g.frame].ctx)
 		case OpAssignDiv:
-			AssignDiv(&g.frame.ctx)
+			AssignDiv(&g.frames[g.frame].ctx)
 		case OpAssignMod:
-			AssignMod(&g.frame.ctx)
+			AssignMod(&g.frames[g.frame].ctx)
 		case OpAssignPow:
-			AssignPow(&g.frame.ctx)
+			AssignPow(&g.frames[g.frame].ctx)
 		case OpAssignBwAnd:
-			AssignBwAnd(&g.frame.ctx)
+			AssignBwAnd(&g.frames[g.frame].ctx)
 		case OpAssignBwOr:
-			AssignBwOr(&g.frame.ctx)
+			AssignBwOr(&g.frames[g.frame].ctx)
 		case OpAssignBwXor:
-			AssignBwXor(&g.frame.ctx)
+			AssignBwXor(&g.frames[g.frame].ctx)
 		case OpAssignConcat:
-			AssignConcat(&g.frame.ctx)
+			AssignConcat(&g.frames[g.frame].ctx)
 		case OpAssignShiftLeft:
-			AssignShiftLeft(&g.frame.ctx)
+			AssignShiftLeft(&g.frames[g.frame].ctx)
 		case OpAssignShiftRight:
-			AssignShiftRight(&g.frame.ctx)
+			AssignShiftRight(&g.frames[g.frame].ctx)
+		case OpAssignCoalesce:
+			AssignCoalesce(&g.frames[g.frame].ctx)
 		case OpCast:
-			Cast(&g.frame.ctx)
+			Cast(&g.frames[g.frame].ctx)
 		case OpPreIncrement:
-			PreIncrement(&g.frame.ctx)
+			PreIncrement(&g.frames[g.frame].ctx)
 		case OpPostIncrement:
-			PostIncrement(&g.frame.ctx)
+			PostIncrement(&g.frames[g.frame].ctx)
 		case OpPreDecrement:
-			PreDecrement(&g.frame.ctx)
+			PreDecrement(&g.frames[g.frame].ctx)
 		case OpPostDecrement:
-			PostDecrement(&g.frame.ctx)
+			PostDecrement(&g.frames[g.frame].ctx)
 		case OpLoad:
-			Load(&g.frame.ctx)
+			Load(&g.frames[g.frame].ctx)
 		case OpLoadRef:
-			LoadRef(&g.frame.ctx)
+			LoadRef(&g.frames[g.frame].ctx)
 		case OpConst:
-			Const(&g.frame.ctx)
+			Const(&g.frames[g.frame].ctx)
 		case OpJump:
-			Jump(&g.frame.ctx)
+			Jump(&g.frames[g.frame].ctx)
 		case OpJumpTrue:
-			JumpTrue(&g.frame.ctx)
+			JumpTrue(&g.frames[g.frame].ctx)
 		case OpJumpFalse:
-			JumpFalse(&g.frame.ctx)
+			JumpFalse(&g.frames[g.frame].ctx)
+		case OpInitCall:
+			InitCall(&g.frames[g.frame].ctx)
 		case OpCall:
-			Call(&g.frame.ctx)
+			Call(&g.frames[g.frame].ctx)
 		case OpEcho:
-			Echo(&g.frame.ctx)
+			Echo(&g.frames[g.frame].ctx)
 		case OpIsSet:
-			IsSet(&g.frame.ctx)
+			IsSet(&g.frames[g.frame].ctx)
 		case OpForEachKey:
-			ForEachKey(&g.frame.ctx)
+			ForEachKey(&g.frames[g.frame].ctx)
 		case OpForEachValue:
-			ForEachValue(&g.frame.ctx)
+			ForEachValue(&g.frames[g.frame].ctx)
 		case OpForEachValueRef:
-			ForEachValueRef(&g.frame.ctx)
+			ForEachValueRef(&g.frames[g.frame].ctx)
 		}
 	}
 }
-func (g *GlobalContext) Output() io.Writer { return g.out }
-func (g *GlobalContext) Input() io.Reader  { return g.in }
+func (g *GlobalContext) Output() io.Writer  { return g.out }
+func (g *GlobalContext) Input() io.Reader   { return g.in }
+func (g *GlobalContext) StackTrace() String { panic("not implemented") }
+func (g *GlobalContext) Child(child *FunctionContext, vars int, scope Class, this *Object) {
+	child.parent = g
+	child.GlobalContext = g
+	child.vars = g.Slice(0, vars)
+	child.pc = -1
+	child.scope = scope
+	child.this = this
+}
 
 type FunctionContext struct {
-	Context
+	*GlobalContext
 
-	global     *GlobalContext // for faster access to GlobalContext
-	vars, args []Value
-	pc, fp     int // Registers
+	scope      Class
+	this       *Object
+	parent     Context
+	vars, Args []Value
+	pc         int
 }
 
-func (ctx *FunctionContext) FunctionByName(name String) Callable {
-	return ctx.global.FunctionByName(name)
+func (ctx *FunctionContext) Scope() Class       { return ctx.scope }
+func (ctx *FunctionContext) This() *Object      { return ctx.this }
+func (ctx *FunctionContext) Parent() Context    { return ctx.parent }
+func (ctx *FunctionContext) StackTrace() String { panic("not implemented") }
+func (ctx *FunctionContext) Child(child *FunctionContext, vars int, scope Class, this *Object) {
+	child.parent = ctx
+	child.GlobalContext = ctx.GlobalContext
+	child.vars = ctx.Slice(0, vars)
+	child.pc = -1
+	child.scope = scope
+	child.this = this
 }
-func (ctx *FunctionContext) Output() io.Writer         { return ctx.global.Output() }
-func (ctx *FunctionContext) Input() io.Reader          { return ctx.global.Input() }
-func (ctx *FunctionContext) Throw(throwable Throwable) { ctx.global.Throw(throwable) }
-func (ctx *FunctionContext) Arg(num int) Value         { return ctx.args[num] }
-func (ctx *FunctionContext) Parent() Context           { return ctx.Context }
-func (ctx *FunctionContext) Global() *GlobalContext    { return ctx.global }
-func (ctx *FunctionContext) Pop() Value                { return ctx.global.Pop() }
-func (ctx *FunctionContext) Push(v Value)              { ctx.global.Push(v) }
-func (ctx *FunctionContext) TopIndex() int             { return ctx.global.TopIndex() }
-func (ctx *FunctionContext) Slice(offsetX, offsetY int) []Value {
-	return ctx.global.Slice(offsetX, offsetY)
-}
-func (ctx *FunctionContext) Sp(pointer int)          { ctx.global.Sp(pointer) }
-func (ctx *FunctionContext) Top() Value              { return ctx.global.Top() }
-func (ctx *FunctionContext) SetTop(v Value)          { ctx.global.SetTop(v) }
-func (ctx *FunctionContext) MovePointer(pointer int) { ctx.global.MovePointer(pointer) }

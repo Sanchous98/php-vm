@@ -1,7 +1,6 @@
 package arrays
 
 import (
-	"encoding/binary"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"os"
@@ -14,7 +13,7 @@ func TestArrays(t *testing.T) {
 	input, err := os.ReadFile("./arrays.php")
 	require.NoError(t, err)
 
-	instructions := [...]uint64{
+	instructions := vm.Instructions([]uint64{
 		uint64(vm.OpConst), 3,
 		uint64(vm.OpAssign), 0,
 		uint64(vm.OpPop),
@@ -73,21 +72,13 @@ func TestArrays(t *testing.T) {
 		uint64(vm.OpPop),
 		uint64(vm.OpJump), 5,
 		uint64(vm.OpReturn),
-	}
+	})
 
 	comp := compiler.NewCompiler(nil)
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
-	assert.Equal(t, instructionsToBytecode(instructions[:]).String(), fn.Instructions.String())
+	assert.Equal(t, instructions, fn.Instructions)
 	assert.Equal(t, []vm.Value{vm.Bool(true), vm.Bool(false), vm.Null{}, vm.Int(0), vm.Int(100000), vm.Int(1), vm.String("test"), vm.Int(2), vm.Int(3), vm.String("test4"), vm.Int(4), vm.String("test2"), vm.Int(5), vm.String("test3"), vm.Int(6)}, ctx.Constants)
 	ctx.Run(fn)
 	assert.Equal(t, -1, ctx.TopIndex())
-}
-
-func instructionsToBytecode(i []uint64) (b vm.Bytecode) {
-	for _, instruction := range i {
-		b = binary.NativeEndian.AppendUint64(b, instruction)
-	}
-
-	return
 }

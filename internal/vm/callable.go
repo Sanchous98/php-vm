@@ -1,25 +1,31 @@
 package vm
 
+import (
+	"php-vm/pkg/slices"
+)
+
 type Callable interface {
-	Invoke(Context)
+	Value
+	Invoke(Context, Class, *Object)
 }
 
 type Arg struct {
 	Name     string
-	Type     Type
+	Default  Value
+	Type     TypeShape
 	ByRef    bool
 	Variadic bool
-	Default  Value
 }
 
 type argList []Arg
 
 func (a argList) Map(ctx Context, args []Value) ([]Value, Throwable) {
-	if len(args) < len(a) {
+	if len(args) < len(slices.Filter(a, func(i int, arg Arg) bool { return !arg.Variadic && arg.Default == nil })) {
 		return nil, NewThrowable("not enough arguments", EError)
 	}
 
-	for i, arg := range a {
+	i := 0
+	for _, arg := range a {
 		if args[i] == nil {
 			args[i] = arg.Default
 		}
@@ -31,56 +37,126 @@ func (a argList) Map(ctx Context, args []Value) ([]Value, Throwable) {
 		if arg.ByRef {
 			args[i] = NewRef(&args[i])
 		}
+
+		if arg.Variadic {
+			variadics := make(map[Value]Value, len(args[i:]))
+			for j, v := range args[i:] {
+				if arg.Type > 0 {
+					variadics[Int(j)] = v.Cast(ctx, arg.Type)
+				}
+			}
+			args = args[:i+1]
+			args[i] = NewArray(variadics, Int(len(variadics)))
+			break
+		}
+
+		i++
 	}
 
 	return args, nil
 }
 
 type BuiltInFunction[RT Value] struct {
-	Args argList
-	Fn   func(Context, ...Value) RT
+	Value // Only for sake of possibility to put function on stack
+
+	Name String
+	Fn   func(*FunctionContext) RT
 }
 
-func NewBuiltInFunction[RT Value, F ~func(Context, ...Value) RT](fn F, args ...Arg) BuiltInFunction[RT] {
-	return BuiltInFunction[RT]{args, fn}
+func NewBuiltInFunction[RT Value, F ~func(*FunctionContext) RT](fn F, name String) BuiltInFunction[RT] {
+	return BuiltInFunction[RT]{nil, name, fn}
 }
-func (f BuiltInFunction[RT]) GetArgs() []Arg { return f.Args }
-func (f BuiltInFunction[RT]) Invoke(ctx Context) {
-	args := ctx.Slice(-len(f.Args), 0)
-	mapped, err := f.Args.Map(ctx, args)
-
-	if err != nil {
-		ctx.Throw(err)
-		return
-	}
-
-	res := f.Fn(ctx, mapped...)
-	ctx.MovePointer(-len(f.Args))
-	ctx.Push(res)
+func (f BuiltInFunction[RT]) GetArgs() []Arg { return nil }
+func (f BuiltInFunction[RT]) Invoke(parent Context, scope Class, this *Object) {
+	var ctx FunctionContext
+	parent.Child(&ctx, int(parent.Global().r1), scope, this)
+	ctx.Args = ctx.vars[:ctx.r1]
+	res := f.Fn(&ctx)
+	ctx.SetTop(res)
 }
 
 type CompiledFunction struct {
-	Instructions Bytecode
-	Args, Vars   int
+	Value // Only for sake of possibility to put function on stack
+
+	Name         String
+	Instructions Instructions
+	Vars         int // Preallocate vars on stack
 }
 
-func (f CompiledFunction) Invoke(parent Context) {
-	global := parent.Global()
-	frame := global.NextFrame()
-	frame.ctx.Context = parent
-	frame.ctx.global = global
-	frame.ctx.vars = frame.ctx.global.Slice(-f.Args, f.Vars)
+func (f CompiledFunction) Invoke(parent Context, scope Class, this *Object) {
+	frame := parent.Global().NextFrame()
+	parent.Child(&frame.ctx, f.Vars, scope, this)
+	frame.ctx.Args = frame.ctx.vars[:frame.ctx.r1]
+	frame.fp = parent.TopIndex()
+	frame.bytecode = f.Instructions
+	frame.ctx.sp += f.Vars
+}
 
-	for i := 0; i < len(frame.ctx.vars); i++ {
-		v := &frame.ctx.vars[i]
-		if *v == nil {
-			*v = Null{}
+func ParseParameters(ctx *FunctionContext, params ...any) {
+	// eliminate bounds' checks in loop
+	_ = len(ctx.Args) >= len(params)
+
+	for i, param := range params {
+		switch param := param.(type) {
+		case *int:
+			*param = int(ctx.Args[i].(Int))
+		case *Int:
+			*param = ctx.Args[i].(Int)
+		case *float64:
+			*param = float64(ctx.Args[i].(Float))
+		case *Float:
+			*param = ctx.Args[i].(Float)
+		case *bool:
+			*param = bool(ctx.Args[i].(Bool))
+		case *Bool:
+			*param = ctx.Args[i].(Bool)
+		case *string:
+			*param = string(ctx.Args[i].(String))
+		case *String:
+			*param = ctx.Args[i].(String)
+		case *map[Value]Value:
+			*param = make(map[Value]Value)
+			for key, value := range (*(ctx.Args[i].(*Array))).hash.internal {
+				(*param)[key] = value.v
+			}
+		case *map[any]any:
+			*param = make(map[any]any)
+			for key, value := range (*(ctx.Args[i].(*Array))).hash.internal {
+				(*param)[key] = value.v
+			}
+		case *map[Value]any:
+			*param = make(map[Value]any)
+			for key, value := range (*(ctx.Args[i].(*Array))).hash.internal {
+				(*param)[key] = value.v
+			}
+		case *map[any]Value:
+			*param = make(map[any]Value)
+			for key, value := range (*(ctx.Args[i].(*Array))).hash.internal {
+				(*param)[key] = value.v
+			}
+		case *Array:
+			*param = *(ctx.Args[i].(*Array).Copy())
+		case *map[string]any:
+			*param = make(map[string]any)
+			for name, value := range (*(ctx.Args[i].(*Object))).props.internal {
+				(*param)[string(name)] = value.v
+			}
+		case *map[string]Value:
+			*param = make(map[string]Value)
+			for name, value := range (*(ctx.Args[i].(*Object))).props.internal {
+				(*param)[string(name)] = value.v
+			}
+		case *map[String]Value:
+			*param = make(map[String]Value)
+			for name, value := range (*(ctx.Args[i].(*Object))).props.internal {
+				(*param)[name] = value.v
+			}
+		case *Object:
+			*param = *(ctx.Args[i].(*Object))
+		case *Value:
+			*param = ctx.Args[i]
+		default:
+			panic("unsupported type")
 		}
 	}
-
-	frame.ctx.pc = -1
-	frame.ctx.args = frame.ctx.vars[:len(frame.ctx.vars)-f.Vars]
-	frame.fp = parent.TopIndex() - f.Args
-	frame.bytecode = f.Instructions
-	parent.MovePointer(f.Vars + f.Args)
 }

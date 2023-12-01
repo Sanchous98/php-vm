@@ -18,7 +18,7 @@ type Context interface {
 	Parent() Context
 	Child(string) *FunctionContext
 	Global() *GlobalContext
-	Bytecode() *vm.Bytecode
+	Bytecode() *vm.Instructions
 	Literal(ast.Vertex, vm.Value) int
 	Resolve(ast.Vertex, string) string
 	Function(string) int
@@ -34,7 +34,7 @@ type FunctionContext struct {
 	Name         string
 	Names        *NameResolver
 	Args         []Arg
-	Instructions vm.Bytecode
+	Instructions vm.Instructions
 	Variables    []string
 	BuiltIn      bool
 	Labels       map[string]uint64
@@ -49,8 +49,8 @@ func (ctx *FunctionContext) Child(fn string) *FunctionContext {
 		Names:   NewNameResolver(ctx.Global().Names.NamespaceResolver),
 	}
 }
-func (ctx *FunctionContext) Global() *GlobalContext { return ctx.Context.Global() }
-func (ctx *FunctionContext) Bytecode() *vm.Bytecode { return &ctx.Instructions }
+func (ctx *FunctionContext) Global() *GlobalContext     { return ctx.Context.Global() }
+func (ctx *FunctionContext) Bytecode() *vm.Instructions { return &ctx.Instructions }
 func (ctx *FunctionContext) Arg(name string, _type string, def ast.Vertex, isRef bool) Arg {
 	if i := slices.IndexFunc(ctx.Args, func(arg Arg) bool { return arg.Name == name }); i >= 0 {
 		return ctx.Args[i]
@@ -86,7 +86,7 @@ type GlobalContext struct {
 	Constants      map[ast.Vertex]int
 	Literals       []vm.Value
 	NamedConstants map[string]int
-	Instructions   vm.Bytecode
+	Instructions   vm.Instructions
 	Variables      []string
 	Functions      []string
 	Labels         map[string]uint64
@@ -118,7 +118,7 @@ func (ctx *GlobalContext) Literal(n ast.Vertex, v vm.Value) int {
 	ctx.Constants[n] = slices.Index(ctx.Literals, v)
 	return ctx.Constants[n]
 }
-func (ctx *GlobalContext) Bytecode() *vm.Bytecode                   { return &ctx.Instructions }
+func (ctx *GlobalContext) Bytecode() *vm.Instructions               { return &ctx.Instructions }
 func (ctx *GlobalContext) Arg(string, string, ast.Vertex, bool) Arg { return Arg{} }
 func (ctx *GlobalContext) Resolve(vertex ast.Vertex, aliasType string) string {
 	ctx.Names.Resolve(vertex, aliasType)

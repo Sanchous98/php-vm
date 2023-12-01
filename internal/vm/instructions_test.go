@@ -102,15 +102,15 @@ func TestEqual(t *testing.T) {
 		{"[] == []", NewArray(nil), NewArray(nil), Bool(true)},
 	}
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
-			Equal(ctx)
+			Equal(&ctx)
 			assert.Equal(t, tt.result, ctx.Pop())
 		})
 	}
@@ -131,15 +131,15 @@ func TestAdd(t *testing.T) {
 		{"[0] + [1, 2] = [0, 2]", NewArray(map[Value]Value{Int(0): Int(0)}, 1), NewArray(map[Value]Value{Int(0): Int(1), Int(1): Int(2)}, 2), NewArray(map[Value]Value{Int(0): Int(0), Int(1): Int(2)}, 2)},
 	}
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
-			Add(ctx)
+			Add(&ctx)
 			assert.Equal(t, tt.result, ctx.Pop())
 		})
 	}
@@ -200,15 +200,15 @@ func TestCompare(t *testing.T) {
 		{"\"1\" <=> []", String("1"), NewArray(nil), -1},
 	}
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
-			Compare(ctx)
+			Compare(&ctx)
 			assert.Equal(t, tt.result, ctx.Pop())
 		})
 	}
@@ -228,15 +228,38 @@ func TestDiv(t *testing.T) {
 		{"bool / float = float", Bool(false), Float(1), Float(0)},
 	}
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	for _, tt := range &tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx.Push(tt.left)
 			ctx.Push(tt.right)
-			Div(ctx)
+			Div(&ctx)
+			assert.Equal(t, tt.result, ctx.Pop())
+		})
+	}
+}
+
+func TestIdentical(t *testing.T) {
+	tests := [...]struct {
+		name        string
+		left, right Value
+		result      Value
+	}{
+		{"[] === []", NewArray(nil), NewArray(nil), Bool(true)},
+	}
+
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
+	ctx.Init()
+
+	for _, tt := range &tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx.Push(tt.left)
+			ctx.Push(tt.right)
+			Identical(&ctx)
 			assert.Equal(t, tt.result, ctx.Pop())
 		})
 	}
@@ -246,7 +269,7 @@ func BenchmarkPostIncrement(b *testing.B) {
 	b.ReportAllocs()
 
 	g := GlobalContext{}
-	ctx := FunctionContext{Context: &g, global: &g}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 	ctx.vars = append(ctx.vars, Int(0))
 
@@ -263,7 +286,7 @@ func BenchmarkLoad(b *testing.B) {
 	b.ReportAllocs()
 
 	g := GlobalContext{}
-	ctx := FunctionContext{Context: &g, global: &g}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 	ctx.vars = append(ctx.vars, Int(0))
 
@@ -278,8 +301,8 @@ func BenchmarkLoad(b *testing.B) {
 func BenchmarkEqual(b *testing.B) {
 	b.ReportAllocs()
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	b.ResetTimer()
@@ -287,7 +310,7 @@ func BenchmarkEqual(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ctx.Push(Int(1))
 		ctx.Push(Bool(true))
-		Equal(ctx)
+		Equal(&ctx)
 		ctx.Pop()
 	}
 }
@@ -295,8 +318,8 @@ func BenchmarkEqual(b *testing.B) {
 func BenchmarkIdentical(b *testing.B) {
 	b.ReportAllocs()
 
-	g := &GlobalContext{}
-	ctx := &FunctionContext{Context: g, global: g}
+	g := GlobalContext{}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	b.ResetTimer()
@@ -304,7 +327,7 @@ func BenchmarkIdentical(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		ctx.Push(Int(1))
 		ctx.Push(Bool(true))
-		Identical(ctx)
+		Identical(&ctx)
 		ctx.Pop()
 	}
 }
@@ -313,7 +336,7 @@ func BenchmarkAdd(b *testing.B) {
 	b.ReportAllocs()
 
 	g := GlobalContext{}
-	ctx := FunctionContext{Context: &g, global: &g}
+	ctx := FunctionContext{GlobalContext: &g, parent: &g}
 	ctx.Init()
 
 	b.ResetTimer()

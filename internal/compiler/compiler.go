@@ -1,9 +1,9 @@
 package compiler
 
 import (
-	"encoding/binary"
 	"github.com/VKCOM/php-parser/pkg/ast"
 	"github.com/VKCOM/php-parser/pkg/conf"
+	"github.com/VKCOM/php-parser/pkg/errors"
 	"github.com/VKCOM/php-parser/pkg/parser"
 	"github.com/VKCOM/php-parser/pkg/version"
 	"github.com/VKCOM/php-parser/pkg/visitor"
@@ -16,7 +16,7 @@ import (
 	"unsafe"
 )
 
-var builtInTypeAsserts = map[string]vm.Type{
+var builtInTypeAsserts = map[string]vm.TypeShape{
 	"int":    vm.IntType,
 	"float":  vm.FloatType,
 	"bool":   vm.BoolType,
@@ -53,16 +53,23 @@ func (c *Compiler) Root(n *ast.Root) {
 		}
 	}
 
-	switch binary.NativeEndian.Uint64((*c.context.Bytecode())[len(*c.context.Bytecode())-8:]) {
+	if len(*c.context.Bytecode()) == 0 {
+		return
+	}
+
+	switch (*c.context.Bytecode())[len(*c.context.Bytecode())-1] {
 	case uint64(vm.OpReturn), uint64(vm.OpReturnValue):
 	default:
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpReturn))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpReturn))
 	}
 }
 
 func (c *Compiler) Parameter(n *ast.Parameter) {
 	name := c.context.Resolve(n.Var, VariableAliasType)
 	_type := c.context.Resolve(n.Type, "")
+	if n.DefaultValue != nil {
+		n.DefaultValue.Accept(c)
+	}
 	c.context.Arg(name, _type, n.DefaultValue, n.AmpersandTkn != nil)
 }
 
@@ -94,7 +101,7 @@ func (c *Compiler) StmtClass(n *ast.StmtClass) {
 func (c *Compiler) StmtConstant(n *ast.StmtConstant) {
 	n.Expr.Accept(c)
 
-	if (*c.context.Bytecode())[len(*c.context.Bytecode())-2] == byte(vm.OpConst) {
+	if (*c.context.Bytecode())[len(*c.context.Bytecode())-2] == uint64(vm.OpConst) {
 		*c.context.Bytecode() = (*c.context.Bytecode())[:len(*c.context.Bytecode())-2]
 	}
 
@@ -129,10 +136,10 @@ func (c *Compiler) StmtFunction(n *ast.StmtFunction) {
 		stmt.Accept(c)
 	}
 
-	switch binary.NativeEndian.Uint64((*c.context.Bytecode())[len(*c.context.Bytecode())-8:]) {
+	switch (*c.context.Bytecode())[len(*c.context.Bytecode())-1] {
 	case uint64(vm.OpReturn), uint64(vm.OpReturnValue):
 	default:
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpReturn))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpReturn))
 	}
 
 	if n.ReturnType != nil {
@@ -142,33 +149,64 @@ func (c *Compiler) StmtFunction(n *ast.StmtFunction) {
 	c.context = c.context.Parent()
 }
 
+func (c *Compiler) StmtHaltCompiler(n *ast.StmtHaltCompiler) {
+
+}
+
 func (c *Compiler) StmtIf(n *ast.StmtIf) {
 	n.Cond.Accept(c)
 
 	pos := len(*c.context.Bytecode())
 	n.Stmt.Accept(c)
 
-	goTo := (len(*c.context.Bytecode()) + 16) >> 3
+	goTo := len(*c.context.Bytecode()) + 2
 
-	end := make([]byte, len((*c.context.Bytecode())[pos:]))
+	end := make([]uint64, len((*c.context.Bytecode())[pos:]))
 	copy(end, (*c.context.Bytecode())[pos:])
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(goTo))
+	*c.context.Bytecode() = append((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(goTo))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), end...)
+
+	for _, elif := range n.ElseIf {
+		elif.Accept(c)
+	}
+
+	if n.Else != nil {
+		n.Else.Accept(c)
+	}
+}
+
+func (c *Compiler) StmtElseIf(n *ast.StmtElseIf) {
+	n.Cond.Accept(c)
+
+	pos := len(*c.context.Bytecode())
+	n.Stmt.Accept(c)
+
+	goTo := len(*c.context.Bytecode()) + 2
+
+	end := make([]uint64, len((*c.context.Bytecode())[pos:]))
+	copy(end, (*c.context.Bytecode())[pos:])
+
+	*c.context.Bytecode() = append((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse), uint64(goTo))
 	*c.context.Bytecode() = append(*c.context.Bytecode(), end...)
 }
 
+func (c *Compiler) StmtElse(n *ast.StmtElse) {
+	n.Stmt.Accept(c)
+}
+
 func (c *Compiler) StmtNop(*ast.StmtNop) {
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpNoop))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpNoop))
 }
 
 func (c *Compiler) StmtReturn(n *ast.StmtReturn) {
 	if n.Expr == nil {
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpReturn))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpReturn))
 	} else {
 		n.Expr.Accept(c)
 
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpReturnValue))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpReturnValue))
 	}
 }
 
@@ -181,7 +219,7 @@ func (c *Compiler) StmtStmtList(n *ast.StmtStmtList) {
 func (c *Compiler) StmtExpression(n *ast.StmtExpression) {
 	n.Expr.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpPop))
 }
 
 func (c *Compiler) StmtFor(n *ast.StmtFor) {
@@ -189,8 +227,8 @@ func (c *Compiler) StmtFor(n *ast.StmtFor) {
 		expr.Accept(c)
 	}
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
-	condPos := len(*c.context.Bytecode()) >> 3
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpPop))
+	condPos := len(*c.context.Bytecode())
 
 	for _, cond := range n.Cond {
 		cond.Accept(c)
@@ -203,89 +241,81 @@ func (c *Compiler) StmtFor(n *ast.StmtFor) {
 		loop.Accept(c)
 	}
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJump))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(condPos))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpPop), uint64(vm.OpJump), uint64(condPos))
 
-	goTo := (len(*c.context.Bytecode()) + 16) >> 3
+	goTo := len(*c.context.Bytecode()) + 2
 
-	end := make([]byte, len((*c.context.Bytecode())[pos:]))
+	end := make([]uint64, len((*c.context.Bytecode())[pos:]))
 	copy(end, (*c.context.Bytecode())[pos:])
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(goTo))
+	*c.context.Bytecode() = append((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(goTo))
 	*c.context.Bytecode() = append(*c.context.Bytecode(), end...)
 }
 
 func (c *Compiler) StmtForeach(n *ast.StmtForeach) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachInit))
-	pos := len(*c.context.Bytecode()) >> 3
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachValid))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJumpFalse))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpForEachInit))
+	pos := len(*c.context.Bytecode())
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpForEachValid))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpJumpFalse))
 	iter := len(*c.context.Bytecode())
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), 0)
+	*c.context.Bytecode() = append(*c.context.Bytecode(), 0)
 
 	n.Var.Accept(c)
 
 	if n.AmpersandTkn == nil {
-		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValue))
+		(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpForEachValue)
 	} else {
-		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachValueRef))
+		(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpForEachValueRef)
 	}
 
 	if n.Key != nil {
 		n.Key.Accept(c)
-		binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpForEachKey))
+		(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpForEachKey)
 	}
 
 	n.Stmt.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpForEachNext))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJump))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(pos))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[iter:], uint64(len(*c.context.Bytecode()))>>3)
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpForEachNext), uint64(vm.OpJump), uint64(pos), uint64(vm.OpPop))
+	(*c.context.Bytecode())[iter] = uint64(len(*c.context.Bytecode()))
 }
 
 func (c *Compiler) StmtWhile(n *ast.StmtWhile) {
-	cond := len(*c.context.Bytecode()) >> 3
+	cond := len(*c.context.Bytecode())
 	n.Cond.Accept(c)
 	pos := len(*c.context.Bytecode())
 	n.Stmt.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJump))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(cond))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpJump), uint64(cond))
 
-	goTo := (len(*c.context.Bytecode()) + 16) >> 3
+	goTo := len(*c.context.Bytecode()) + 2
 
-	end := make([]byte, len((*c.context.Bytecode())[pos:]))
+	end := make([]uint64, len((*c.context.Bytecode())[pos:]))
 	copy(end, (*c.context.Bytecode())[pos:])
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(goTo))
+	*c.context.Bytecode() = append((*c.context.Bytecode())[:pos], uint64(vm.OpJumpFalse))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(goTo))
 	*c.context.Bytecode() = append(*c.context.Bytecode(), end...)
 }
 
 func (c *Compiler) StmtDo(n *ast.StmtDo) {
-	pos := len(*c.context.Bytecode()) >> 3
+	pos := len(*c.context.Bytecode())
 	n.Stmt.Accept(c)
 	n.Cond.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJumpFalse))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(pos))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpJumpFalse), uint64(pos))
 }
 
 func (c *Compiler) StmtGoto(n *ast.StmtGoto) {
 	name := c.context.Resolve(n.Label, "")
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpJump))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpJump))
 	c.context.AddLabel(name, uint64(len(*c.context.Bytecode())))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpNoop))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpNoop))
 }
 
 func (c *Compiler) StmtLabel(n *ast.StmtLabel) {
 	label := c.context.Resolve(n.Name, "")
-
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[c.context.FindLabel(label):], uint64(len(*c.context.Bytecode()))>>3)
+	(*c.context.Bytecode())[c.context.FindLabel(label)] = uint64(len(*c.context.Bytecode()))
 }
 
 func (c *Compiler) StmtEcho(n *ast.StmtEcho) {
@@ -293,8 +323,7 @@ func (c *Compiler) StmtEcho(n *ast.StmtEcho) {
 		expr.Accept(c)
 	}
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpEcho))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(len(n.Exprs)))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpEcho), uint64(len(n.Exprs)))
 }
 
 func (c *Compiler) StmtUnset(n *ast.StmtUnset) {
@@ -308,6 +337,8 @@ func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	})
 
 	if f >= 0 {
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpInitCall), uint64(c.context.Function(name)))
+
 		for i, arg := range c.contexts[f].Args {
 			if len(n.Args)-1 < i {
 				if arg.Default != nil {
@@ -319,32 +350,22 @@ func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
 			n.Args[i].Accept(c)
 
 			if arg.IsRef {
-				binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpLoadRef))
-			}
-
-			if arg.Type != "" {
-				if aT, ok := builtInTypeAsserts[arg.Type]; ok {
-					*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpAssertType))
-					*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(aT))
-				}
+				(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpLoadRef)
 			}
 		}
-	}
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCall))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Function(name)))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCall), uint64(len(c.contexts[f].Args)))
+	}
 }
 
 func (c *Compiler) ExprVariable(n *ast.ExprVariable) {
 	name := c.context.Resolve(n.Name, VariableAliasType)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpLoad))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Var(name)))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpLoad), uint64(c.context.Var(name)))
 }
 
 func (c *Compiler) ExprConstFetch(n *ast.ExprConstFetch) {
 	name := c.context.Resolve(n.Const, ConstantAliasType)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Constant(name)))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConst), uint64(c.context.Constant(name)))
 }
 
 func (c *Compiler) ExprAssign(n *ast.ExprAssign) {
@@ -353,12 +374,12 @@ func (c *Compiler) ExprAssign(n *ast.ExprAssign) {
 		c.arrayWriteMode[n.Var] = true
 		n.Var.Accept(c)
 		n.Expr.Accept(c)
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpAssignRef))
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpAssignRef), uint64(vm.OpPop))
+	case *ast.ExprPropertyFetch:
+		// TODO:
 	default:
 		n.Expr.Accept(c)
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpAssign))
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Var(c.context.Resolve(n.Var, VariableAliasType))))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpAssign), uint64(c.context.Var(c.context.Resolve(n.Var, VariableAliasType))))
 	}
 }
 
@@ -366,65 +387,68 @@ func (c *Compiler) ExprAssignBitwiseAnd(n *ast.ExprAssignBitwiseAnd) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignBwAnd))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignBwAnd)
 }
 
 func (c *Compiler) ExprAssignBitwiseOr(n *ast.ExprAssignBitwiseOr) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignBwOr))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignBwOr)
 }
 
 func (c *Compiler) ExprAssignBitwiseXor(n *ast.ExprAssignBitwiseXor) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignBwXor))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignBwXor)
 }
 
-func (c *Compiler) ExprAssignCoalesce(*ast.ExprAssignCoalesce) {
-	panic("not implemented")
+func (c *Compiler) ExprAssignCoalesce(n *ast.ExprAssignCoalesce) {
+	n.Expr.Accept(c)
+	n.Var.Accept(c)
+
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignCoalesce)
 }
 
 func (c *Compiler) ExprAssignConcat(n *ast.ExprAssignConcat) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignConcat))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignConcat)
 }
 
 func (c *Compiler) ExprAssignPow(n *ast.ExprAssignPow) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignPow))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignPow)
 }
 
 func (c *Compiler) ExprAssignShiftLeft(n *ast.ExprAssignShiftLeft) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignShiftLeft))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignShiftLeft)
 }
 
 func (c *Compiler) ExprAssignShiftRight(n *ast.ExprAssignShiftRight) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignShiftRight))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignShiftRight)
 }
 
 func (c *Compiler) ExprAssignReference(n *ast.ExprAssignReference) {
 	n.Expr.Accept(c)
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpLoadRef))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpLoadRef)
 
 	n.Var.Accept(c)
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssign))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssign)
 }
 
 func (c *Compiler) ExprArray(n *ast.ExprArray) {
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayNew))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpArrayNew))
 
 	for _, item := range n.Items {
 		item.Accept(c)
@@ -435,7 +459,7 @@ func (c *Compiler) ExprArrayDimFetch(n *ast.ExprArrayDimFetch) {
 	if n.Dim == nil {
 		c.arrayWriteMode[n.Var] = true
 		n.Var.Accept(c)
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayAccessPush))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpArrayAccessPush))
 	} else {
 		if c.arrayWriteMode[n] {
 			switch n.Var.(type) {
@@ -444,179 +468,183 @@ func (c *Compiler) ExprArrayDimFetch(n *ast.ExprArrayDimFetch) {
 			}
 			n.Var.Accept(c)
 			n.Dim.Accept(c)
-			*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayAccessWrite))
+			*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpArrayAccessWrite))
 		} else {
 			n.Var.Accept(c)
 			n.Dim.Accept(c)
-			*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayAccessRead))
+			*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpArrayAccessRead))
 		}
 	}
 }
 
 func (c *Compiler) ExprArrayItem(n *ast.ExprArrayItem) {
 	if n.Key == nil {
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayAccessPush))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpArrayAccessPush))
 	} else {
 		n.Key.Accept(c)
-		*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpArrayAccessWrite))
+		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpArrayAccessWrite))
 	}
 	n.Val.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpAssignRef))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPop))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpAssignRef), uint64(vm.OpPop))
 }
 
 func (c *Compiler) ExprPostInc(n *ast.ExprPostInc) {
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpPostIncrement))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpPostIncrement)
 }
 
 func (c *Compiler) ExprPreInc(n *ast.ExprPreInc) {
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpPreIncrement))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpPreIncrement)
 }
 
 func (c *Compiler) ExprPostDec(n *ast.ExprPostDec) {
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpPostDecrement))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpPostDecrement)
 }
 
 func (c *Compiler) ExprPreDec(n *ast.ExprPreDec) {
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpPreDecrement))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpPreDecrement)
 }
 
 func (c *Compiler) ExprAssignDiv(n *ast.ExprAssignDiv) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignDiv))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignDiv)
 }
 
 func (c *Compiler) ExprAssignMinus(n *ast.ExprAssignMinus) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignSub))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignSub)
 }
 
 func (c *Compiler) ExprAssignMod(n *ast.ExprAssignMod) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignMod))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignMod)
 }
 
 func (c *Compiler) ExprAssignMul(n *ast.ExprAssignMul) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignMul))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignMul)
 }
 
 func (c *Compiler) ExprAssignPlus(n *ast.ExprAssignPlus) {
 	n.Expr.Accept(c)
 	n.Var.Accept(c)
 
-	binary.NativeEndian.PutUint64((*c.context.Bytecode())[len(*c.context.Bytecode())-16:], uint64(vm.OpAssignAdd))
+	(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpAssignAdd)
 }
 
 func (c *Compiler) ExprBinaryIdentical(n *ast.ExprBinaryIdentical) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpIdentical))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpIdentical))
 }
 
 func (c *Compiler) ExprBinaryMinus(n *ast.ExprBinaryMinus) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpSub))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpSub))
 }
 
 func (c *Compiler) ExprBinaryPlus(n *ast.ExprBinaryPlus) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpAdd))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpAdd))
 }
 
 func (c *Compiler) ExprBinaryBitwiseAnd(n *ast.ExprBinaryBitwiseAnd) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpBwAnd))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpBwAnd))
 }
 
 func (c *Compiler) ExprBinaryBitwiseOr(n *ast.ExprBinaryBitwiseOr) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpBwOr))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpBwOr))
 }
 
 func (c *Compiler) ExprBinaryBitwiseXor(n *ast.ExprBinaryBitwiseXor) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpBwXor))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpBwXor))
 }
 
 func (c *Compiler) ExprBitwiseNot(n *ast.ExprBitwiseNot) {
 	n.Expr.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpBwNot))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpBwNot))
 }
 
 func (c *Compiler) ExprBinaryBooleanAnd(n *ast.ExprBinaryBooleanAnd) {
-	panic("not implemented")
+	n.Left.Accept(c)
+	n.Right.Accept(c)
 }
 
 func (c *Compiler) ExprBinaryBooleanOr(n *ast.ExprBinaryBooleanOr) {
-	panic("not implemented")
+	n.Left.Accept(c)
+	n.Right.Accept(c)
 }
 
 func (c *Compiler) ExprBinaryCoalesce(n *ast.ExprBinaryCoalesce) {
-	panic("not implemented")
+	n.Left.Accept(c)
+	n.Right.Accept(c)
+
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCoalesce))
 }
 
 func (c *Compiler) ExprBinaryConcat(n *ast.ExprBinaryConcat) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConcat))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConcat))
 }
 
 func (c *Compiler) ExprBinaryDiv(n *ast.ExprBinaryDiv) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpDiv))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpDiv))
 }
 
 func (c *Compiler) ExprBinaryEqual(n *ast.ExprBinaryEqual) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpEqual))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpEqual))
 }
 
 func (c *Compiler) ExprBinaryGreater(n *ast.ExprBinaryGreater) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpGreater))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpGreater))
 }
 
 func (c *Compiler) ExprBinaryGreaterOrEqual(n *ast.ExprBinaryGreaterOrEqual) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpGreaterOrEqual))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpGreaterOrEqual))
 }
 
 func (c *Compiler) ExprBinaryLogicalAnd(n *ast.ExprBinaryLogicalAnd) {
@@ -635,112 +663,105 @@ func (c *Compiler) ExprBinaryMod(n *ast.ExprBinaryMod) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpMod))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpMod))
 }
 
 func (c *Compiler) ExprBinaryMul(n *ast.ExprBinaryMul) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpMul))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpMul))
 }
 
 func (c *Compiler) ExprBinaryNotEqual(n *ast.ExprBinaryNotEqual) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpNotEqual))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpNotEqual))
 }
 
 func (c *Compiler) ExprBinaryNotIdentical(n *ast.ExprBinaryNotIdentical) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpNotIdentical))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpNotIdentical))
 }
 
 func (c *Compiler) ExprBinaryPow(n *ast.ExprBinaryPow) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpPow))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpPow))
 }
 
 func (c *Compiler) ExprBinaryShiftLeft(n *ast.ExprBinaryShiftLeft) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpShiftLeft))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpShiftLeft))
 }
 
 func (c *Compiler) ExprBinaryShiftRight(n *ast.ExprBinaryShiftRight) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpShiftRight))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpShiftRight))
 }
 
 func (c *Compiler) ExprBinarySmaller(n *ast.ExprBinarySmaller) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpLess))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpLess))
 }
 
 func (c *Compiler) ExprBinarySmallerOrEqual(n *ast.ExprBinarySmallerOrEqual) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpLessOrEqual))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpLessOrEqual))
 }
 
 func (c *Compiler) ExprBinarySpaceship(n *ast.ExprBinarySpaceship) {
 	n.Left.Accept(c)
 	n.Right.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCompare))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCompare))
 }
 
 func (c *Compiler) ExprCastArray(n *ast.ExprCastArray) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.ArrayType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.ArrayType))
 }
 
 func (c *Compiler) ExprCastBool(n *ast.ExprCastBool) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.BoolType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.BoolType))
 }
 
 func (c *Compiler) ExprCastDouble(n *ast.ExprCastDouble) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.FloatType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.FloatType))
 }
 
 func (c *Compiler) ExprCastInt(n *ast.ExprCastInt) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.IntType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.IntType))
 }
 
 func (c *Compiler) ExprCastObject(n *ast.ExprCastObject) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.ObjectType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.ObjectType))
 }
 
 func (c *Compiler) ExprCastString(n *ast.ExprCastString) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.StringType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.StringType))
 }
 
 func (c *Compiler) ExprCastUnset(n *ast.ExprCastUnset) {
 	n.Expr.Accept(c)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpCast))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.NullType))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCast), uint64(vm.NullType))
 }
 
 func (c *Compiler) ExprPropertyFetch(n *ast.ExprPropertyFetch) {
@@ -758,14 +779,13 @@ func (c *Compiler) ExprIsset(n *ast.ExprIsset) {
 		v.Accept(c)
 	}
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpIsSet))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(len(n.Vars)))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpIsSet), uint64(len(n.Vars)))
 }
 
 func (c *Compiler) ExprBooleanNot(n *ast.ExprBooleanNot) {
 	n.Expr.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpNot))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpNot))
 }
 
 func (c *Compiler) ExprRequire(n *ast.ExprRequire) {
@@ -791,8 +811,7 @@ func (c *Compiler) ExprBrackets(n *ast.ExprBrackets) {
 func (c *Compiler) ScalarLnumber(n *ast.ScalarLnumber) {
 	i, _ := strconv.Atoi(unsafe.String(unsafe.SliceData(n.Value), len(n.Value)))
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.Int(i))))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConst), uint64(c.context.Literal(n, vm.Int(i))))
 }
 
 func (c *Compiler) ScalarString(n *ast.ScalarString) {
@@ -805,14 +824,13 @@ func (c *Compiler) ScalarString(n *ast.ScalarString) {
 
 	s := posixReplacer.Replace(unsafe.String(unsafe.SliceData(n.Value), len(n.Value)))
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.String(s))))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConst), uint64(c.context.Literal(n, vm.String(s))))
+	*c.context.Bytecode() = append(*c.context.Bytecode())
 }
 
 func (c *Compiler) ScalarDnumber(n *ast.ScalarDnumber) {
 	f, _ := strconv.ParseFloat(unsafe.String(unsafe.SliceData(n.Value), len(n.Value)), 64)
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.Float(f))))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConst), uint64(c.context.Literal(n, vm.Float(f))))
 }
 
 func (c *Compiler) ScalarEncapsed(n *ast.ScalarEncapsed) {
@@ -823,9 +841,8 @@ func (c *Compiler) ScalarEncapsed(n *ast.ScalarEncapsed) {
 
 func (c *Compiler) ScalarEncapsedStringPart(n *ast.ScalarEncapsedStringPart) {
 	s := unsafe.String(unsafe.SliceData(n.Value), len(n.Value))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConst))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(c.context.Literal(n, vm.String(s))))
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConcat))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConst), uint64(c.context.Literal(n, vm.String(s))))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConcat))
 }
 
 func (c *Compiler) ScalarEncapsedStringVar(n *ast.ScalarEncapsedStringVar) {
@@ -835,7 +852,7 @@ func (c *Compiler) ScalarEncapsedStringVar(n *ast.ScalarEncapsedStringVar) {
 func (c *Compiler) ScalarEncapsedStringBrackets(n *ast.ScalarEncapsedStringBrackets) {
 	n.Var.Accept(c)
 
-	*c.context.Bytecode() = binary.NativeEndian.AppendUint64(*c.context.Bytecode(), uint64(vm.OpConcat))
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpConcat))
 }
 
 func NewCompiler(extensions *Extensions) *Compiler {
@@ -909,7 +926,12 @@ func (c *Compiler) Compile(input []byte, ctx *vm.GlobalContext) vm.CompiledFunct
 		}
 	}
 
-	node, err := parser.Parse(input, conf.Config{Version: &version.Version{Major: 7, Minor: 4}})
+	var parseErrors []*errors.Error
+
+	node, err := parser.Parse(input, conf.Config{
+		Version:          &version.Version{Major: 8, Minor: 1},
+		ErrorHandlerFunc: func(e *errors.Error) { parseErrors = append(parseErrors, e) },
+	})
 
 	if err != nil {
 		panic(err)
@@ -925,9 +947,10 @@ func (c *Compiler) Compile(input []byte, ctx *vm.GlobalContext) vm.CompiledFunct
 		if context.BuiltIn {
 			continue
 		}
+
 		ctx.Functions[slices.Index(c.global.Functions, context.Name)] = vm.CompiledFunction{
+			Name:         vm.String(context.Name),
 			Instructions: Optimizer(context.Instructions),
-			Args:         len(context.Args),
 			Vars:         len(context.Variables),
 		}
 	}

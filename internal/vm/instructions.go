@@ -9,19 +9,27 @@ import (
 	"strings"
 )
 
-type Bytecode []byte
+type Instructions []uint64
 
-func (b Bytecode) ReadOperation(ctx *FunctionContext) (op Operator) {
-	// TODO: fix bounds checks
-	if op = Operator(binary.NativeEndian.Uint64(b[ctx.pc<<3:])); op > _opOneOperand {
+func NewInstructions(bytecode []byte) Instructions {
+	res := make([]uint64, 0, len(bytecode)>>3)
+
+	for ip := 0; ip < len(bytecode); ip += 8 {
+		res = append(res, binary.NativeEndian.Uint64(bytecode[ip:]))
+	}
+
+	return res
+}
+
+func (b Instructions) ReadOperation(ctx *FunctionContext) (op Operator) {
+	if op = Operator(b[ctx.pc]); op > _opOneOperand {
 		ctx.pc++
-		ctx.global.r1 = binary.NativeEndian.Uint64(b[ctx.pc<<3:])
+		ctx.r1 = b[ctx.pc]
 	}
 
 	return
 }
-
-func (b Bytecode) String() string {
+func (b Instructions) String() string {
 	var ip int
 	return string(Reduce(b, func(prev String, operator Operator, operands ...int) String {
 		strOperands := make([]string, 0, len(operands))
@@ -36,16 +44,16 @@ func (b Bytecode) String() string {
 	}, ""))
 }
 
-func Reduce[T any, F ~func(prev T, operator Operator, operands ...int) T](bytecode Bytecode, f F, start T) T {
+func Reduce[T any, F ~func(prev T, operator Operator, operands ...int) T](bytecode Instructions, f F, start T) T {
 	ip := 0
 	registers := make([]int, 0, 1)
 
-	for ip < len(bytecode)>>3 {
-		op := Operator(binary.NativeEndian.Uint64(bytecode[ip<<3:]))
+	for ip < len(bytecode) {
+		op := Operator(bytecode[ip])
 
 		if op > _opOneOperand {
 			ip++
-			registers = append(registers, int(binary.NativeEndian.Uint64(bytecode[ip<<3:])))
+			registers = append(registers, int(bytecode[ip]))
 		}
 
 		start = f(start, op, registers...)
@@ -87,6 +95,7 @@ const (
 	OpGreaterOrEqual                   // GTE
 	OpLessOrEqual                      // LTE
 	OpCompare                          // COMPARE
+	OpCoalesce                         // COALESCE
 	OpAssignRef                        // ASSIGN_REF
 	OpArrayNew                         // ARRAY_NEW
 	OpArrayAccessRead                  // ARRAY_ACCESS_READ
@@ -99,10 +108,9 @@ const (
 	OpForEachNext                      // FE_NEXT
 	OpForEachValid                     // FE_VALID
 	OpThrow                            // THROW
-	OpCallByName                       // CALL_BY_NAME
+	OpInitCallByName                   // INIT_CALL_BY_NAME
 
 	_opOneOperand      Operator = iota - 1
-	OpAssertType                // ASSERT_TYPE
 	OpAssign                    // ASSIGN
 	OpAssignAdd                 // ASSIGN_ADD
 	OpAssignSub                 // ASSIGN_SUB
@@ -116,6 +124,7 @@ const (
 	OpAssignConcat              // ASSIGN_CONCAT
 	OpAssignShiftLeft           // ASSIGN_LSHIFT
 	OpAssignShiftRight          // ASSIGN_RSHIFT
+	OpAssignCoalesce            // ASSIGN_COALESCE
 	OpCast                      // CAST
 	OpPreIncrement              // PRE_INC
 	OpPostIncrement             // POST_INC
@@ -127,6 +136,7 @@ const (
 	OpJump                      // JUMP
 	OpJumpTrue                  // JUMP_TRUE
 	OpJumpFalse                 // JUMP_FALSE
+	OpInitCall                  // INIT_CALL
 	OpCall                      // CALL
 	OpEcho                      // ECHO
 	OpIsSet                     // ISSET
@@ -154,10 +164,10 @@ func arrayCompare(ctx Context, x, y *Array) Int {
 		return sign
 	}
 
-	for key, val := range x.hash {
+	for key, val := range x.hash.internal {
 		if v, ok := y.access(key); ok {
 			return +1
-		} else if c := compare(ctx, val, *v.Deref()); c != 0 {
+		} else if c := compare(ctx, val.v, *v.Deref()); c != 0 {
 			return c
 		}
 	}
@@ -166,13 +176,13 @@ func arrayCompare(ctx Context, x, y *Array) Int {
 }
 
 func compare(ctx Context, x, y Value) Int {
-	if x.Type() == ArrayType && y.Type() != ArrayType {
+	if x.Type().shape == ArrayType && y.Type().shape != ArrayType {
 		return +1
-	} else if x.Type() != ArrayType && y.Type() == ArrayType {
+	} else if x.Type().shape != ArrayType && y.Type().shape == ArrayType {
 		return -1
 	}
 
-	switch Juggle(x.Type(), y.Type()) {
+	switch Juggle(x.Type().shape, y.Type().shape) {
 	case IntType:
 		return intSign(x.AsInt(ctx) - y.AsInt(ctx))
 	case FloatType:
@@ -185,124 +195,171 @@ func compare(ctx Context, x, y Value) Int {
 		return x.AsBool(ctx).AsInt(ctx) - y.AsBool(ctx).AsInt(ctx)
 	case ArrayType:
 		return arrayCompare(ctx, x.AsArray(ctx), y.AsArray(ctx))
+	case ObjectType:
+		// TODO:
 	}
 
 	return 0
 }
 
 // Identical => $x === $y
+//
+//go:nosplit
 func Identical(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = Bool(left == right)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(Bool(left == right || left.Type().shape == ArrayType && right.Type().shape == ArrayType && arrayCompare(ctx, left.(*Array), right.(*Array)) == 0))
 }
 
 // NotIdentical => $x !== $y
+//
+//go:nosplit
 func NotIdentical(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = Bool(left != right)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(Bool(left != right || left.Type().shape == ArrayType && right.Type().shape == ArrayType && arrayCompare(ctx, left.(*Array), right.(*Array)) != 0))
 }
 
 // Not => !$x
+//
+//go:nosplit
 func Not(ctx *FunctionContext) {
-	*ctx.global.sp = !(*ctx.global.sp).AsBool(ctx)
+	ctx.SetTop(!ctx.Top().AsBool(ctx))
 }
 
 // Equal => $x == $y
+//
+//go:nosplit
 func Equal(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = equal(ctx, left, right)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(equal(ctx, left, right))
 }
 
 // NotEqual => $x != $y
+//
+//go:nosplit
 func NotEqual(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = !equal(ctx, left, right)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(!equal(ctx, left, right))
 }
 
 func equal(ctx *FunctionContext, x, y Value) Bool {
-	as := Juggle(x.Type(), y.Type())
+	if x == y {
+		return true
+	}
+
+	as := Juggle(x.Type().shape, y.Type().shape)
 
 	if as == ArrayType {
-		return Bool(maps.EqualFunc(x.AsArray(ctx).hash, y.AsArray(ctx).hash, func(x, y Ref) bool {
-			return bool(equal(ctx, x, y))
-		}))
+		return arrayCompare(ctx, x.AsArray(ctx), y.AsArray(ctx)) == 0
 	}
 
 	return x.Cast(ctx, as) == y.Cast(ctx, as)
 }
 
 // LessOrEqual => $x <= $y
+//
+//go:nosplit
 func LessOrEqual(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = Bool(compare(ctx, left, right) < 1)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(Bool(compare(ctx, left, right) < 1))
 }
 
 // GreaterOrEqual => $x >= $y
+//
+//go:nosplit
 func GreaterOrEqual(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = Bool(compare(ctx, left, right) > -1)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(Bool(compare(ctx, left, right) > -1))
 }
 
 // Less => $x < $y
+//
+//go:nosplit
 func Less(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = Bool(compare(ctx, left, right) < 0)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(Bool(compare(ctx, left, right) < 0))
 }
 
 // Greater => $x > $y
+//
+//go:nosplit
 func Greater(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = Bool(compare(ctx, left, right) > 0)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(Bool(compare(ctx, left, right) > 0))
 }
 
 // Compare => $x <=> $y
+//
+//go:nosplit
 func Compare(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	*ctx.global.sp = compare(ctx, left, right)
+	right := ctx.Pop()
+	left := ctx.Top()
+	ctx.SetTop(compare(ctx, left, right))
+}
+
+//go:nosplit
+func Coalesce(ctx *FunctionContext) {
+	right := ctx.Pop()
+	left := ctx.Top()
+
+	if left == (Null{}) {
+		ctx.SetTop(right)
+	} else {
+		ctx.SetTop(left)
+	}
 }
 
 // Const => 0
+//
+//go:nosplit
 func Const(ctx *FunctionContext) {
-	ctx.global.Push(ctx.global.Constants[ctx.global.r1])
+	ctx.Push(ctx.Constants[ctx.r1])
 }
 
 // Load => $a
+//
+//go:nosplit
 func Load(ctx *FunctionContext) {
-	ctx.global.Push(ctx.vars[ctx.global.r1])
+	ctx.Push(ctx.vars[ctx.r1])
 }
 
 // LoadRef => &$a
+//
+//go:nosplit
 func LoadRef(ctx *FunctionContext) {
-	ctx.global.Push(NewRef(&ctx.vars[ctx.global.r1]))
+	ctx.Push(NewRef(&ctx.vars[ctx.r1]))
 }
 
 // Assign => $a = 0
+//
+//go:nosplit
 func Assign(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
-	assignTryRef(v, *ctx.global.sp)
+	v := &ctx.vars[ctx.r1]
+	assignTryRef(v, ctx.stack[ctx.sp])
 }
 
+//go:nosplit
 func AssignRef(ctx *FunctionContext) {
-	value := ctx.global.Pop()
-	ref := *ctx.global.sp
+	value := ctx.Pop()
+	ref := ctx.Top()
 	*ref.(Ref).Deref() = value
 }
 
 // AssignAdd => $a += 1
+//
+//go:nosplit
 func AssignAdd(ctx *FunctionContext) {
-	right := *ctx.global.sp
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top()
+	v := &ctx.vars[ctx.r1]
 
-	switch Juggle((*v).Type(), right.Type()) {
+	switch Juggle((*v).Type().shape, right.Type().shape) {
 	case ArrayType:
 		assignTryRef(v, addArray((*v).AsArray(ctx), right.AsArray(ctx)))
 	case FloatType:
@@ -311,55 +368,63 @@ func AssignAdd(ctx *FunctionContext) {
 		assignTryRef(v, (*v).AsInt(ctx)+right.AsInt(ctx))
 	}
 
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignSub => $a -= 1
+//
+//go:nosplit
 func AssignSub(ctx *FunctionContext) {
-	right := *ctx.global.sp
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top()
+	v := &ctx.vars[ctx.r1]
 
 	switch FloatType {
-	case (*v).Type(), right.Type():
+	case (*v).Type().shape, right.Type().shape:
 		assignTryRef(v, (*v).AsFloat(ctx)-right.AsFloat(ctx))
 	default:
 		assignTryRef(v, (*v).AsInt(ctx)-right.AsInt(ctx))
 	}
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignMul => $a *= 1
+//
+//go:nosplit
 func AssignMul(ctx *FunctionContext) {
-	right := *ctx.global.sp
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top()
+	v := &ctx.vars[ctx.r1]
 
 	switch FloatType {
-	case (*v).Type(), right.Type():
-		assignTryRef(v, ctx.vars[ctx.global.r1].AsFloat(ctx)*right.AsFloat(ctx))
+	case (*v).Type().shape, right.Type().shape:
+		assignTryRef(v, ctx.vars[ctx.r1].AsFloat(ctx)*right.AsFloat(ctx))
 	default:
 		assignTryRef(v, (*v).AsInt(ctx)*right.AsInt(ctx))
 	}
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignDiv => $a /= 1
+//
+//go:nosplit
 func AssignDiv(ctx *FunctionContext) {
-	right := *ctx.global.sp
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top()
+	v := &ctx.vars[ctx.r1]
 
 	if res := (*v).AsFloat(ctx) / right.AsFloat(ctx); res == Float(int(res)) {
 		assignTryRef(v, res.AsInt(ctx))
 	} else {
 		assignTryRef(v, res)
 	}
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignPow => $a **= 1
+//
+//go:nosplit
 func AssignPow(ctx *FunctionContext) {
-	right := *ctx.global.sp
-	v := &ctx.vars[ctx.global.r1]
-	as := Juggle((*v).Type(), right.Type())
+	right := ctx.Top()
+	v := &ctx.vars[ctx.r1]
+	as := Juggle((*v).Type().shape, right.Type().shape)
 
 	var res Value
 
@@ -371,61 +436,75 @@ func AssignPow(ctx *FunctionContext) {
 	}
 
 	assignTryRef(v, res)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignBwAnd => $a &= 1
+//
+//go:nosplit
 func AssignBwAnd(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsInt(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsInt(ctx)
+	v := &ctx.vars[ctx.r1]
 	assignTryRef(v, (*v).AsInt(ctx)&right)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignBwOr => $a |= 1
+//
+//go:nosplit
 func AssignBwOr(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsInt(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsInt(ctx)
+	v := &ctx.vars[ctx.r1]
 	assignTryRef(v, (*v).AsInt(ctx)|right)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignBwXor => $a ^= 1
+//
+//go:nosplit
 func AssignBwXor(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsInt(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsInt(ctx)
+	v := &ctx.vars[ctx.r1]
 	assignTryRef(v, (*v).AsInt(ctx)^right)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignConcat => $a .= 1
+//
+//go:nosplit
 func AssignConcat(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsString(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsString(ctx)
+	v := &ctx.vars[ctx.r1]
 	assignTryRef(v, (*v).AsString(ctx)+right)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignShiftLeft => $a <<= 1
+//
+//go:nosplit
 func AssignShiftLeft(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsInt(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsInt(ctx)
+	v := &ctx.vars[ctx.r1]
 	assignTryRef(v, (*v).AsInt(ctx)<<right)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignShiftRight => $a >>= 1
+//
+//go:nosplit
 func AssignShiftRight(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsInt(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsInt(ctx)
+	v := &ctx.vars[ctx.r1]
 	assignTryRef(v, (*v).AsInt(ctx)>>right)
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
 }
 
 // AssignMod => $a %= 1
+//
+//go:nosplit
 func AssignMod(ctx *FunctionContext) {
-	right := (*ctx.global.sp).AsFloat(ctx)
-	v := &ctx.vars[ctx.global.r1]
+	right := ctx.Top().AsFloat(ctx)
+	v := &ctx.vars[ctx.r1]
 	left := (*v).AsFloat(ctx)
 
 	if res := Float(math.Mod(float64(left), float64(right))); res == Float(int(res)) {
@@ -433,247 +512,297 @@ func AssignMod(ctx *FunctionContext) {
 	} else {
 		assignTryRef(v, res)
 	}
-	*ctx.global.sp = *v
+	ctx.SetTop(*v)
+}
+
+// AssignCoalesce => $a ??= 1
+//
+//go:nosplit
+func AssignCoalesce(ctx *FunctionContext) {
+	right := ctx.Top()
+	left := &ctx.vars[ctx.r1]
+	if *left == (Null{}) {
+		*left = right
+	}
+	ctx.SetTop(*left)
 }
 
 // Jump unconditional jump; goto
+//
+//go:nosplit
 func Jump(ctx *FunctionContext) {
-	ctx.pc = int(ctx.global.r1) - 1
+	ctx.pc = int(ctx.r1) - 1
 }
 
 // JumpTrue if (condition)
+//
+//go:nosplit
 func JumpTrue(ctx *FunctionContext) {
-	if ctx.global.Pop().AsBool(ctx) {
+	if ctx.Pop().AsBool(ctx) {
 		Jump(ctx)
 	}
 }
 
 // JumpFalse for (...; condition; ...) {}
+//
+//go:nosplit
 func JumpFalse(ctx *FunctionContext) {
-	if !ctx.global.Pop().AsBool(ctx) {
+	if !ctx.Pop().AsBool(ctx) {
 		Jump(ctx)
 	}
 }
 
-// Call => $b = someFunction($a, $x)
-func Call(ctx *FunctionContext) {
-	ctx.global.Functions[ctx.global.r1].Invoke(ctx)
-}
-
+//go:nosplit
 func Pop(ctx *FunctionContext) {
-	ctx.global.MovePointer(-1)
+	ctx.sp -= 1
 }
 
+//go:nosplit
 func Pop2(ctx *FunctionContext) {
-	ctx.global.MovePointer(-2)
+	ctx.sp -= 2
 }
 
 // ReturnValue => return 0;
+//
+//go:nosplit
 func ReturnValue(ctx *FunctionContext) {
-	v := *ctx.global.sp
+	v := ctx.Top()
 	Return(ctx)
-	ctx.global.Push(v)
+	ctx.SetTop(v)
 }
 
 // Return => return;
+//
+//go:nosplit
 func Return(ctx *FunctionContext) {
-	ctx.global.Sp(ctx.global.PopFrame().fp)
+	ctx.Sp(ctx.PopFrame().fp)
 }
 
 // Add => 1 + 2
+//
+//go:nosplit
 func Add(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
+	right := ctx.Pop()
+	left := ctx.Top()
 
 	switch FloatType {
-	case left.Type(), right.Type():
-		*ctx.global.sp = left.AsFloat(ctx) + right.AsFloat(ctx)
+	case left.Type().shape, right.Type().shape:
+		ctx.SetTop(left.AsFloat(ctx) + right.AsFloat(ctx))
 		return
 	}
 
 	switch ArrayType {
-	case left.Type(), right.Type():
-		*ctx.global.sp = addArray(left.AsArray(ctx), right.AsArray(ctx))
+	case left.Type().shape, right.Type().shape:
+		ctx.SetTop(addArray(left.AsArray(ctx), right.AsArray(ctx)))
 	default:
-		*ctx.global.sp = left.AsInt(ctx) + right.AsInt(ctx)
+		ctx.SetTop(left.AsInt(ctx) + right.AsInt(ctx))
 	}
 }
 
-//go:noinline
 func addArray(left, right *Array) *Array {
-	result := maps.Clone(right.hash)
-	maps.Copy(result, left.hash)
-	return &Array{hash: result, next: max(left.next, right.next)}
+	result := maps.Clone(right.hash.internal)
+	maps.Copy(result, left.hash.internal)
+	return &Array{hash: HashTable[Value, Value]{result}, next: max(left.next, right.next)}
 }
 
 // Sub => 1 - 2
+//
+//go:nosplit
 func Sub(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
+	right := ctx.Pop()
+	left := ctx.Top()
 
 	switch FloatType {
-	case left.Type(), right.Type():
-		*ctx.global.sp = left.AsFloat(ctx) - right.AsFloat(ctx)
+	case left.Type().shape, right.Type().shape:
+		ctx.SetTop(left.AsFloat(ctx) - right.AsFloat(ctx))
 	default:
-		*ctx.global.sp = left.AsInt(ctx) - right.AsInt(ctx)
+		ctx.SetTop(left.AsInt(ctx) - right.AsInt(ctx))
 	}
 }
 
 // Mul => 1 * 2
+//
+//go:nosplit
 func Mul(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
+	right := ctx.Pop()
+	left := ctx.Top()
 
 	switch FloatType {
-	case left.Type(), right.Type():
-		*ctx.global.sp = left.AsFloat(ctx) * right.AsFloat(ctx)
+	case left.Type().shape, right.Type().shape:
+		ctx.SetTop(left.AsFloat(ctx) * right.AsFloat(ctx))
 	default:
-		*ctx.global.sp = left.AsInt(ctx) * right.AsInt(ctx)
+		ctx.SetTop(left.AsInt(ctx) * right.AsInt(ctx))
 	}
 }
 
 // Div => 1 / 2
+//
+//go:nosplit
 func Div(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
+	right := ctx.Pop()
+	left := ctx.Top()
 	res := left.AsFloat(ctx) / right.AsFloat(ctx)
 
 	switch FloatType {
-	case left.Type(), right.Type():
+	case left.Type().shape, right.Type().shape:
 	default:
 		if res == Float(int(res)) {
-			*ctx.global.sp = res.AsInt(ctx)
+			ctx.SetTop(res.AsInt(ctx))
 			return
 		}
 	}
 
-	*ctx.global.sp = res
+	ctx.SetTop(res)
 }
 
 // Mod => 1 % 2
+//
+//go:nosplit
 func Mod(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	as := Juggle(left.Type(), right.Type())
+	right := ctx.Pop()
+	left := ctx.Top()
+	as := Juggle(left.Type().shape, right.Type().shape)
 
 	switch as {
 	case BoolType:
 		if !right.AsBool(ctx) {
 			panic("modulo by zero error")
 		}
-		*ctx.global.sp = Int(0)
+		ctx.SetTop(Int(0))
 	default:
-		*ctx.global.sp = Float(math.Mod(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as)
+		ctx.SetTop(Float(math.Mod(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as))
 	}
 }
 
 // Pow => 1 ** 2
+//
+//go:nosplit
 func Pow(ctx *FunctionContext) {
-	right := ctx.global.Pop()
-	left := *ctx.global.sp
-	as := Juggle(left.Type(), right.Type())
+	right := ctx.Pop()
+	left := ctx.Top()
+	as := Juggle(left.Type().shape, right.Type().shape)
 
 	switch as {
 	case BoolType:
-		*ctx.global.sp = (!right.AsBool(ctx) || left.AsBool(ctx)).AsInt(ctx)
+		ctx.SetTop((!right.AsBool(ctx) || left.AsBool(ctx)).AsInt(ctx))
 	default:
-		*ctx.global.sp = Float(math.Pow(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as)
+		ctx.SetTop(Float(math.Pow(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as))
 	}
 }
 
 // BwAnd => 1 & 2
+//
+//go:nosplit
 func BwAnd(ctx *FunctionContext) {
-	right := ctx.global.Pop().AsInt(ctx)
-	left := (*ctx.global.sp).AsInt(ctx)
-	*ctx.global.sp = left & right
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
+	ctx.SetTop(left & right)
 }
 
 // BwOr => 1 | 2
+//
+//go:nosplit
 func BwOr(ctx *FunctionContext) {
-	right := ctx.global.Pop().AsInt(ctx)
-	left := (*ctx.global.sp).AsInt(ctx)
-	*ctx.global.sp = left | right
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
+	ctx.SetTop(left | right)
 }
 
 // BwXor => 1 ^ 2
+//
+//go:nosplit
 func BwXor(ctx *FunctionContext) {
-	right := ctx.global.Pop().AsInt(ctx)
-	left := (*ctx.global.sp).AsInt(ctx)
-	*ctx.global.sp = left ^ right
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
+	ctx.SetTop(left ^ right)
 }
 
 // BwNot => ~1
+//
+//go:nosplit
 func BwNot(ctx *FunctionContext) {
-	left := (*ctx.global.sp).AsInt(ctx)
-	*ctx.global.sp = ^left
+	left := ctx.Top().AsInt(ctx)
+	ctx.SetTop(^left)
 }
 
 // ShiftLeft => 1 << 2
+//
+//go:nosplit
 func ShiftLeft(ctx *FunctionContext) {
-	right := ctx.global.Pop().AsInt(ctx)
-	left := (*ctx.global.sp).AsInt(ctx)
-	*ctx.global.sp = left << right
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
+	ctx.SetTop(left << right)
 }
 
 // ShiftRight => 1 >> 2
+//
+//go:nosplit
 func ShiftRight(ctx *FunctionContext) {
-	right := ctx.global.Pop().AsInt(ctx)
-	left := (*ctx.global.sp).AsInt(ctx)
-	*ctx.global.sp = left >> right
+	right := ctx.Pop().AsInt(ctx)
+	left := ctx.Top().AsInt(ctx)
+	ctx.SetTop(left >> right)
 }
 
 // Cast => (_type_)$x
+//
+//go:nosplit
 func Cast(ctx *FunctionContext) {
-	*ctx.global.sp = (*ctx.global.sp).Cast(ctx, Type(ctx.global.r1))
+	ctx.SetTop(ctx.Top().Cast(ctx, TypeShape(ctx.r1)))
 }
 
 // PreIncrement => ++$x
+//
+//go:nosplit
 func PreIncrement(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
+	v := &ctx.vars[ctx.r1]
 
 	if (*v).IsRef() {
 		v = (*v).(Ref).Deref()
 	}
 
-	switch (*v).Type() {
-	case FloatType:
-		*v = (*v).AsFloat(ctx) + 1
+	switch (*v).(type) {
+	case Float:
+		*v = (*v).(Float) + 1
 	default:
 		*v = (*v).AsInt(ctx) + 1
 	}
 
-	ctx.global.Push(*v)
+	ctx.Push(*v)
 }
 
 // PreDecrement => --$x
+//
+//go:nosplit
 func PreDecrement(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
+	v := &ctx.vars[ctx.r1]
 
 	if (*v).IsRef() {
 		v = (*v).(Ref).Deref()
 	}
 
-	switch (*v).Type() {
+	switch (*v).Type().shape {
 	case FloatType:
 		*v = (*v).AsFloat(ctx) - 1
 	default:
 		*v = (*v).AsInt(ctx) - 1
 	}
 
-	ctx.global.Push(*v)
+	ctx.Push(*v)
 }
 
 // PostIncrement => $x++
+//
+//go:nosplit
 func PostIncrement(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
+	v := &ctx.vars[ctx.r1]
 
 	if (*v).IsRef() {
 		v = (*v).(Ref).Deref()
 	}
 
-	ctx.global.Push(*v)
+	ctx.Push(*v)
 
-	switch (*v).Type() {
+	switch (*v).Type().shape {
 	case FloatType:
 		*v = (*v).AsFloat(ctx) + 1
 	default:
@@ -682,16 +811,18 @@ func PostIncrement(ctx *FunctionContext) {
 }
 
 // PostDecrement => $x--
+//
+//go:nosplit
 func PostDecrement(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
+	v := &ctx.vars[ctx.r1]
 
 	if (*v).IsRef() {
 		v = (*v).(Ref).Deref()
 	}
 
-	ctx.global.Push(*v)
+	ctx.Push(*v)
 
-	switch (*v).Type() {
+	switch (*v).Type().shape {
 	case FloatType:
 		*v = (*v).AsFloat(ctx) - 1
 	default:
@@ -700,21 +831,19 @@ func PostDecrement(ctx *FunctionContext) {
 }
 
 // Concat => $a . "string"
+//
+//go:nosplit
 func Concat(ctx *FunctionContext) {
-	right := ctx.global.Pop().AsString(ctx)
-	left := (*ctx.global.sp).AsString(ctx)
-	*ctx.global.sp = left + right
-}
-
-// AssertType => fn(int $a)
-func AssertType(ctx *FunctionContext) {
-	// TODO: check if strict types
-	*ctx.global.sp = (*ctx.global.sp).Cast(ctx, Type(ctx.global.r1))
+	right := ctx.Pop().AsString(ctx)
+	left := ctx.Top().AsString(ctx)
+	ctx.SetTop(left + right)
 }
 
 // Echo => echo $x, $y;
+//
+//go:nosplit
 func Echo(ctx *FunctionContext) {
-	count := ctx.global.r1
+	count := ctx.r1
 	values := make([]any, count)
 
 	for i, v := range ctx.Slice(-int(count), 0) {
@@ -727,67 +856,81 @@ func Echo(ctx *FunctionContext) {
 }
 
 // IsSet => isset($x)
+//
+//go:nosplit
 func IsSet(ctx *FunctionContext) {
-	v := *ctx.global.sp
-	*ctx.global.sp = Bool(v != nil && v != Null{})
+	v := ctx.Top()
+	ctx.SetTop(Bool(v != nil && v != Null{}))
 }
 
 // ArrayNew => $x = [];
+//
+//go:nosplit
 func ArrayNew(ctx *FunctionContext) {
-	ctx.global.Push(NewArray(nil))
+	ctx.Push(NewArray(nil))
 }
 
 // ArrayAccessRead => $x['test']
+//
+//go:nosplit
 func ArrayAccessRead(ctx *FunctionContext) {
-	key := ctx.global.Pop()
-	arr := ctx.global.Pop().AsArray(ctx)
+	key := ctx.Pop()
+	arr := ctx.Pop().AsArray(ctx)
 
 	if v, ok := arr.access(key); ok {
-		ctx.global.Push(*v.Deref())
+		ctx.Push(*v.Deref())
 	} else {
-		ctx.global.Push(Null{})
+		ctx.Push(Null{})
 	}
 }
 
 // ArrayAccessWrite => $x['test'] = 1
+//
+//go:nosplit
 func ArrayAccessWrite(ctx *FunctionContext) {
-	key := ctx.global.Pop()
+	key := ctx.Pop()
 
 	var arr *Array
 
-	if (*ctx.global.sp).IsRef() {
-		arr = ctx.global.Pop().AsArray(ctx)
+	if ctx.Top().IsRef() {
+		arr = ctx.Pop().AsArray(ctx)
 	} else {
-		arr = (*ctx.global.sp).AsArray(ctx)
+		arr = ctx.Top().AsArray(ctx)
 	}
 
-	ctx.global.Push(arr.assign(ctx, key))
+	ctx.Push(arr.assign(ctx, key))
 }
 
 // ArrayAccessPush => $x[] = 1
+//
+//go:nosplit
 func ArrayAccessPush(ctx *FunctionContext) {
 	var arr *Array
 
-	if (*ctx.global.sp).IsRef() {
-		arr = ctx.global.Pop().AsArray(ctx)
+	if ctx.Top().IsRef() {
+		arr = ctx.Pop().AsArray(ctx)
 	} else {
-		arr = (*ctx.global.sp).AsArray(ctx)
+		arr = ctx.Top().AsArray(ctx)
 	}
 
-	ctx.global.Push(arr.assign(ctx, nil))
+	ctx.Push(arr.assign(ctx, nil))
 }
 
 // ArrayUnset => unset($x['test'])
+//
+//go:nosplit
 func ArrayUnset(ctx *FunctionContext) {
-	key := ctx.global.Pop()
-	arr := ctx.global.Pop().AsArray(ctx)
+	key := ctx.Pop()
+	arr := ctx.Pop().AsArray(ctx)
 	arr.delete(key)
-	ctx.global.Push(arr)
+	ctx.Push(arr)
 }
 
 // ForEachInit => foreach([1,2] as ...)
+//
+//go:nosplit
 func ForEachInit(ctx *FunctionContext) {
-	iterable := ctx.global.Pop()
+	iterable := ctx.Top()
 	switch iterable.(type) {
 	case Iterator:
 	case IteratorAggregate:
@@ -797,19 +940,23 @@ func ForEachInit(ctx *FunctionContext) {
 		return
 	}
 	iterable.(Iterator).Rewind(ctx)
-	ctx.global.Push(iterable)
+	ctx.SetTop(iterable)
 }
 
 // ForEachKey => foreach(... as $key => ...)
+//
+//go:nosplit
 func ForEachKey(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
-	assignTryRef(v, (*ctx.global.sp).(Iterator).Key(ctx))
+	v := &ctx.vars[ctx.r1]
+	assignTryRef(v, ctx.Top().(Iterator).Key(ctx))
 }
 
 // ForEachValue => foreach(... as $value)
+//
+//go:nosplit
 func ForEachValue(ctx *FunctionContext) {
-	variable := &ctx.vars[ctx.global.r1]
-	value := (*ctx.global.sp).(Iterator).Current(ctx)
+	variable := &ctx.vars[ctx.r1]
+	value := ctx.Top().(Iterator).Current(ctx)
 	if value.IsRef() {
 		value = *value.(Ref).Deref()
 	}
@@ -817,24 +964,47 @@ func ForEachValue(ctx *FunctionContext) {
 }
 
 // ForEachValueRef => foreach(... as &$value)
+//
+//go:nosplit
 func ForEachValueRef(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.global.r1]
-	assignTryRef(v, (*ctx.global.sp).(Iterator).Current(ctx))
+	v := &ctx.vars[ctx.r1]
+	assignTryRef(v, ctx.Top().(Iterator).Current(ctx))
 }
 
+//go:nosplit
 func ForEachNext(ctx *FunctionContext) {
-	(*ctx.global.sp).(Iterator).Next(ctx)
+	ctx.Top().(Iterator).Next(ctx)
 }
 
 // ForEachValid checks if there are items in iterator
+//
+//go:nosplit
 func ForEachValid(ctx *FunctionContext) {
-	ctx.global.Push((*ctx.global.sp).(Iterator).Valid(ctx))
+	ctx.Push(ctx.Top().(Iterator).Valid(ctx))
 }
 
 // Throw => throw new Exception();
+//
+//go:nosplit
 func Throw(ctx *FunctionContext) {}
 
-// CallByName => $func = "func_name"; $func();
-func CallByName(ctx *FunctionContext) {
-	ctx.global.FunctionByName(ctx.global.Pop().AsString(ctx)).Invoke(ctx)
+// InitCall => someFunction(...Args...);
+//
+//go:nosplit
+func InitCall(ctx *FunctionContext) {
+	ctx.Push(ctx.Functions[ctx.r1])
+}
+
+// InitCallByName => $someFunctionName(...Args...);
+//
+//go:nosplit
+func InitCallByName(ctx *FunctionContext) {
+	name := ctx.Pop().AsString(ctx)
+	ctx.Push(ctx.FunctionByName(name))
+}
+
+//go:nosplit
+func Call(ctx *FunctionContext) {
+	ctx.sp -= int(ctx.r1)
+	ctx.Top().(Callable).Invoke(ctx, nil, nil)
 }

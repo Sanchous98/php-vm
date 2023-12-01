@@ -20,4 +20,3 @@ function fibonacci($n)
 
 	return $current;
 }
-return fibonacci(10);

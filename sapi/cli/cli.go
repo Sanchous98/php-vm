@@ -51,14 +51,14 @@ func init() {
 			input, _ := io.ReadAll(file)
 			fn := comp.Compile(input, &ctx)
 
-			fmt.Printf("main(vars=%d)", fn.Vars)
-			fmt.Println(fn.Instructions.String())
+			fmt.Printf("main(vars=%d)", len(fn.Vars))
+			fmt.Println(fn.Executable.(vm.Instructions).String())
 
 			for _, f := range ctx.Functions {
-				switch f := f.(type) {
-				case vm.CompiledFunction:
-					fmt.Printf("%s(vars=%d)", f.Name, f.Vars)
-					fmt.Println(f.Instructions.String())
+				fmt.Printf("%s(vars=%d)", f.Name(), len(f.Vars))
+				switch fn.Executable.(type) {
+				case vm.Instructions:
+					fmt.Println(fn.Executable.(vm.Instructions).String())
 				}
 			}
 		},

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"log"
-	//_ "php-vm/ext"
+	_ "php-vm/ext"
 	"php-vm/internal/app"
 	_ "php-vm/sapi/cli"
 	_ "php-vm/sapi/fcgi"

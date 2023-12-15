@@ -1,69 +1,49 @@
 package vm
 
 import (
-	"encoding/binary"
 	"testing"
 )
 
 func BenchmarkCompiledFunction_Invoke(b *testing.B) {
-	f := CompiledFunction{Vars: 1}
-	var bytecode []byte
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpLoad))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 1)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpIdentical))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpJumpFalse))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 10)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 1)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturnValue))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpLoad))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 2)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpIdentical))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpJumpFalse))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 20)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 2)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturnValue))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpInitCall))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpLoad))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 2)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpSub))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpCall))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 1)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpInitCall))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpLoad))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 0)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpConst))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 3)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpSub))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpCall))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, 1)
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpAdd))
-	bytecode = binary.NativeEndian.AppendUint64(bytecode, uint64(OpReturnValue))
-	f.Instructions = NewInstructions(bytecode)
+	f := Function{Vars: []String{"n"}, Executable: Instructions{
+		uint64(OpLoad) << 32,
+		uint64(OpConst)<<32 + 1,
+		uint64(OpIdentical) << 32,
+		uint64(OpJumpFalse)<<32 + 6,
+		uint64(OpConst)<<32 + 1,
+		uint64(OpReturnValue) << 32,
+		uint64(OpLoad) << 32,
+		uint64(OpConst)<<32 + 2,
+		uint64(OpIdentical) << 32,
+		uint64(OpJumpFalse)<<32 + 12,
+		uint64(OpConst)<<32 + 2,
+		uint64(OpReturnValue) << 32,
+		uint64(OpInitCall) << 32,
+		uint64(OpLoad) << 32,
+		uint64(OpConst)<<32 + 2,
+		uint64(OpSub) << 32,
+		uint64(OpCall)<<32 + 1,
+		uint64(OpInitCall) << 32,
+		uint64(OpLoad) << 32,
+		uint64(OpConst)<<32 + 3,
+		uint64(OpSub) << 32,
+		uint64(OpCall)<<32 + 1,
+		uint64(OpAdd) << 32,
+		uint64(OpReturnValue) << 32,
+	}}
 
 	ctx := GlobalContext{
-		Functions:  []Callable{f},
-		Constants:  []Value{Int(10), Int(0), Int(1), Int(2)},
-		Classes:    []Class{&StdClass{}},
-		ClassNames: []String{"stdClass"},
+		Functions: []*Function{&f},
+		Constants: []Value{Int(35), Int(0), Int(1), Int(2)},
 	}
 	ctx.Init()
 
-	fn := CompiledFunction{Instructions: []uint64{
-		uint64(OpInitCall), 0,
-		uint64(OpConst), 0,
-		uint64(OpCall), 1,
-		uint64(OpPop),
-		uint64(OpReturn),
+	fn := Function{Executable: Instructions{
+		uint64(OpInitCall) << 32,
+		uint64(OpConst) << 32,
+		uint64(OpCall)<<32 + 1,
+		uint64(OpPop) << 32,
+		uint64(OpReturn) << 32,
 	}}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -73,15 +53,10 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	}
 }
 
-func fibonacci(ctx *FunctionContext) Int {
-	var n Int
+func wFibonacci(ctx *FunctionContext) Int {
+	var n int
 	ParseParameters(ctx, &n)
-
-	if n == 0 || n == 1 {
-		return n
-	}
-
-	return fibonacci(ctx) + fibonacci(ctx)
+	return Int(nativeFibonacci(n))
 }
 
 func nativeFibonacci(n int) int {
@@ -93,40 +68,26 @@ func nativeFibonacci(n int) int {
 }
 
 func BenchmarkBuiltInFunction_Invoke(b *testing.B) {
-	f := BuiltInFunction[Int]{
-		Fn: fibonacci,
-	}
+	f := BuiltInFunction[Int](wFibonacci)
 
-	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10)}}
+	ctx := GlobalContext{Functions: []*Function{{Executable: f}}, Constants: []Value{Int(10)}}
 	ctx.Init()
 
-	var bytecode = []uint64{
-		uint64(OpConst), 0,
-		uint64(OpCall), 0,
-		uint64(OpReturn),
+	bytecode := Instructions{
+		uint64(OpInitCall) << 32,
+		uint64(OpConst) << 32,
+		uint64(OpCall)<<32 + 1,
+		uint64(OpPop) << 32,
+		uint64(OpReturn) << 32,
 	}
+
+	fn := Function{Executable: bytecode}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		ctx.Run(CompiledFunction{
-			Instructions: bytecode,
-		})
-	}
-}
-
-func Benchmark_fibonacci(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	parent := GlobalContext{}
-	parent.Init()
-
-	for i := 0; i < b.N; i++ {
-		var ctx FunctionContext
-		parent.Push(Int(10))
-		parent.Child(&ctx, 1, nil, nil)
-		fibonacci(&ctx)
+		ctx.Run(fn)
 	}
 }
 

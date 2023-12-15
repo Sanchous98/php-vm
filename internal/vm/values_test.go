@@ -12,7 +12,7 @@ import (
 type IntTest struct{ suite.Suite }
 
 func (t *IntTest) TestIsRef()   { t.False(Int(0).IsRef()) }
-func (t *IntTest) TestType()    { t.Equal(IntType, Int(0).Type().shape) }
+func (t *IntTest) TestType()    { t.Equal(IntType, Int(0).Type()) }
 func (t *IntTest) TestAsInt()   { t.Equal(Int(0), Int(0).AsInt(nil)) }
 func (t *IntTest) TestAsFloat() { t.Equal(Float(0), Int(0).AsFloat(nil)) }
 func (t *IntTest) TestAsBool() {
@@ -38,7 +38,7 @@ func (t *IntTest) TestAsString() {
 func (t *IntTest) TestAsNull() { t.Equal(Null{}, Int(0).AsNull(nil)) }
 func (t *IntTest) TestAsArray() {
 	randomInt := Value(Int(rand.Int()))
-	t.Equal(&Array{hash: HashTable[Value, Value]{map[Value]*htValue[Value]{String("scalar"): {randomInt}}}, next: math.MinInt}, randomInt.AsArray(nil))
+	t.Equal(&Array{hash: NewHash(map[Value]Value{String("scalar"): randomInt}), next: math.MinInt}, randomInt.AsArray(nil))
 }
 func (t *IntTest) TestAsObject()  {}
 func (t *IntTest) TestDebugInfo() { t.EqualValues("int(0)", Int(0).DebugInfo(nil)) }
@@ -46,7 +46,7 @@ func (t *IntTest) TestDebugInfo() { t.EqualValues("int(0)", Int(0).DebugInfo(nil
 type FloatTest struct{ suite.Suite }
 
 func (t *FloatTest) TestIsRef() { t.False(Float(0).IsRef()) }
-func (t *FloatTest) TestType()  { t.Equal(FloatType, Float(0).Type().shape) }
+func (t *FloatTest) TestType()  { t.Equal(FloatType, Float(0).Type()) }
 func (t *FloatTest) TestAsInt() {
 	t.Equal(Int(0), Float(0).AsInt(nil))
 	t.Equal(Int(1), Float(1.1).AsInt(nil))
@@ -79,7 +79,7 @@ func (t *FloatTest) TestAsString() {
 func (t *FloatTest) TestAsNull() { t.Equal(Null{}, Float(0).AsNull(nil)) }
 func (t *FloatTest) TestAsArray() {
 	randomFloat := Value(Float(rand.Float64()))
-	t.Equal(&Array{hash: HashTable[Value, Value]{map[Value]*htValue[Value]{String("scalar"): {randomFloat}}}, next: math.MinInt}, randomFloat.AsArray(nil))
+	t.Equal(&Array{hash: NewHash(map[Value]Value{String("scalar"): randomFloat}), next: math.MinInt}, randomFloat.AsArray(nil))
 }
 func (t *FloatTest) TestAsObject()  {}
 func (t *FloatTest) TestDebugInfo() { t.EqualValues("float(0)", Float(0).DebugInfo(nil)) }
@@ -87,7 +87,7 @@ func (t *FloatTest) TestDebugInfo() { t.EqualValues("float(0)", Float(0).DebugIn
 type BoolTest struct{ suite.Suite }
 
 func (t *BoolTest) TestIsRef() { t.False(Bool(false).IsRef()) }
-func (t *BoolTest) TestType()  { t.Equal(BoolType, Bool(false).Type().shape) }
+func (t *BoolTest) TestType()  { t.Equal(BoolType, Bool(false).Type()) }
 func (t *BoolTest) TestAsInt() {
 	t.Equal(Int(0), Bool(false).AsInt(nil))
 	t.Equal(Int(1), Bool(true).AsInt(nil))
@@ -118,7 +118,7 @@ func (t *BoolTest) TestDebugInfo() { t.EqualValues("bool(false)", Bool(false).De
 type StringTest struct{ suite.Suite }
 
 func (t *StringTest) TestIsRef() { t.False(String("").IsRef()) }
-func (t *StringTest) TestType()  { t.Equal(StringType, String("").Type().shape) }
+func (t *StringTest) TestType()  { t.Equal(StringType, String("").Type()) }
 func (t *StringTest) TestAsInt() {
 	t.Equal(Int(0), String("").AsInt(nil))
 	t.Equal(Int(0), String("0").AsInt(nil))
@@ -145,7 +145,7 @@ func (t *StringTest) TestDebugInfo() { t.EqualValues("string(\"\")", String("").
 type NullTest struct{ suite.Suite }
 
 func (t *NullTest) TestIsRef()     { t.False(Null{}.IsRef()) }
-func (t *NullTest) TestType()      { t.Equal(NullType, Null{}.Type().shape) }
+func (t *NullTest) TestType()      { t.Equal(NullType, Null{}.Type()) }
 func (t *NullTest) TestAsInt()     { t.Equal(Int(0), Null{}.AsInt(nil)) }
 func (t *NullTest) TestAsFloat()   { t.Equal(Float(0), Null{}.AsFloat(nil)) }
 func (t *NullTest) TestAsBool()    { t.Equal(Bool(false), Null{}.AsBool(nil)) }
@@ -157,40 +157,12 @@ func (t *NullTest) TestDebugInfo() { t.EqualValues("NULL", Null{}.DebugInfo(nil)
 
 type ArrayTest struct{ suite.Suite }
 
-func (t *ArrayTest) TestCount() {
-	hash := map[Value]Value{String("test"): Int(1)}
-	t.EqualValues(len(hash), NewArray(hash).Count(nil))
-}
-func (t *ArrayTest) TestCopy() {
-	hash := map[Value]Value{String("test"): Int(1)}
-
-	t.EqualValues(len(hash), NewArray(hash).Count(nil))
-}
 func (t *ArrayTest) Test_access() {}
 func (t *ArrayTest) Test_assign() {}
 func (t *ArrayTest) Test_delete() {}
 
-func (t *ArrayTest) TestOffsetGet() {
-	arr := NewArray(map[Value]Value{String("test"): Int(1)})
-	t.EqualValues(1, arr.OffsetGet(nil, String("test")))
-}
-func (t *ArrayTest) TestOffsetSet() {
-	arr := NewArray(nil)
-	arr.OffsetSet(nil, String("test"), Int(1))
-	t.Contains(arr.hash.internal, String("test"))
-	t.EqualValues(1, arr.hash.internal[String("test")].v)
-}
-func (t *ArrayTest) TestOffsetIsSet() {
-	t.True(bool(NewArray(map[Value]Value{String("test"): Int(1)}).OffsetIsSet(nil, String("test"))))
-	t.False(bool(NewArray(map[Value]Value{String("test1"): Int(1)}).OffsetIsSet(nil, String("test"))))
-}
-func (t *ArrayTest) TestOffsetUnset() {
-	arr := NewArray(map[Value]Value{String("test"): Int(1)})
-	arr.OffsetUnset(nil, String("test"))
-	t.NotContains(arr.hash.internal, String("test"))
-}
 func (t *ArrayTest) TestIsRef() { t.False(NewArray(nil).IsRef()) }
-func (t *ArrayTest) TestType()  { t.Equal(ArrayType, NewArray(nil).Type().shape) }
+func (t *ArrayTest) TestType()  { t.Equal(ArrayType, NewArray(nil).Type()) }
 func (t *ArrayTest) TestAsInt() {
 	t.Equal(Int(0), NewArray(nil).AsInt(nil))
 	t.Equal(Int(1), NewArray(map[Value]Value{Int(0): Int(1)}).AsInt(nil))
@@ -227,7 +199,7 @@ func (t *ArrayTest) TestAsObject() {}
 func (t *ArrayTest) TestNextKey() {
 	arr := NewArray(nil)
 	t.EqualValues(0, arr.NextKey())
-	arr.OffsetSet(nil, Int(0), String("test"))
+	*arr.assign(nil, Int(0)).Deref() = String("test")
 	t.EqualValues(1, arr.NextKey())
 }
 func (t *ArrayTest) TestDebugInfo() {
@@ -244,7 +216,7 @@ func (t *RefTest) TestDeref() {
 }
 func (t *RefTest) TestType() {
 	i := Value(Int(0))
-	t.Equal(IntType, Ref{&i}.Type().shape)
+	t.Equal(IntType, Ref{&i}.Type())
 }
 func (t *RefTest) TestAsInt() {
 	i := Value(Int(0))
@@ -270,7 +242,7 @@ func (t *RefTest) TestAsArray() {
 func (t *RefTest) TestAsObject() {}
 func (t *RefTest) TestDebugInfo() {
 	i := Value(Int(0))
-	t.EqualValues("&int(0)", Ref{&i}.DebugInfo(nil))
+	t.EqualValues("int(0)", Ref{&i}.DebugInfo(nil))
 }
 
 //type ObjectTest struct{ suite.Suite }

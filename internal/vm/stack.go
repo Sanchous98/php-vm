@@ -2,23 +2,27 @@ package vm
 
 const stackSize = 512
 
-type Stack[T any] struct {
+type Stack struct {
+	stack [stackSize]Value
 	sp    int
-	stack [stackSize]T
 }
 
-func (s *Stack[T]) Init() { s.sp = -1 }
-func (s *Stack[T]) Pop() (v T) {
+func (s *Stack) Init() { s.sp = -1 }
+func (s *Stack) Pop() (v Value) {
 	v = s.stack[s.sp]
 	s.sp--
 	return
 }
-func (s *Stack[T]) Push(v T) {
+func (s *Stack) Push(v Value) {
 	s.sp++
 	s.stack[s.sp] = v
 }
-func (s *Stack[T]) TopIndex() int                  { return s.sp }
-func (s *Stack[T]) Slice(offsetX, offsetY int) []T { return s.stack[s.sp+1+offsetX : s.sp+1+offsetY] }
-func (s *Stack[T]) Sp(pointer int)                 { s.sp = pointer }
-func (s *Stack[T]) Top() T                         { return s.stack[s.sp] }
-func (s *Stack[T]) SetTop(v T)                     { s.stack[s.sp] = v }
+func (s *Stack) TopIndex() int                { return s.sp }
+func (s *Stack) Slice(start, end int) []Value { return s.stack[s.sp+1+start : s.sp+1+end] }
+func (s *Stack) Sp(sp int)                    { s.sp = sp }
+func (s *Stack) Top() Value                   { return s.stack[s.sp] }
+func (s *Stack) SetTop(v Value)               { s.stack[s.sp] = v }
+func (s *Stack) AddI(ctx *FunctionContext) {
+	ctx.sp--
+	ctx.stack[ctx.sp] = ctx.stack[ctx.sp].(Addable).Add(ctx, ctx.stack[ctx.sp+1])
+}

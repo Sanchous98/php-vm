@@ -7,14 +7,15 @@ import (
 )
 
 type Arg struct {
-	Name    string
-	Type    string
-	Default ast.Vertex
-	IsRef   bool
+	Name     string
+	Type     string
+	Default  ast.Vertex
+	IsRef    bool
+	Variadic bool
 }
 
 type Context interface {
-	Arg(string, string, ast.Vertex, bool) Arg
+	Arg(string, string, ast.Vertex, bool, bool) Arg
 	Parent() Context
 	Child(string) *FunctionContext
 	Global() *GlobalContext
@@ -51,12 +52,12 @@ func (ctx *FunctionContext) Child(fn string) *FunctionContext {
 }
 func (ctx *FunctionContext) Global() *GlobalContext     { return ctx.Context.Global() }
 func (ctx *FunctionContext) Bytecode() *vm.Instructions { return &ctx.Instructions }
-func (ctx *FunctionContext) Arg(name string, _type string, def ast.Vertex, isRef bool) Arg {
+func (ctx *FunctionContext) Arg(name string, _type string, def ast.Vertex, isRef, variadic bool) Arg {
 	if i := slices.IndexFunc(ctx.Args, func(arg Arg) bool { return arg.Name == name }); i >= 0 {
 		return ctx.Args[i]
 	}
 
-	a := Arg{name, _type, def, isRef}
+	a := Arg{name, _type, def, isRef, variadic}
 	ctx.Args = append(ctx.Args, a)
 	return a
 }
@@ -118,8 +119,8 @@ func (ctx *GlobalContext) Literal(n ast.Vertex, v vm.Value) int {
 	ctx.Constants[n] = slices.Index(ctx.Literals, v)
 	return ctx.Constants[n]
 }
-func (ctx *GlobalContext) Bytecode() *vm.Instructions               { return &ctx.Instructions }
-func (ctx *GlobalContext) Arg(string, string, ast.Vertex, bool) Arg { return Arg{} }
+func (ctx *GlobalContext) Bytecode() *vm.Instructions                     { return &ctx.Instructions }
+func (ctx *GlobalContext) Arg(string, string, ast.Vertex, bool, bool) Arg { return Arg{} }
 func (ctx *GlobalContext) Resolve(vertex ast.Vertex, aliasType string) string {
 	ctx.Names.Resolve(vertex, aliasType)
 

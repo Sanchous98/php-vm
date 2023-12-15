@@ -16,7 +16,7 @@ import (
 	"unsafe"
 )
 
-var builtInTypeAsserts = map[string]vm.TypeShape{
+var builtInTypeAsserts = map[string]vm.Type{
 	"int":    vm.IntType,
 	"float":  vm.FloatType,
 	"bool":   vm.BoolType,
@@ -332,30 +332,19 @@ func (c *Compiler) StmtUnset(n *ast.StmtUnset) {
 
 func (c *Compiler) ExprFunctionCall(n *ast.ExprFunctionCall) {
 	name := c.context.Resolve(n.Function, FunctionAliasType)
-	f := slices.IndexFunc(c.contexts, func(context *internal.FunctionContext) bool {
-		return context.Name == name
-	})
+	f := slices.IndexFunc(c.contexts, func(ctx *internal.FunctionContext) bool { return ctx.Name == name })
 
-	if f >= 0 {
-		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpInitCall), uint64(c.context.Function(name)))
-
-		for i, arg := range c.contexts[f].Args {
-			if len(n.Args)-1 < i {
-				if arg.Default != nil {
-					arg.Default.Accept(c)
-				}
-				continue
-			}
-
-			n.Args[i].Accept(c)
-
-			if arg.IsRef {
-				(*c.context.Bytecode())[len(*c.context.Bytecode())-2] = uint64(vm.OpLoadRef)
-			}
-		}
-
-		*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCall), uint64(len(c.contexts[f].Args)))
+	if f < 0 {
+		return
 	}
+
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpInitCall), uint64(f))
+
+	for _, arg := range n.Args {
+		arg.Accept(c)
+	}
+
+	*c.context.Bytecode() = append(*c.context.Bytecode(), uint64(vm.OpCall), uint64(len(n.Args)))
 }
 
 func (c *Compiler) ExprVariable(n *ast.ExprVariable) {
@@ -949,7 +938,7 @@ func (c *Compiler) Compile(input []byte, ctx *vm.GlobalContext) vm.CompiledFunct
 		}
 
 		ctx.Functions[slices.Index(c.global.Functions, context.Name)] = vm.CompiledFunction{
-			Name:         vm.String(context.Name),
+			FuncName:     vm.String(context.Name),
 			Instructions: Optimizer(context.Instructions),
 			Vars:         len(context.Variables),
 		}

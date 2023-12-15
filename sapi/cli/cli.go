@@ -57,7 +57,7 @@ func init() {
 			for _, f := range ctx.Functions {
 				switch f := f.(type) {
 				case vm.CompiledFunction:
-					fmt.Printf("%s(vars=%d)", f.Name, f.Vars)
+					fmt.Printf("%s(vars=%d)", f.Name(), f.Vars)
 					fmt.Println(f.Instructions.String())
 				}
 			}

@@ -249,6 +249,8 @@ func TestIdentical(t *testing.T) {
 		result      Value
 	}{
 		{"[] === []", NewArray(nil), NewArray(nil), Bool(true)},
+		{"[0] === [0]", NewArray(map[Value]Value{Int(0): Int(0)}), NewArray(map[Value]Value{Int(0): Int(0)}), Bool(true)},
+		//{"[0 => 0, 1 => 1] === [1 => 1, 0 => 0]", NewArray(map[Value]Value{Int(0): Int(0), Int(1): Int(1)}), NewArray(map[Value]Value{Int(1): Int(1), Int(0): Int(0)}), Bool(false)},
 	}
 
 	g := GlobalContext{}

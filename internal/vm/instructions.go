@@ -3,8 +3,6 @@ package vm
 import (
 	"encoding/binary"
 	"fmt"
-	"maps"
-	"math"
 	"strconv"
 	"strings"
 )
@@ -103,12 +101,11 @@ const (
 	OpArrayAccessPush                  // ARRAY_ACCESS_PUSH
 	OpArrayUnset                       // ARRAY_UNSET
 	OpConcat                           // CONCAT
-	OpUnset                            // UNSET
 	OpForEachInit                      // FE_INIT
 	OpForEachNext                      // FE_NEXT
 	OpForEachValid                     // FE_VALID
 	OpThrow                            // THROW
-	OpInitCallByName                   // INIT_CALL_BY_NAME
+	OpInitCallVar                      // INIT_CALL_VAR
 
 	_opOneOperand      Operator = iota - 1
 	OpAssign                    // ASSIGN
@@ -125,6 +122,7 @@ const (
 	OpAssignShiftLeft           // ASSIGN_LSHIFT
 	OpAssignShiftRight          // ASSIGN_RSHIFT
 	OpAssignCoalesce            // ASSIGN_COALESCE
+	OpUnset                     // UNSET
 	OpCast                      // CAST
 	OpPreIncrement              // PRE_INC
 	OpPostIncrement             // POST_INC
@@ -153,601 +151,397 @@ func assignTryRef(ref *Value, v Value) {
 	}
 }
 
-func intSign[T ~int](x T) T { return (x >> 63) | T(uint(-x)>>63) }
-
-//go:noinline
-func arrayCompare(ctx Context, x, y *Array) Int {
-	xCount := x.Count(ctx)
-	yCount := y.Count(ctx)
-
-	if sign := intSign(xCount - yCount); sign != 0 {
-		return sign
-	}
-
-	for key, val := range x.hash.internal {
-		if v, ok := y.access(key); ok {
-			return +1
-		} else if c := compare(ctx, val.v, *v.Deref()); c != 0 {
-			return c
-		}
-	}
-
-	return 0
-}
-
-func compare(ctx Context, x, y Value) Int {
-	if x.Type().shape == ArrayType && y.Type().shape != ArrayType {
-		return +1
-	} else if x.Type().shape != ArrayType && y.Type().shape == ArrayType {
-		return -1
-	}
-
-	switch Juggle(x.Type().shape, y.Type().shape) {
-	case IntType:
-		return intSign(x.AsInt(ctx) - y.AsInt(ctx))
-	case FloatType:
-		return intSign(Int(x.AsFloat(ctx) - y.AsFloat(ctx)))
-	case StringType:
-		return Int(strings.Compare(string(x.AsString(ctx)), string(y.AsString(ctx))))
-	case NullType:
-		// Is possible if only both are null, so always equal
-	case BoolType:
-		return x.AsBool(ctx).AsInt(ctx) - y.AsBool(ctx).AsInt(ctx)
-	case ArrayType:
-		return arrayCompare(ctx, x.AsArray(ctx), y.AsArray(ctx))
-	case ObjectType:
-		// TODO:
-	}
-
-	return 0
-}
-
 // Identical => $x === $y
 //
 //go:nosplit
 func Identical(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(Bool(left == right || left.Type().shape == ArrayType && right.Type().shape == ArrayType && arrayCompare(ctx, left.(*Array), right.(*Array)) == 0))
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(Identifiable).Identical(ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // NotIdentical => $x !== $y
 //
 //go:nosplit
 func NotIdentical(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(Bool(left != right || left.Type().shape == ArrayType && right.Type().shape == ArrayType && arrayCompare(ctx, left.(*Array), right.(*Array)) != 0))
+	ctx.stack[ctx.sp-1] = !ctx.stack[ctx.sp-1].(Identifiable).Identical(ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // Not => !$x
 //
 //go:nosplit
 func Not(ctx *FunctionContext) {
-	ctx.SetTop(!ctx.Top().AsBool(ctx))
+	ctx.stack[ctx.sp] = !ctx.stack[ctx.sp].AsBool(ctx)
 }
 
 // Equal => $x == $y
 //
 //go:nosplit
 func Equal(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(equal(ctx, left, right))
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(Comparable).Equal(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // NotEqual => $x != $y
 //
 //go:nosplit
 func NotEqual(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(!equal(ctx, left, right))
-}
-
-func equal(ctx *FunctionContext, x, y Value) Bool {
-	if x == y {
-		return true
-	}
-
-	as := Juggle(x.Type().shape, y.Type().shape)
-
-	if as == ArrayType {
-		return arrayCompare(ctx, x.AsArray(ctx), y.AsArray(ctx)) == 0
-	}
-
-	return x.Cast(ctx, as) == y.Cast(ctx, as)
+	ctx.stack[ctx.sp-1] = !ctx.stack[ctx.sp-1].(Comparable).Equal(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // LessOrEqual => $x <= $y
 //
 //go:nosplit
 func LessOrEqual(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(Bool(compare(ctx, left, right) < 1))
+	ctx.stack[ctx.sp-1] = Bool(ctx.stack[ctx.sp-1].(Comparable).Compare(ctx, ctx.stack[ctx.sp]) < 1)
+	ctx.sp--
 }
 
 // GreaterOrEqual => $x >= $y
 //
 //go:nosplit
 func GreaterOrEqual(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(Bool(compare(ctx, left, right) > -1))
+	ctx.stack[ctx.sp-1] = Bool(ctx.stack[ctx.sp-1].(Comparable).Compare(ctx, ctx.stack[ctx.sp]) > -1)
+	ctx.sp--
 }
 
 // Less => $x < $y
 //
 //go:nosplit
 func Less(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(Bool(compare(ctx, left, right) < 0))
+	ctx.stack[ctx.sp-1] = Bool(ctx.stack[ctx.sp-1].(Comparable).Compare(ctx, ctx.stack[ctx.sp]) < 0)
+	ctx.sp--
 }
 
 // Greater => $x > $y
 //
 //go:nosplit
 func Greater(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(Bool(compare(ctx, left, right) > 0))
+	ctx.stack[ctx.sp-1] = Bool(ctx.stack[ctx.sp-1].(Comparable).Compare(ctx, ctx.stack[ctx.sp]) > 0)
+	ctx.sp--
 }
 
 // Compare => $x <=> $y
 //
 //go:nosplit
 func Compare(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	ctx.SetTop(compare(ctx, left, right))
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(Comparable).Compare(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
+// Coalesce => $x ?? $y
+// TODO: probably can be replaced with condition
+//
 //go:nosplit
 func Coalesce(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-
-	if left == (Null{}) {
-		ctx.SetTop(right)
-	} else {
-		ctx.SetTop(left)
+	if ctx.stack[ctx.sp-1] == (Null{}) {
+		ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp]
 	}
+	ctx.sp--
 }
 
 // Const => 0
 //
 //go:nosplit
 func Const(ctx *FunctionContext) {
-	ctx.Push(ctx.Constants[ctx.r1])
+	ctx.sp++
+	ctx.stack[ctx.sp] = ctx.Constants[ctx.r1]
 }
 
 // Load => $a
 //
 //go:nosplit
 func Load(ctx *FunctionContext) {
-	ctx.Push(ctx.vars[ctx.r1])
+	ctx.sp++
+	ctx.stack[ctx.sp] = ctx.vars[ctx.r1]
 }
 
 // LoadRef => &$a
 //
 //go:nosplit
 func LoadRef(ctx *FunctionContext) {
-	ctx.Push(NewRef(&ctx.vars[ctx.r1]))
+	ctx.sp++
+	ctx.stack[ctx.sp] = NewRef(&ctx.vars[ctx.r1])
 }
 
 // Assign => $a = 0
 //
 //go:nosplit
-func Assign(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, ctx.stack[ctx.sp])
-}
+func Assign(ctx *FunctionContext) { assignTryRef(&ctx.vars[ctx.r1], ctx.stack[ctx.sp]) }
 
+// AssignRef = &$a = 0
+//
 //go:nosplit
 func AssignRef(ctx *FunctionContext) {
-	value := ctx.Pop()
-	ref := ctx.Top()
-	*ref.(Ref).Deref() = value
+	*ctx.stack[ctx.sp-1].(Ref).Deref() = ctx.stack[ctx.sp]
+	ctx.sp--
 }
 
 // AssignAdd => $a += 1
 //
 //go:nosplit
 func AssignAdd(ctx *FunctionContext) {
-	right := ctx.Top()
 	v := &ctx.vars[ctx.r1]
-
-	switch Juggle((*v).Type().shape, right.Type().shape) {
-	case ArrayType:
-		assignTryRef(v, addArray((*v).AsArray(ctx), right.AsArray(ctx)))
-	case FloatType:
-		assignTryRef(v, (*v).AsFloat(ctx)+right.AsFloat(ctx))
-	default:
-		assignTryRef(v, (*v).AsInt(ctx)+right.AsInt(ctx))
-	}
-
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(Addable).Add(ctx, ctx.stack[ctx.sp]))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignSub => $a -= 1
 //
 //go:nosplit
 func AssignSub(ctx *FunctionContext) {
-	right := ctx.Top()
 	v := &ctx.vars[ctx.r1]
-
-	switch FloatType {
-	case (*v).Type().shape, right.Type().shape:
-		assignTryRef(v, (*v).AsFloat(ctx)-right.AsFloat(ctx))
-	default:
-		assignTryRef(v, (*v).AsInt(ctx)-right.AsInt(ctx))
-	}
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsMath).Sub(ctx, ctx.stack[ctx.sp]))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignMul => $a *= 1
 //
 //go:nosplit
 func AssignMul(ctx *FunctionContext) {
-	right := ctx.Top()
 	v := &ctx.vars[ctx.r1]
-
-	switch FloatType {
-	case (*v).Type().shape, right.Type().shape:
-		assignTryRef(v, ctx.vars[ctx.r1].AsFloat(ctx)*right.AsFloat(ctx))
-	default:
-		assignTryRef(v, (*v).AsInt(ctx)*right.AsInt(ctx))
-	}
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsMath).Mul(ctx, ctx.stack[ctx.sp]))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignDiv => $a /= 1
 //
 //go:nosplit
 func AssignDiv(ctx *FunctionContext) {
-	right := ctx.Top()
 	v := &ctx.vars[ctx.r1]
-
-	if res := (*v).AsFloat(ctx) / right.AsFloat(ctx); res == Float(int(res)) {
-		assignTryRef(v, res.AsInt(ctx))
-	} else {
-		assignTryRef(v, res)
-	}
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsMath).Div(ctx, ctx.stack[ctx.sp]))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignPow => $a **= 1
 //
 //go:nosplit
 func AssignPow(ctx *FunctionContext) {
-	right := ctx.Top()
 	v := &ctx.vars[ctx.r1]
-	as := Juggle((*v).Type().shape, right.Type().shape)
-
-	var res Value
-
-	switch as {
-	case BoolType:
-		res = (!right.AsBool(ctx) || (*v).AsBool(ctx)).AsInt(ctx)
-	default:
-		res = Float(math.Pow(float64((*v).AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as)
-	}
-
-	assignTryRef(v, res)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsMath).Pow(ctx, ctx.stack[ctx.sp]))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignBwAnd => $a &= 1
 //
 //go:nosplit
 func AssignBwAnd(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
 	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, (*v).AsInt(ctx)&right)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsBits).BwAnd(ctx, ctx.stack[ctx.sp].AsInt(ctx)))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignBwOr => $a |= 1
 //
 //go:nosplit
 func AssignBwOr(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
 	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, (*v).AsInt(ctx)|right)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsBits).BwOr(ctx, ctx.stack[ctx.sp].AsInt(ctx)))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignBwXor => $a ^= 1
 //
 //go:nosplit
 func AssignBwXor(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
 	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, (*v).AsInt(ctx)^right)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsBits).BwXor(ctx, ctx.stack[ctx.sp].AsInt(ctx)))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignConcat => $a .= 1
 //
 //go:nosplit
 func AssignConcat(ctx *FunctionContext) {
-	right := ctx.Top().AsString(ctx)
 	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, (*v).AsString(ctx)+right)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).AsString(ctx)+ctx.stack[ctx.sp].AsString(ctx))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignShiftLeft => $a <<= 1
 //
 //go:nosplit
 func AssignShiftLeft(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
 	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, (*v).AsInt(ctx)<<right)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsBits).ShiftLeft(ctx, ctx.stack[ctx.sp].AsInt(ctx)))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignShiftRight => $a >>= 1
 //
 //go:nosplit
 func AssignShiftRight(ctx *FunctionContext) {
-	right := ctx.Top().AsInt(ctx)
 	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, (*v).AsInt(ctx)>>right)
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsBits).ShiftRight(ctx, ctx.stack[ctx.sp].AsInt(ctx)))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignMod => $a %= 1
 //
 //go:nosplit
 func AssignMod(ctx *FunctionContext) {
-	right := ctx.Top().AsFloat(ctx)
 	v := &ctx.vars[ctx.r1]
-	left := (*v).AsFloat(ctx)
-
-	if res := Float(math.Mod(float64(left), float64(right))); res == Float(int(res)) {
-		assignTryRef(v, res.AsInt(ctx))
-	} else {
-		assignTryRef(v, res)
-	}
-	ctx.SetTop(*v)
+	assignTryRef(v, (*v).(SupportsMath).Mod(ctx, ctx.stack[ctx.sp]))
+	ctx.stack[ctx.sp] = *v
 }
 
 // AssignCoalesce => $a ??= 1
 //
 //go:nosplit
 func AssignCoalesce(ctx *FunctionContext) {
-	right := ctx.Top()
-	left := &ctx.vars[ctx.r1]
-	if *left == (Null{}) {
-		*left = right
+	v := &ctx.vars[ctx.r1]
+	if *v == (Null{}) {
+		assignTryRef(v, (*v).(SupportsMath).Mod(ctx, ctx.stack[ctx.sp]))
 	}
-	ctx.SetTop(*left)
+	ctx.stack[ctx.sp] = *v
 }
 
 // Jump unconditional jump; goto
 //
 //go:nosplit
-func Jump(ctx *FunctionContext) {
-	ctx.pc = int(ctx.r1) - 1
-}
+func Jump(ctx *FunctionContext) { ctx.pc = int(ctx.r1) - 1 }
 
 // JumpTrue if (condition)
 //
 //go:nosplit
 func JumpTrue(ctx *FunctionContext) {
-	if ctx.Pop().AsBool(ctx) {
+	if ctx.stack[ctx.sp].AsBool(ctx) {
 		Jump(ctx)
 	}
+	ctx.sp--
 }
 
 // JumpFalse for (...; condition; ...) {}
 //
 //go:nosplit
 func JumpFalse(ctx *FunctionContext) {
-	if !ctx.Pop().AsBool(ctx) {
+	if !ctx.stack[ctx.sp].AsBool(ctx) {
 		Jump(ctx)
 	}
+	ctx.sp--
 }
 
 //go:nosplit
-func Pop(ctx *FunctionContext) {
-	ctx.sp -= 1
-}
+func Pop(ctx *FunctionContext) { ctx.sp -= 1 }
 
 //go:nosplit
-func Pop2(ctx *FunctionContext) {
-	ctx.sp -= 2
-}
+func Pop2(ctx *FunctionContext) { ctx.sp -= 2 }
 
 // ReturnValue => return 0;
 //
 //go:nosplit
 func ReturnValue(ctx *FunctionContext) {
-	v := ctx.Top()
+	v := ctx.stack[ctx.sp]
 	Return(ctx)
-	ctx.SetTop(v)
+	ctx.stack[ctx.sp] = v
 }
 
 // Return => return;
 //
 //go:nosplit
-func Return(ctx *FunctionContext) {
-	ctx.Sp(ctx.PopFrame().fp)
-}
+func Return(ctx *FunctionContext) { ctx.sp = ctx.PopFrame().sp }
 
 // Add => 1 + 2
 //
 //go:nosplit
 func Add(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-
-	switch FloatType {
-	case left.Type().shape, right.Type().shape:
-		ctx.SetTop(left.AsFloat(ctx) + right.AsFloat(ctx))
-		return
-	}
-
-	switch ArrayType {
-	case left.Type().shape, right.Type().shape:
-		ctx.SetTop(addArray(left.AsArray(ctx), right.AsArray(ctx)))
-	default:
-		ctx.SetTop(left.AsInt(ctx) + right.AsInt(ctx))
-	}
-}
-
-func addArray(left, right *Array) *Array {
-	result := maps.Clone(right.hash.internal)
-	maps.Copy(result, left.hash.internal)
-	return &Array{hash: HashTable[Value, Value]{result}, next: max(left.next, right.next)}
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(Addable).Add(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // Sub => 1 - 2
 //
 //go:nosplit
 func Sub(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-
-	switch FloatType {
-	case left.Type().shape, right.Type().shape:
-		ctx.SetTop(left.AsFloat(ctx) - right.AsFloat(ctx))
-	default:
-		ctx.SetTop(left.AsInt(ctx) - right.AsInt(ctx))
-	}
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsMath).Sub(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // Mul => 1 * 2
 //
 //go:nosplit
 func Mul(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-
-	switch FloatType {
-	case left.Type().shape, right.Type().shape:
-		ctx.SetTop(left.AsFloat(ctx) * right.AsFloat(ctx))
-	default:
-		ctx.SetTop(left.AsInt(ctx) * right.AsInt(ctx))
-	}
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsMath).Mul(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // Div => 1 / 2
 //
 //go:nosplit
 func Div(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	res := left.AsFloat(ctx) / right.AsFloat(ctx)
-
-	switch FloatType {
-	case left.Type().shape, right.Type().shape:
-	default:
-		if res == Float(int(res)) {
-			ctx.SetTop(res.AsInt(ctx))
-			return
-		}
-	}
-
-	ctx.SetTop(res)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsMath).Div(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // Mod => 1 % 2
 //
 //go:nosplit
 func Mod(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	as := Juggle(left.Type().shape, right.Type().shape)
-
-	switch as {
-	case BoolType:
-		if !right.AsBool(ctx) {
-			panic("modulo by zero error")
-		}
-		ctx.SetTop(Int(0))
-	default:
-		ctx.SetTop(Float(math.Mod(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as))
-	}
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsMath).Mod(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // Pow => 1 ** 2
 //
 //go:nosplit
 func Pow(ctx *FunctionContext) {
-	right := ctx.Pop()
-	left := ctx.Top()
-	as := Juggle(left.Type().shape, right.Type().shape)
-
-	switch as {
-	case BoolType:
-		ctx.SetTop((!right.AsBool(ctx) || left.AsBool(ctx)).AsInt(ctx))
-	default:
-		ctx.SetTop(Float(math.Pow(float64(left.AsFloat(ctx)), float64(right.AsFloat(ctx)))).Cast(ctx, as))
-	}
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsMath).Pow(ctx, ctx.stack[ctx.sp])
+	ctx.sp--
 }
 
 // BwAnd => 1 & 2
 //
 //go:nosplit
 func BwAnd(ctx *FunctionContext) {
-	right := ctx.Pop().AsInt(ctx)
-	left := ctx.Top().AsInt(ctx)
-	ctx.SetTop(left & right)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsBits).BwAnd(ctx, ctx.stack[ctx.sp].AsInt(ctx))
+	ctx.sp--
 }
 
 // BwOr => 1 | 2
 //
 //go:nosplit
 func BwOr(ctx *FunctionContext) {
-	right := ctx.Pop().AsInt(ctx)
-	left := ctx.Top().AsInt(ctx)
-	ctx.SetTop(left | right)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsBits).BwOr(ctx, ctx.stack[ctx.sp].AsInt(ctx))
+	ctx.sp--
 }
 
 // BwXor => 1 ^ 2
 //
 //go:nosplit
 func BwXor(ctx *FunctionContext) {
-	right := ctx.Pop().AsInt(ctx)
-	left := ctx.Top().AsInt(ctx)
-	ctx.SetTop(left ^ right)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsBits).BwXor(ctx, ctx.stack[ctx.sp].AsInt(ctx))
+	ctx.sp--
 }
 
 // BwNot => ~1
 //
 //go:nosplit
 func BwNot(ctx *FunctionContext) {
-	left := ctx.Top().AsInt(ctx)
-	ctx.SetTop(^left)
+	ctx.stack[ctx.sp] = ctx.stack[ctx.sp].(SupportsBits).BwNot(ctx)
 }
 
 // ShiftLeft => 1 << 2
 //
 //go:nosplit
 func ShiftLeft(ctx *FunctionContext) {
-	right := ctx.Pop().AsInt(ctx)
-	left := ctx.Top().AsInt(ctx)
-	ctx.SetTop(left << right)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsBits).ShiftLeft(ctx, ctx.stack[ctx.sp].AsInt(ctx))
+	ctx.sp--
 }
 
 // ShiftRight => 1 >> 2
 //
 //go:nosplit
 func ShiftRight(ctx *FunctionContext) {
-	right := ctx.Pop().AsInt(ctx)
-	left := ctx.Top().AsInt(ctx)
-	ctx.SetTop(left >> right)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].(SupportsBits).ShiftRight(ctx, ctx.stack[ctx.sp].AsInt(ctx))
+	ctx.sp--
 }
 
 // Cast => (_type_)$x
 //
 //go:nosplit
 func Cast(ctx *FunctionContext) {
-	ctx.SetTop(ctx.Top().Cast(ctx, TypeShape(ctx.r1)))
+	ctx.stack[ctx.sp] = ctx.stack[ctx.sp].Cast(ctx, Type(ctx.r1))
 }
 
 // PreIncrement => ++$x
@@ -780,9 +574,9 @@ func PreDecrement(ctx *FunctionContext) {
 		v = (*v).(Ref).Deref()
 	}
 
-	switch (*v).Type().shape {
-	case FloatType:
-		*v = (*v).AsFloat(ctx) - 1
+	switch (*v).(type) {
+	case Float:
+		*v = (*v).(Float) - 1
 	default:
 		*v = (*v).AsInt(ctx) - 1
 	}
@@ -802,9 +596,9 @@ func PostIncrement(ctx *FunctionContext) {
 
 	ctx.Push(*v)
 
-	switch (*v).Type().shape {
-	case FloatType:
-		*v = (*v).AsFloat(ctx) + 1
+	switch (*v).(type) {
+	case Float:
+		*v = (*v).(Float) + 1
 	default:
 		*v = (*v).AsInt(ctx) + 1
 	}
@@ -822,9 +616,9 @@ func PostDecrement(ctx *FunctionContext) {
 
 	ctx.Push(*v)
 
-	switch (*v).Type().shape {
-	case FloatType:
-		*v = (*v).AsFloat(ctx) - 1
+	switch (*v).(type) {
+	case Float:
+		*v = (*v).(Float) - 1
 	default:
 		*v = (*v).AsInt(ctx) - 1
 	}
@@ -834,9 +628,7 @@ func PostDecrement(ctx *FunctionContext) {
 //
 //go:nosplit
 func Concat(ctx *FunctionContext) {
-	right := ctx.Pop().AsString(ctx)
-	left := ctx.Top().AsString(ctx)
-	ctx.SetTop(left + right)
+	ctx.stack[ctx.sp-1] = ctx.stack[ctx.sp-1].AsString(ctx) + ctx.stack[ctx.sp].AsString(ctx)
 }
 
 // Echo => echo $x, $y;
@@ -852,85 +644,85 @@ func Echo(ctx *FunctionContext) {
 		values[i] = string(v.AsString(ctx))
 	}
 
-	fmt.Fprint(ctx.Output(), values...)
+	if _, err := fmt.Fprint(ctx.Output(), values...); err != nil {
+		ctx.Throw(NewThrowable(err.Error(), ECoreError))
+	}
 }
 
 // IsSet => isset($x)
 //
 //go:nosplit
 func IsSet(ctx *FunctionContext) {
-	v := ctx.Top()
-	ctx.SetTop(Bool(v != nil && v != Null{}))
+	ctx.stack[ctx.sp] = Bool(ctx.stack[ctx.sp] != Null{} && ctx.stack[ctx.sp] != nil)
 }
 
 // ArrayNew => $x = [];
 //
 //go:nosplit
 func ArrayNew(ctx *FunctionContext) {
-	ctx.Push(NewArray(nil))
+	ctx.sp++
+	ctx.stack[ctx.sp] = NewArray(nil)
 }
 
 // ArrayAccessRead => $x['test']
 //
 //go:nosplit
 func ArrayAccessRead(ctx *FunctionContext) {
-	key := ctx.Pop()
-	arr := ctx.Pop().AsArray(ctx)
+	key := ctx.stack[ctx.sp]
+	arr := ctx.stack[ctx.sp-1].AsArray(ctx)
 
 	if v, ok := arr.access(key); ok {
-		ctx.Push(*v.Deref())
+		ctx.stack[ctx.sp-1] = *v.Deref()
 	} else {
-		ctx.Push(Null{})
+		ctx.stack[ctx.sp-1] = Null{}
 	}
+	ctx.sp--
 }
 
 // ArrayAccessWrite => $x['test'] = 1
 //
 //go:nosplit
 func ArrayAccessWrite(ctx *FunctionContext) {
-	key := ctx.Pop()
+	key := ctx.stack[ctx.sp]
+	arr := ctx.stack[ctx.sp-1].AsArray(ctx)
 
-	var arr *Array
-
-	if ctx.Top().IsRef() {
-		arr = ctx.Pop().AsArray(ctx)
-	} else {
-		arr = ctx.Top().AsArray(ctx)
+	if ctx.stack[ctx.sp-1].IsRef() {
+		ctx.sp--
 	}
 
-	ctx.Push(arr.assign(ctx, key))
+	ctx.stack[ctx.sp] = arr.assign(ctx, key)
 }
 
 // ArrayAccessPush => $x[] = 1
 //
 //go:nosplit
 func ArrayAccessPush(ctx *FunctionContext) {
-	var arr *Array
+	arr := ctx.stack[ctx.sp].AsArray(ctx)
 
 	if ctx.Top().IsRef() {
-		arr = ctx.Pop().AsArray(ctx)
-	} else {
-		arr = ctx.Top().AsArray(ctx)
+		ctx.sp--
 	}
 
-	ctx.Push(arr.assign(ctx, nil))
+	ctx.sp++
+	ctx.stack[ctx.sp] = arr.assign(ctx, nil)
 }
 
 // ArrayUnset => unset($x['test'])
 //
 //go:nosplit
 func ArrayUnset(ctx *FunctionContext) {
-	key := ctx.Pop()
-	arr := ctx.Pop().AsArray(ctx)
+	key := ctx.stack[ctx.sp]
+	arr := ctx.stack[ctx.sp-1].AsArray(ctx)
+	ctx.sp--
 	arr.delete(key)
-	ctx.Push(arr)
+	ctx.stack[ctx.sp] = arr
 }
 
 // ForEachInit => foreach([1,2] as ...)
 //
 //go:nosplit
 func ForEachInit(ctx *FunctionContext) {
-	iterable := ctx.Top()
+	iterable := ctx.stack[ctx.sp]
 	switch iterable.(type) {
 	case Iterator:
 	case IteratorAggregate:
@@ -940,15 +732,14 @@ func ForEachInit(ctx *FunctionContext) {
 		return
 	}
 	iterable.(Iterator).Rewind(ctx)
-	ctx.SetTop(iterable)
+	ctx.stack[ctx.sp] = iterable
 }
 
 // ForEachKey => foreach(... as $key => ...)
 //
 //go:nosplit
 func ForEachKey(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, ctx.Top().(Iterator).Key(ctx))
+	assignTryRef(&ctx.vars[ctx.r1], ctx.stack[ctx.sp].(Iterator).Key(ctx))
 }
 
 // ForEachValue => foreach(... as $value)
@@ -956,7 +747,7 @@ func ForEachKey(ctx *FunctionContext) {
 //go:nosplit
 func ForEachValue(ctx *FunctionContext) {
 	variable := &ctx.vars[ctx.r1]
-	value := ctx.Top().(Iterator).Current(ctx)
+	value := ctx.stack[ctx.sp].(Iterator).Current(ctx)
 	if value.IsRef() {
 		value = *value.(Ref).Deref()
 	}
@@ -967,20 +758,18 @@ func ForEachValue(ctx *FunctionContext) {
 //
 //go:nosplit
 func ForEachValueRef(ctx *FunctionContext) {
-	v := &ctx.vars[ctx.r1]
-	assignTryRef(v, ctx.Top().(Iterator).Current(ctx))
+	assignTryRef(&ctx.vars[ctx.r1], ctx.stack[ctx.sp].(Iterator).Current(ctx))
 }
 
 //go:nosplit
-func ForEachNext(ctx *FunctionContext) {
-	ctx.Top().(Iterator).Next(ctx)
-}
+func ForEachNext(ctx *FunctionContext) { ctx.stack[ctx.sp].(Iterator).Next(ctx) }
 
 // ForEachValid checks if there are items in iterator
 //
 //go:nosplit
 func ForEachValid(ctx *FunctionContext) {
-	ctx.Push(ctx.Top().(Iterator).Valid(ctx))
+	ctx.stack[ctx.sp+1] = ctx.stack[ctx.sp].(Iterator).Valid(ctx)
+	ctx.sp++
 }
 
 // Throw => throw new Exception();
@@ -988,23 +777,44 @@ func ForEachValid(ctx *FunctionContext) {
 //go:nosplit
 func Throw(ctx *FunctionContext) {}
 
-// InitCall => someFunction(...Args...);
+// InitCall => someFunction(...args...);
 //
 //go:nosplit
 func InitCall(ctx *FunctionContext) {
-	ctx.Push(ctx.Functions[ctx.r1])
+	ctx.sp++
+	ctx.stack[ctx.sp] = ctx.Functions[ctx.r1].(Value)
 }
 
-// InitCallByName => $someFunctionName(...Args...);
+// InitCallVar => $someFunctionName(...args...);
 //
 //go:nosplit
-func InitCallByName(ctx *FunctionContext) {
-	name := ctx.Pop().AsString(ctx)
-	ctx.Push(ctx.FunctionByName(name))
+func InitCallVar(ctx *FunctionContext) {
+	ctx.stack[ctx.sp] = ctx.stack[ctx.sp].AsCallable(ctx).(Value)
 }
 
 //go:nosplit
 func Call(ctx *FunctionContext) {
 	ctx.sp -= int(ctx.r1)
-	ctx.Top().(Callable).Invoke(ctx, nil, nil)
+	ctx.stack[ctx.sp].(Callable).Invoke(ctx, nil, nil)
 }
+
+//go:nosplit
+func CallMethod(ctx *FunctionContext) {
+	ctx.sp -= int(ctx.r1)
+	fn := ctx.stack[ctx.sp]
+	obj := ctx.stack[ctx.sp-1].AsObject(ctx)
+	fn.(Callable).Invoke(ctx, nil, obj)
+	ctx.sp--
+}
+
+//go:nosplit
+func CallStaticMethod(ctx *FunctionContext) {
+	ctx.sp -= int(ctx.r1)
+	fn := ctx.stack[ctx.sp]
+	cls := ctx.stack[ctx.sp-1].AsString(ctx)
+	fn.(Callable).Invoke(ctx, ctx.ClassByName(cls), nil)
+	ctx.sp--
+}
+
+//go:nosplit
+func Unset(ctx *FunctionContext) { ctx.vars[ctx.r1] = Null{} }

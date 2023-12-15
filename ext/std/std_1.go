@@ -3,7 +3,6 @@ package std
 import (
 	"php-vm/internal/vm"
 	"php-vm/pkg/stdlib"
-	"strings"
 )
 
 func strtoupper(ctx *vm.FunctionContext) vm.String {
@@ -98,32 +97,6 @@ const (
 	PathinfoFilename
 	PathinfoAll = PathinfoDirname | PathinfoBasename | PathinfoExtension | PathinfoFilename
 )
-
-func pathinfo(ctx *vm.FunctionContext) *vm.Array {
-	var path string
-	var flags vm.Int
-	vm.ParseParameters(ctx, &path, &flags)
-
-	res := vm.NewArray(nil)
-
-	if flags&PathinfoDirname > 0 {
-		res.OffsetSet(ctx, vm.String("dirname"), vm.String(stdlib.Dirname(path)))
-	}
-
-	if flags&PathinfoBasename > 0 {
-		res.OffsetSet(ctx, vm.String("basename"), vm.String(stdlib.Basename(path, "")))
-	}
-
-	if flags&PathinfoExtension > 0 {
-		res.OffsetSet(ctx, vm.String("extension"), vm.String(stdlib.Ext(path)))
-	}
-
-	if flags&PathinfoFilename > 0 {
-		res.OffsetSet(ctx, vm.String("filename"), vm.String(strings.TrimPrefix(path, stdlib.Dirname(path))))
-	}
-
-	return res
-}
 
 func stripslashes(ctx *vm.FunctionContext) vm.String {
 	var str string

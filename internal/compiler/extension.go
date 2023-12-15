@@ -1,6 +1,8 @@
 package compiler
 
-import "php-vm/internal/vm"
+import (
+	"php-vm/internal/vm"
+)
 
 type Extension struct {
 	Name, Version string

@@ -2,6 +2,7 @@ package vm
 
 import (
 	"encoding/binary"
+	"sync/atomic"
 	"testing"
 )
 
@@ -53,8 +54,8 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	ctx := GlobalContext{
 		Functions:  []Callable{f},
 		Constants:  []Value{Int(10), Int(0), Int(1), Int(2)},
-		Classes:    []Class{&StdClass{}},
-		ClassNames: []String{"stdClass"},
+		Classes:    []Class{},
+		ClassNames: []String{},
 	}
 	ctx.Init()
 
@@ -68,20 +69,15 @@ func BenchmarkCompiledFunction_Invoke(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		ctx.Run(fn)
 	}
 }
 
-func fibonacci(ctx *FunctionContext) Int {
-	var n Int
+func wFibonacci(ctx *FunctionContext) Int {
+	var n int
 	ParseParameters(ctx, &n)
-
-	if n == 0 || n == 1 {
-		return n
-	}
-
-	return fibonacci(ctx) + fibonacci(ctx)
+	return Int(nativeFibonacci(n))
 }
 
 func nativeFibonacci(n int) int {
@@ -93,40 +89,23 @@ func nativeFibonacci(n int) int {
 }
 
 func BenchmarkBuiltInFunction_Invoke(b *testing.B) {
-	f := BuiltInFunction[Int]{
-		Fn: fibonacci,
-	}
+	f := BuiltInFunction[Int]{Fn: wFibonacci}
 
 	ctx := GlobalContext{Functions: []Callable{f}, Constants: []Value{Int(10)}}
 	ctx.Init()
 
 	var bytecode = []uint64{
+		uint64(OpInitCall), 0,
 		uint64(OpConst), 0,
-		uint64(OpCall), 0,
+		uint64(OpCall), 1,
 		uint64(OpReturn),
 	}
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
-		ctx.Run(CompiledFunction{
-			Instructions: bytecode,
-		})
-	}
-}
-
-func Benchmark_fibonacci(b *testing.B) {
-	b.ReportAllocs()
-	b.ResetTimer()
-	parent := GlobalContext{}
-	parent.Init()
-
-	for i := 0; i < b.N; i++ {
-		var ctx FunctionContext
-		parent.Push(Int(10))
-		parent.Child(&ctx, 1, nil, nil)
-		fibonacci(&ctx)
+	for range b.N {
+		ctx.Run(CompiledFunction{Instructions: bytecode})
 	}
 }
 
@@ -134,7 +113,21 @@ func Benchmark_nativeFibonacci(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		nativeFibonacci(10)
+	}
+}
+
+var x, y = int64(0), int64(1)
+
+func BenchmarkAtomicSwap(b *testing.B) {
+	for range b.N {
+		atomic.SwapInt64(&x, y)
+	}
+}
+
+func BenchmarkSwap(b *testing.B) {
+	for range b.N {
+		x = y
 	}
 }

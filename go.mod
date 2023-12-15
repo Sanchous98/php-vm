@@ -1,6 +1,6 @@
 module php-vm
 
-go 1.21
+go 1.22
 
 require (
 	github.com/Sanchous98/go-di/v2 v2.1.2

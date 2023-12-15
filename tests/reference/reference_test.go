@@ -14,15 +14,15 @@ func TestReference(t *testing.T) {
 	require.NoError(t, err)
 
 	instructions := vm.Instructions([]uint64{
-		uint64(vm.OpInitCall), 0,
-		uint64(vm.OpLoadRef), 0,
-		uint64(vm.OpCall), 1,
-		uint64(vm.OpPop),
-		uint64(vm.OpReturn),
+		uint64(vm.OpInitCall) << 32,
+		uint64(vm.OpLoadRef) << 32,
+		uint64(vm.OpCall)<<32 + 1,
+		uint64(vm.OpPop) << 32,
+		uint64(vm.OpReturn) << 32,
 	})
 
 	comp := compiler.NewCompiler(nil)
 	ctx := new(vm.GlobalContext)
 	fn := comp.Compile(input, ctx)
-	assert.Equal(t, instructions, fn.Instructions)
+	assert.Equal(t, instructions, fn.Executable)
 }

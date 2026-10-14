@@ -115,6 +115,30 @@ func TestPHPTree(t *testing.T) {
 		return nil
 	})
 	sort.Strings(files)
+	// PHPT_LIST — файл с подстроками путей (по одной в строке): запускать только
+	// тесты, чей путь содержит хотя бы одну из них (для параллельных прогонов).
+	if lp := os.Getenv("PHPT_LIST"); lp != "" {
+		if data, rerr := os.ReadFile(lp); rerr == nil {
+			var pats []string
+			for _, ln := range strings.Split(string(data), "\n") {
+				if ln = strings.TrimSpace(ln); ln != "" {
+					pats = append(pats, ln)
+				}
+			}
+			if len(pats) > 0 {
+				var kept []string
+				for _, f := range files {
+					for _, pat := range pats {
+						if strings.Contains(f, pat) {
+							kept = append(kept, f)
+							break
+						}
+					}
+				}
+				files = kept
+			}
+		}
+	}
 	if offset > 0 && offset < len(files) {
 		files = files[offset:]
 	} else if offset >= len(files) {

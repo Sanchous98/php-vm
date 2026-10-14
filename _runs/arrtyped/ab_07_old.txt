@@ -1,0 +1,3 @@
+== сборка тест-бинаря ==
+workload                our_ms    php_ms   ratio     our_MB     php_MB     MBx
+07_str_fns                  82        35    2.34       19.0       31.0    0.61

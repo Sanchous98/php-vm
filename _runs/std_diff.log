@@ -1,0 +1,758 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:239:   array                                          783/  809 (96.8%)
+    phpt_dir_test.go:239:   assert                                          19/   20 (95.0%)
+    phpt_dir_test.go:239:   bug49244.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:239:   bug64370_var1.phpt                               0/    1 (0.0%)
+    phpt_dir_test.go:239:   bug64370_var2.phpt                               1/    1 (100.0%)
+    phpt_dir_test.go:239:   bug71827.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:239:   bug75220.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:239:   bug79821.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:239:   bug80915.phpt                                    0/    1 (0.0%)
+    phpt_dir_test.go:239:   bug81048.phpt                                    0/    1 (0.0%)
+    phpt_dir_test.go:239:   bug81727.phpt                                    0/    1 (0.0%)
+    phpt_dir_test.go:239:   class_object                                    37/   46 (80.4%)
+    phpt_dir_test.go:239:   constant_with_typed_class_constant.phpt          1/    1 (100.0%)
+    phpt_dir_test.go:239:   crypt                                            4/    4 (100.0%)
+    phpt_dir_test.go:239:   dir                                             22/   29 (75.9%)
+    phpt_dir_test.go:239:   directory                                        0/    2 (0.0%)
+    phpt_dir_test.go:239:   file                                           415/  415 (100.0%)
+    phpt_dir_test.go:239:   filters                                          8/   33 (24.2%)
+    phpt_dir_test.go:239:   forward_static_call_array.phpt                   0/    1 (0.0%)
+    phpt_dir_test.go:239:   general_functions                              191/  217 (88.0%)
+    phpt_dir_test.go:239:   gh10885.phpt                                     0/    1 (0.0%)
+    phpt_dir_test.go:239:   gh11010.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:239:   gh13279.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:239:   gh18209.phpt                                     0/    1 (0.0%)
+    phpt_dir_test.go:239:   gh20695.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:239:   ghsa-wpj3-hf5j-x4v4.phpt                         0/    1 (0.0%)
+    phpt_dir_test.go:239:   hrtime                                           1/    2 (50.0%)
+    phpt_dir_test.go:239:   http                                            17/   33 (51.5%)
+    phpt_dir_test.go:239:   image                                           20/   22 (90.9%)
+    phpt_dir_test.go:239:   mail                                            10/   12 (83.3%)
+    phpt_dir_test.go:239:   math                                            94/   98 (95.9%)
+    phpt_dir_test.go:239:   misc                                             1/   11 (9.1%)
+    phpt_dir_test.go:239:   network                                         27/   34 (79.4%)
+    phpt_dir_test.go:239:   oss_fuzz_57392.phpt                              1/    1 (100.0%)
+    phpt_dir_test.go:239:   password                                        11/   12 (91.7%)
+    phpt_dir_test.go:239:   serialize                                      132/  149 (88.6%)
+    phpt_dir_test.go:239:   setrawcookie_basic_001.phpt                      1/    1 (100.0%)
+    phpt_dir_test.go:239:   setrawcookie_basic_002.phpt                      1/    1 (100.0%)
+    phpt_dir_test.go:239:   streams                                         98/  111 (88.3%)
+    phpt_dir_test.go:239:   strings                                        600/  604 (99.3%)
+    phpt_dir_test.go:239:   time                                             2/    3 (66.7%)
+    phpt_dir_test.go:239:   url                                             30/   31 (96.8%)
+    phpt_dir_test.go:239:   versioning                                       5/    6 (83.3%)
+    phpt_dir_test.go:242: ИТОГО: 2539 / 2723 (93.2%), пропущено 971
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/002.phpt: mismatch
+        line 220:
+          got=""
+          want="array(8) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/array_fill_object.phpt: mismatch
+        line 82:
+          got="  object(Child_test2)#5 (3) {"
+          want="  object(Child_test2)#%d (4) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/array_intersect_variation9.phpt: mismatch
+        line 16:
+          got="array(4) {"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/array_multisort_variation9.phpt: mismatch
+        line 2:
+          got="bool(true)"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/array_user_key_compare.phpt: mismatch
+        line 4:
+          got="string(1) \"A\""
+          want="string(1) \"B\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/array_walk_closure.phpt: mismatch
+        line 62:
+          got="object(stdClass)#4 (1) {"
+          want="object(stdClass)#1 (1) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug25708.phpt: mismatch
+          int(1)
+          int(2)
+          ----a
+        > int(4)
+        < int(1)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug28739.phpt: mismatch
+          string(1) "a"
+          string(1) "a"
+        > string(1) "a"
+        < Array
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug61730.phpt: mismatch
+          int(0)
+        > int(1)
+        < int(3)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug61967.phpt: mismatch
+          int(2)
+          int(3)
+          int(4)
+        > int(0)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug69068.phpt: mismatch
+          int(1)
+          int(2)
+        > int(3)
+        < int(4)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug69068_2.phpt: mismatch
+          int(1)
+          int(2)
+        > int(3)
+        < int(4)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/bug70713.phpt: mismatch
+        > 
+        < Iterated value is no longer an array or object
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/compact_this.phpt: mismatch
+          }
+          array(1) {
+            ["this"]=>
+        >   object(class@anonymous)#2 (0) {
+        <   object(class@anonymous)#1 (0) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_normal_destructor.phpt: mismatch
+        > array(1) {
+        < Destructor called
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_uaf_add_elements.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Exception caught: Array was modified during array_splice operation
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_uaf_array_deallocated.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Exception caught: Array was modified during array_splice operation
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_uaf_complex_modification.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Exception caught: Array was modified during array_splice operation
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_uaf_multiple_destructors.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Destructor 1 called
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_uaf_original_case.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Exception caught: Array was modified during array_splice operation
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_uaf_packed_to_hash.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Exception caught: Array was modified during array_splice operation
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh16649/array_splice_with_replacement.phpt: mismatch
+        > ERROR: Should have thrown exception
+        < Exception caught: Array was modified during array_splice operation
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh19300_2.phpt: mismatch
+        > bool(true)
+        < array_multisort(): Argument #1 ($array) must be an array or a sort flag
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/gh19926.phpt: mismatch
+        > 
+        < Exception caught, no assertion failure
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/rsort_variation11.phpt: mismatch
+        line 61:
+          got="  int(-4)"
+          want="  bool(true)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/array/sort_variation11.phpt: mismatch
+        line 9:
+          got="  bool(false)"
+          want="  NULL"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/assert/assert_variation.phpt: mismatch
+        line 95:
+          got="  &object(c1)#1 (0) {"
+          want="  &object(c1)#2 (0) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/bug64370_var1.phpt: mismatch
+        line 1:
+          got="Warning: Undefined array key \"REQUEST_TIME\" in /home/dev/phpsrc/ext/standard/tests/bug64370_var1.php on line 2"
+          want="$_SERVER['REQUEST_TIME']: %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/bug80915.phpt: mismatch
+          PHP Variables
+          
+          Variable => Value
+        < $_SERVER['test'] => test
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/bug81048.phpt: mismatch
+          PHP Variables
+          
+          Variable => Value
+        < $_SERVER['foo'] => Array
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/bug81727.phpt: mismatch
+        > array(3) {
+        < array(2) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/bug71442.phpt: mismatch
+          B
+        > A more,args 
+        < B more,args 
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/bug78638.phpt: mismatch
+        line 1:
+          got=""
+          want="Fatal error: Class __PHP_Incomplete_Class@anonymous cannot extend final class __PHP_Incomplete_Class in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/forward_static_call_001.phpt: mismatch
+        line 17:
+          got="A"
+          want="B"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/get_class_vars_variation2.phpt: mismatch
+          *** Testing get_class_vars() : testing visibility
+          
+          -- From global context --
+        > array(6) {
+        < array(2) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/get_declared_traits_variation1.phpt: mismatch
+        > Fatal error: Trait "AutoTrait" not found in /home/dev/phpsrc/ext/standard/tests/class_object/get_declared_traits_variation1.php on line 1
+        < *** Testing get_declared_traits() : testing autoloaded traits ***
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/get_object_vars_basic_001.phpt: mismatch
+          ---( Global scope: )---
+        > array(4) {
+        < array(1) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/get_object_vars_basic_002.phpt: mismatch
+          
+          ---( Superclass: )---
+          A::testA
+        > array(4) {
+        < array(3) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/get_object_vars_variation_004.phpt: mismatch
+        line 9:
+          got="  object(class@anonymous)#2 (0) {"
+          want="  object(JsonSerializable@anonymous)#2 (0) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/class_object/get_object_vars_variation_005.phpt: mismatch
+        line 1:
+          got="array(0) {"
+          want="array(3) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/bug41693.phpt: mismatch
+        > bool(false)
+        < scandir(): Argument #1 ($directory) cannot be empty
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/chdir_error2.phpt: mismatch
+        line 2:
+          got="bool(false)"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/dir_basic.phpt: mismatch
+        line 11:
+          got=""
+          want="string(%d) \"%s\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/dir_variation4.phpt: mismatch
+        line 15:
+          got=""
+          want="string(%d) \"%s\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/readdir_variation6.phpt: mismatch
+          string(1) "."
+          string(2) ".."
+          string(23) "readdir_variation61.tmp"
+        > string(23) "readdir_variation61mode"
+        < string(23) "readdir_variation62.tmp"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/scandir_variation4.phpt: mismatch
+          
+          -- $path = './level_one': --
+          bool(true)
+        > array(7) {
+        < array(5) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/dir/scandir_variation9.phpt: mismatch
+          *** Testing scandir() : usage variations ***
+          array(4) {
+            [0]=>
+        >   string(1) "."
+        <   string(9) "file2.tmp"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/directory/DirectoryClass_basic_001.phpt: mismatch
+        line 2:
+          got="Class [ <user> class Directory ] {"
+          want="Class [ <internal%s> class Directory ] {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/directory/DirectoryClass_error_001.phpt: mismatch
+        line 1:
+          got="string(6) \"Havoc!\""
+          want="Cannot modify readonly property Directory::$handle"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/001.phpt: mismatch
+        > stream_filter_register(): Argument names must not be empty
+        < stream_filter_register(): Argument #1 ($filter_name) must be a non-empty string
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/bug35916.phpt: mismatch
+        line 1:
+          got="Notice: fread(): Read of 8192 bytes failed with errno=9 Bad file descriptor in /home/dev/phpsrc/ext/standard/tests/filters/bug35916.php on line 33"
+          want="fffffffffff"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/bug54350.phpt: mismatch
+        line 1:
+          got="Notice: fwrite(): Write of 3 bytes failed with errno=write /tmp/php-temp3203423793: file already closed in /home/dev/phpsrc/ext/standard/tests/filters/bug54350.php on line 18"
+          want="Warning: fclose(): 5 is not a valid stream resource in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/bug72941.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function stream_bucket_prepend() in /home/dev/phpsrc/ext/standard/tests/filters/bug72941.php:9
+        < string(12) "ello, worldd"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/bug74267.phpt: mismatch
+        line 1:
+          got="done"
+          want="Warning: fwrite(): Stream filter (convert.quoted-printable-decode): invalid byte sequence in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/bug81294.phpt: mismatch
+        > string(29) "%00%04%00%FB%FFgrfg%03%00grfg"
+        < string(16) "%2BV-.%01%00grfg"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/bug81475.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function stream_isatty() in /home/dev/phpsrc/ext/standard/tests/filters/bug81475.php:4
+        < bool(false)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/convert.phpt: mismatch
+        line 34:
+          got="Encoded: Line1"
+          want="Encoded: Line1=0D=0ALine2"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/filter_errors_user.phpt: mismatch
+        line 4:
+          got="test filtering of non buffered data"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/gh17037.phpt: mismatch
+        > Notice: stream_filter_register(): Filter name "string.toupper" is already in use in /home/dev/phpsrc/ext/standard/tests/filters/gh17037.php on line 2
+        < bool(false)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/gh17345.phpt: mismatch
+        line 1:
+          got="Notice: fread(): Read of 8192 bytes failed with errno=9 Bad file descriptor in /home/dev/phpsrc/ext/standard/tests/filters/gh17345.php on line 35"
+          want="fffffffffff"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/gh20370.phpt: mismatch
+        line 1:
+          got=""
+          want="Warning: fwrite(): Unprocessed filter buckets remaining on input brigade in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/gh20370_dynamic_stream_property.phpt: mismatch
+        line 2:
+          got="bool(true)"
+          want="string(6) \"stream\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/gh20370_no_stream_property.phpt: mismatch
+        > bool(true)
+        < bool(false)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/gh20370_private_stream_property.phpt: mismatch
+          data
+        < NULL
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/ghsa-88hq-2827-7pg6.phpt: mismatch
+        > 5155464251554642
+        < 51554642005851554642
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/ghsa-r977-prxv-hc43.phpt: mismatch
+        > string(8192) "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX="
+        < string(8190) "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/object_init_failure.phpt: mismatch
+        line 1:
+          got="string(294) \"<?php"
+          want="Warning: file_get_contents(): Unable to create or locate filter \"sample.filter\" in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/object_init_failure_2.phpt: mismatch
+        line 1:
+          got="Warning: include(php://filter/read=sample.filter/resource=/home/dev/phpsrc/ext/standard/tests/filters/object_init_failure_2.php): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/filters/object_init_failure_2.php on line 7"
+          want="Warning: main(): Unable to create or locate filter \"sample.filter\" in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/oss_fuzz_385993744.phpt: mismatch
+        > string(569) "<?php
+        < string(0) ""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/php_user_filter_01.phpt: mismatch
+        line 1:
+          got=""
+          want="Fatal error: Declaration of bar::filter($in, $out, &$consumed): int must be compatible with php_user_filter::filter($in, $out, &$consumed, bool $closing): int in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/php_user_filter_02.phpt: mismatch
+        line 1:
+          got=""
+          want="Fatal error: Declaration of foo::filter($in, $out, $consumed, $closing): int must be compatible with php_user_filter::filter($in, $out, &$consumed, bool $closing): int in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/php_user_filter_03.phpt: mismatch
+        line 1:
+          got=""
+          want="Fatal error: Declaration of foo::onCreate($var): bool must be compatible with php_user_filter::onCreate(): bool in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/php_user_filter_onCreate_failure.phpt: mismatch
+        line 1:
+          got="resource(6) of type (stream filter)"
+          want="Warning: stream_filter_append(): Unable to create or locate filter \"my_filter\" in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/filters/read.phpt: mismatch
+        line 2:
+          got="Failed to register filter"
+          want="<?PHP"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/forward_static_call_array.phpt: mismatch
+          B
+        > A more,args 
+        < B more,args 
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/bug41037.phpt: mismatch
+        > Done
+        < hello
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/bug41970.phpt: mismatch
+        line 1:
+          got="bool(true)"
+          want="Warning: sort(): Argument #1 ($array) must be passed by reference, value given in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/bug44394.phpt: mismatch
+        > <a href='a?q=1'>asd</a>
+        < <a href='a?q=1&a=b'>asd</a>
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/bug44394_2.phpt: mismatch
+        line 1:
+          got="<a href='a?q=1'>asd</a>"
+          want="<a href='a?q=1&a=b&PHPSESSID=%s'>asd</a>"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/bug66094.phpt: mismatch
+        > done
+        < Tick!
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/closures_002.phpt: mismatch
+        line 4:
+          got="bool(false)"
+          want="bool(true)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/debug_zval_dump_b.phpt: mismatch
+        line 131:
+          got="  string(8) \"is_array\" interned"
+          want="  string(8) \"is_array\" refcount(%d)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/debug_zval_dump_refs.phpt: mismatch
+        > array(1) refcount(1){
+        < array(1) refcount(2){
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/debug_zval_dump_v.phpt: mismatch
+        line 28:
+          got="NULL"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/gettype_settype_basic.phpt: mismatch
+        line 583:
+          got="object(stdClass)#3 (1) {"
+          want="object(stdClass)#2 (1) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/output_add_rewrite_var_basic1.phpt: mismatch
+          Without session
+        > <a href=""> </a>
+        < <a href="?%3CNAME%3E=%3CVALUE%3E"> </a>
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/output_add_rewrite_var_basic2.phpt: mismatch
+          Without session
+        > <a href=""> </a>
+        < <a href="?%3CNAME%3E=%3CVALUE%3E"> </a>
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/output_add_rewrite_var_basic3.phpt: mismatch
+          Without session
+        > <a href=""> </a>
+        < <a href="?%3CNAME%3E=%3CVALUE%3E"> </a>
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/output_add_rewrite_var_basic4.phpt: mismatch
+          Without session
+        > <a href=""> </a>
+        < <a href="?%3CNAME%3E=%3CVALUE%3E"> </a>
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/phpcredits2.phpt: mismatch
+        line 1:
+          got="PHP Credits"
+          want="<!DOCTYPE %a>%s</html>"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/phpinfo-header-anchors.phpt: mismatch
+        line 1:
+          got=""
+          want="%a"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/phpinfo.phpt: mismatch
+        line 1:
+          got="bool(true)"
+          want="phpinfo()"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/phpinfo2.phpt: mismatch
+        line 1:
+          got="bool(true)"
+          want="<!DOCTYPE %s>"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_array.phpt: mismatch
+          proc_open(): Argument #1 ($command) must have at least one element
+          
+          Nul byte in program name:
+        > proc_open(): Argument #1 ($command) must not contain any null bytes
+        < Command array element 1 contains a null byte
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_null.phpt: mismatch
+          array(1) {
+            [2]=>
+        >   resource(5) of type (stream)
+        <   resource(4) of type (stream)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_pipes1.phpt: mismatch
+        line 4:
+          got="  resource(5) of type (stream)"
+          want="  resource(%d) of type (Unknown)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_pipes3.phpt: mismatch
+        line 1:
+          got="array(4) {"
+          want="Warning: proc_open(): pi is not a valid descriptor spec/mode in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_redirect.phpt: mismatch
+        line 1:
+          got="With pipe:"
+          want="Missing redirection target"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_sockets1.phpt: mismatch
+        > 
+        < bool(true)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_sockets2.phpt: mismatch
+        > Warning: Undefined array key 1 in /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_sockets2.php on line 50
+        < bool(true)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_sockets3.phpt: mismatch
+        > Warning: Undefined array key 1 in /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_sockets3.php on line 37
+        < bool(true)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/gh10885.phpt: mismatch
+        line 2:
+          got="resource(5) of type (stream-context) refcount(2)"
+          want="resource(%d) of type (stream-context) refcount(3)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/gh18209.phpt: mismatch
+          int(42)
+        > int(42)
+        < int(43)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/ghsa-wpj3-hf5j-x4v4.phpt: mismatch
+        > array(11) {
+        < array(3) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/hrtime/hrtime.phpt: run: phpvm: instruction budget exceeded
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/gh11274.phpt: mismatch
+        > Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../../sapi/cli/tests/php_cli_server.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/gh11274.php on line 14
+        < -- Testing unredirected request --
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-52jp-hrpf-2jff-001.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-52jp-hrpf-2jff-001.php on line 39"
+          want="Found the mime-type: text/html;"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-52jp-hrpf-2jff-002.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-52jp-hrpf-2jff-002.php on line 39"
+          want="Found the mime-type: text/html;"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-c5f2-jwm7-mmq2.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../../sapi/cli/tests/php_cli_server.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-c5f2-jwm7-mmq2.php on line 6"
+          want="Warning: file_get_contents(http://localhost:%d/index.php HTTP/1.1"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-hgf5-96fm-v528-001.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-hgf5-96fm-v528-001.php on line 36"
+          want="array(7) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-hgf5-96fm-v528-002.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-hgf5-96fm-v528-002.php on line 36"
+          want="array(6) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-hgf5-96fm-v528-003.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-hgf5-96fm-v528-003.php on line 36"
+          want="array(7) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-pcmh-g36c-qc44-001.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-pcmh-g36c-qc44-001.php on line 35"
+          want="Found the mime-type: text/html"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-pcmh-g36c-qc44-002.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-pcmh-g36c-qc44-002.php on line 35"
+          want="Found the mime-type: text/html"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-001.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-001.php on line 35"
+          want="Found the mime-type: text/html; charset=utf-8"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-002.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-002.php on line 35"
+          want="Found the mime-type: text/html;"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-003.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-003.php on line 35"
+          want="Found the mime-type: text/html; charset=utf-8"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-004.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-004.php on line 35"
+          want="Warning: file_get_contents(http://127.0.0.1:%d): Failed to open stream: HTTP invalid response format (folding header at the start)! in %s"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-005.phpt: mismatch
+        line 1:
+          got="Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/ghsa-v8xr-gpvj-cx9g-005.php on line 35"
+          want="Warning: file_get_contents(http://127.0.0.1:%d): Failed to open stream: HTTP invalid header name (cannot start with CR character)! in %s"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/http_empty_location_redirect.phpt: mismatch
+        > Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/http_empty_location_redirect.php on line 29
+        < uri=/
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/http/http_single_char_location_redirect.phpt: mismatch
+        > Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/http/http_single_char_location_redirect.php on line 29
+        < uri=/x
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/image/bug75708.phpt: mismatch
+        > Warning: getimagesize(fs://bug75708.jpg): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/image/bug75708.php on line 37
+        < array(7) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/image/gh20584.phpt: mismatch
+        > Warning: Undefined array key "APP1" in /home/dev/phpsrc/ext/standard/tests/image/gh20584.php on line 24
+        < bool(true)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/mail/bug47983.phpt: mismatch
+          bool(true)
+        > bool(false)
+        < int(0)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/mail/gh8086.phpt: mismatch
+          bool(true)
+        > bool(false)
+        < int(5)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/math/atan_variation.phpt: mismatch
+        > float(1.5273454314033656)
+        < float(1.5273454314033659)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/math/pow.phpt: mismatch
+          bool(true)
+          bool(true)
+          bool(true)
+        > bool(false)
+        < bool(true)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/math/pow_variation2.phpt: mismatch
+          Unsupported operand types: float ** string
+          
+          -- Iteration 19 --
+        > float(1)
+        < Unsupported operand types: float ** array
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/math/round_basic.phpt: mismatch
+        line 7:
+          got="...with precision 3.6-> float(123456789)"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/bug65550.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function get_browser() in /home/dev/phpsrc/ext/standard/tests/misc/bug65550.php:3
+        < string(7) "OmniWeb"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/bug69983.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function get_browser() in /home/dev/phpsrc/ext/standard/tests/misc/bug69983.php:2
+        < Array
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/bug77338.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function get_browser() in /home/dev/phpsrc/ext/standard/tests/misc/bug77338.php:3
+        < object(stdClass)#1 (34) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/bug79410.phpt: mismatch
+        > int(0)
+        < int(4095)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/get_browser_basic.phpt: mismatch
+          *** Testing get_browser() : basic functionality ***
+        > 
+        < array(35) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/get_browser_error.phpt: mismatch
+        line 2:
+          got=""
+          want="array(34) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/get_browser_no_default.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function get_browser() in /home/dev/phpsrc/ext/standard/tests/misc/get_browser_no_default.php:3
+        < bool(false)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/get_browser_variation1.phpt: mismatch
+          *** Testing get_browser() : variation functionality: extra browser names ***
+        > 
+        < array(35) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/get_browser_variation2.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function get_browser() in /home/dev/phpsrc/ext/standard/tests/misc/get_browser_variation2.php:4
+        < object(stdClass)#1 (35) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/misc/get_browser_variation3.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function get_browser() in /home/dev/phpsrc/ext/standard/tests/misc/get_browser_variation3.php:5
+        < Agent -
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/bindto.phpt: mismatch
+        line 1:
+          got="Warning: stream_socket_client(): Unable to connect to tcp://www.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.com:80 (dial tcp: lookup www.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.com: no such host) in /home/dev/phpsrc/ext/standard/tests/network/bindto.php on line 7"
+          want="Warning: stream_socket_client(): php_network_getaddresses: getaddrinfo for www.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.com failed: %s in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/bug20134.phpt: mismatch
+          int(1)
+        > 
+        < bool(false)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/fsockopen_error.phpt: mismatch
+        line 4:
+          got="bool(false)"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/fsockopen_variation2.phpt: mismatch
+        line 7:
+          got=""
+          want="string(10) \"0123456789\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/ghsa-3cr5-j632-f35r.phpt: mismatch
+        line 1:
+          got="bool(false)"
+          want="Warning: fsockopen(): Unable to connect to localhost:%d (The hostname must not contain null bytes) in %s"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/socket_bug74429.phpt: mismatch
+        line 1:
+          got="Warning: stream_socket_client(): Unable to connect to tcp://127.0.0.1:10000/client0 (Failed to parse address \"127.0.0.1:10000/client0\") in /home/dev/phpsrc/ext/standard/tests/network/socket_bug74429.php on line 16"
+          want="resource(%d) of type (stream)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/network/udp4loop.phpt: mismatch
+        > Notice: fread(): Read of 8192 bytes failed with errno=invalid argument in /home/dev/phpsrc/ext/standard/tests/network/udp4loop.php on line 20
+        < string(10) "ABCdef123
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/password/password_hash_sensitive_parameter.phpt: mismatch
+        line 3:
+          got="#0 /home/dev/phpsrc/ext/standard/tests/password/password_hash_sensitive_parameter.php(3): password_hash('foo')"
+          want="#0 %spassword_hash_sensitive_parameter.php(3): password_hash(Object(SensitiveParameterValue))"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/005.phpt: mismatch
+        line 5:
+          got=""
+          want="TestOld::__wakeup()"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/__serialize_003.phpt: mismatch
+          }
+          unserialize() called
+          string(7) "payload"
+        > object(Test)#3 (0) {
+        < object(Test)#2 (0) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug69210.phpt: mismatch
+            ["a"]=>
+            bool(true)
+          }
+        > object(testInteger)#4 (1) {
+        < object(testInteger)#3 (1) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug69425.phpt: mismatch
+        line 1:
+          got="array(2) {"
+          want="int(1)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug70219.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/phpsrc/ext/standard/tests/serialize/bug70219.php:9"
+          want="Warning: session_decode(): Failed to decode session object. Session has been destroyed in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug70219_1.phpt: mismatch
+        line 2:
+          got=""
+          want="array(2) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug70436.phpt: mismatch
+        line 4:
+          got="array(4) {"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug72663_3.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/phpsrc/ext/standard/tests/serialize/bug72663_3.php:4"
+          want="Warning: session_decode(): Unexpected end of serialized data in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug72731.phpt: mismatch
+        line 1:
+          got="object(stdClass)#1 (1) {"
+          want="%s(73588229205)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug74103.phpt: mismatch
+        line 1:
+          got="Warning: unserialize(): Error at offset 88 of 96 bytes in /home/dev/phpsrc/ext/standard/tests/serialize/bug74103.php on line 2"
+          want="Warning: unserialize(): Error at offset 64 of 96 bytes in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug75054.phpt: mismatch
+        line 1:
+          got="Warning: unserialize(): Error at offset 134 of 145 bytes in /home/dev/phpsrc/ext/standard/tests/serialize/bug75054.php on line 5"
+          want="Warning: unserialize(): Error at offset 43 of 145 bytes in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug76300.phpt: mismatch
+          Derived Object
+          (
+        >     [id:protected] => 44
+        <     [id:Base:private] => 64
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug80411.phpt: mismatch
+        line 2:
+          got="a:4:{i:0;N;i:1;R:2;i:2;s:6:\"endcap\";i:3;R:3;}"
+          want="a:4:{i:0;N;i:1;N;i:2;s:6:\"endcap\";i:3;R:4;}"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/bug81111.phpt: mismatch
+        line 6:
+          got=""
+          want="Warning: unserialize(): Error at offset 0 of %d bytes in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/serialization_objects_011.phpt: mismatch
+        line 69:
+          got="object(C)#5 (9) {"
+          want="object(C)#%d (10) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/typed_property_ref_overwrite2.phpt: mismatch
+          object(Test)#1 (1) {
+            ["prop"]=>
+        >   object(Test)#2 (1) {
+        <   &object(Test)#2 (1) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/serialize/typed_property_refs.phpt: mismatch
+            ["b"]=>
+            &int(1)
+          }
+        > object(B)#2 (2) {
+        < object(B)#1 (2) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/bug51056.phpt: mismatch
+        > Warning: include(/home/dev/phpsrc/ext/standard/tests/streams/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/streams/bug51056.php on line 32
+        < fread read 8 bytes
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/bug60602.phpt: mismatch
+        line 1:
+          got="int(117)"
+          want="Warning: Array to string conversion in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/bug61019.phpt: mismatch
+          Test
+        > 
+        < External command executed
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/bug76857.phpt: mismatch
+        line 1:
+          got="bool(false)"
+          want="Warning: file_exists(): Unable to find the wrapper \"foobar\" - did you forget to enable it when you configured PHP? in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/bug77664.phpt: mismatch
+        line 1:
+          got="Warning: file_get_contents(error://test): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/streams/bug77664.php on line 7"
+          want="Fatal error: Uncaught Error: Undefined constant self::INVALID in %s:%d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/bug78902.phpt: run: phpvm: instruction budget exceeded
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/gh11418.phpt: mismatch
+        > Warning: include(/home/dev/phpsrc/ext/standard/tests/streams/../../../openssl/tests/ServerClientTestCase.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/streams/gh11418.php on line 26
+        < Hi Hello World
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/gh8409.phpt: mismatch
+        line 2:
+          got="ERROR: this should not be visible"
+          want="OK: persistent stream closed"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/proc_open_bug51800_right2.phpt: mismatch
+        line 1:
+          got="Warning: Undefined variable $status in /home/dev/phpsrc/ext/standard/tests/streams/proc_open_bug51800_right2.php on line 6"
+          want="array(3) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/proc_open_bug64438.phpt: mismatch
+        line 3:
+          got="  array(1) {"
+          want="  array(2) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/stream_get_meta_data_file_variation2.phpt: mismatch
+        line 41:
+          got="  int(0)"
+          want="  int(285)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/stream_get_meta_data_process_basic.phpt: mismatch
+        > Fatal error: Uncaught TypeError: fread(): Argument #1 ($stream) must be of type resource, false given in /home/dev/phpsrc/ext/standard/tests/streams/stream_get_meta_data_process_basic.php:7
+        < array(7) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/streams/user_streams_context_001.phpt: mismatch
+        line 1:
+          got="Warning: dir(foo://): Failed to open directory: No such file or directory in /home/dev/phpsrc/ext/standard/tests/streams/user_streams_context_001.php on line 5"
+          want="Fatal error: Uncaught TypeError: Cannot assign resource to property Wrapper::$context of type Foo in %suser_streams_context_001.php:5"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/strings/bug55871.phpt: mismatch
+        line 5:
+          got="string(40) \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\""
+          want="array(1) {"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/strings/bug72434.phpt: mismatch
+        line 1:
+          got="reference refcount(1) {"
+          want="array(1) refcount(3){"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/strings/bug72663_2.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/phpsrc/ext/standard/tests/strings/bug72663_2.php:6"
+          want="Warning: session_decode(): Unexpected end of serialized data in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/strings/htmlentities_html5.phpt: run: phpvm: instruction budget exceeded
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/time/bug60222.phpt: mismatch
+        > Fatal error: Uncaught Error: Call to undefined function time_nanosleep() in /home/dev/phpsrc/ext/standard/tests/time/bug60222.php:3
+        < time_nanosleep(): Argument #1 ($seconds) must be greater than or equal to 0
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/url/get_headers_error_003.phpt: mismatch
+        > Warning: include(/home/dev/phpsrc/ext/standard/tests/url/../../../../sapi/cli/tests/php_cli_server.inc): Failed to open stream: No such file or directory in /home/dev/phpsrc/ext/standard/tests/url/get_headers_error_003.php on line 3
+        < HEAD
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/ext/standard/tests/versioning/php_sapi_name_variation001.phpt: mismatch
+        > cli
+        < cgi-fcgi
+--- PASS: TestPHPTree (21.26s)
+PASS
+ok  	phpvm/internal/php	21.270s

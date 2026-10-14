@@ -1,0 +1,4 @@
+=== RUN   TestPHPTree
+signal: terminated
+FAIL	phpvm/internal/php	356.972s
+FAIL

@@ -1,0 +1,6 @@
+SLOW 2m15.742206788s /home/dev/phpsrc/Zend/tests/bug40261.phpt
+SLOW 3m37.793464413s /home/dev/phpsrc/Zend/tests/bug63635.phpt
+SLOW 6.625515058s /home/dev/phpsrc/Zend/tests/gc_013.phpt
+SLOW 1m34.807622949s /home/dev/phpsrc/Zend/tests/gc_023.phpt
+SLOW 9.344665692s /home/dev/phpsrc/Zend/tests/generators/gc_running_generator.phpt
+SLOW 3.683852632s /home/dev/phpsrc/Zend/tests/gh15712.phpt

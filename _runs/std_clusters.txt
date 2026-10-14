@@ -1,0 +1,61 @@
+    6  DIFF  ERROR: Should have thrown exception  ||  Exception caught: Array was modified during array_splice operation
+    4  DIFF  <a href=""> </a>  ||  <a href="?%3CNAME%3E=%3CVALUE%3E"> </a>
+    3  RUN  mismatch  ||  
+    3  RUN  run: phpvm: instruction budget exceeded  ||  
+    3  DIFF  "Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerCl  ||  "Found the mime-type: text/html;"
+    2  DIFF  "array(4) {"  ||  ""
+    2  DIFF  "object(stdClass)#N (1) {"  ||  "object(stdClass)#N (1) {"
+    2  DIFF  int(3)  ||  int(4)
+    2  DIFF  A more,args  ||  B more,args
+    2  DIFF  "bool(false)"  ||  ""
+    2  DIFF  ""  ||  "string(%d) \"%s\""
+    2  DIFF  "Notice: fread(): Read of 8192 bytes failed with errno=9 Bad file descriptor in /home/dev/  ||  "fffffffffff"
+    2  DIFF  Warning: Undefined array key 1 in /home/dev/phpsrc/ext/standard/tests/general_functions/pr  ||  bool(true)
+    2  DIFF  "Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerCl  ||  "array(7) {"
+    2  DIFF  "Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerCl  ||  "Found the mime-type: text/html"
+    2  DIFF  "Warning: include(/home/dev/phpsrc/ext/standard/tests/http/../../../openssl/tests/ServerCl  ||  "Found the mime-type: text/html; charset=utf-8"
+    2  DIFF    ||  array(35) {
+    2  DIFF  "Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/php  ||  "Warning: session_decode(): Unexpected end of serialized data in %s on line %d"
+    1  DIFF  ""  ||  "array(8) {"
+    1  DIFF  "  object(Child_test2)#N (3) {"  ||  "  object(Child_test2)#%d (4) {"
+    1  DIFF  "bool(true)"  ||  ""
+    1  DIFF  "string(1) \"A\""  ||  "string(1) \"B\""
+    1  DIFF  int(4)  ||  int(1)
+    1  DIFF  string(1) "a"  ||  Array
+    1  DIFF  int(1)  ||  int(3)
+    1  DIFF  int(0)  ||  
+    1  DIFF    ||  Iterated value is no longer an array or object
+    1  DIFF  object(class@anonymous)#N (0) {  ||  object(class@anonymous)#N (0) {
+    1  DIFF  array(1) {  ||  Destructor called
+    1  DIFF  ERROR: Should have thrown exception  ||  Destructor 1 called
+    1  DIFF  bool(true)  ||  array_multisort(): Argument #N ($array) must be an array or a sort flag
+    1  DIFF    ||  Exception caught, no assertion failure
+    1  DIFF  "  int(-4)"  ||  "  bool(true)"
+    1  DIFF  "  bool(false)"  ||  "  NULL"
+    1  DIFF  "  &object(c1)#N (0) {"  ||  "  &object(c1)#N (0) {"
+    1  DIFF  "Warning: Undefined array key \"REQUEST_TIME\" in /home/dev/phpsrc/ext/standard/tests/bug6  ||  "$_SERVER['REQUEST_TIME']: %d"
+    1  DIFF  array(3) {  ||  array(2) {
+    1  DIFF  ""  ||  "Fatal error: Class __PHP_Incomplete_Class@anonymous cannot extend final class __PHP_Incom
+    1  DIFF  "A"  ||  "B"
+    1  DIFF  array(6) {  ||  array(2) {
+    1  DIFF  Fatal error: Trait "AutoTrait" not found in /home/dev/phpsrc/ext/standard/tests/class_obje  ||  *** Testing get_declared_traits() : testing autoloaded traits ***
+    1  DIFF  array(4) {  ||  array(1) {
+    1  DIFF  array(4) {  ||  array(3) {
+    1  DIFF  "  object(class@anonymous)#N (0) {"  ||  "  object(JsonSerializable@anonymous)#N (0) {"
+    1  DIFF  "array(0) {"  ||  "array(3) {"
+    1  DIFF  bool(false)  ||  scandir(): Argument #N ($directory) cannot be empty
+    1  DIFF  string(23) "readdir_variation61mode"  ||  string(23) "readdir_variation62.tmp"
+    1  DIFF  array(7) {  ||  array(5) {
+    1  DIFF  string(1) "."  ||  string(9) "file2.tmp"
+    1  DIFF  "Class [ <user> class Directory ] {"  ||  "Class [ <internal%s> class Directory ] {"
+    1  DIFF  "string(6) \"Havoc!\""  ||  "Cannot modify readonly property Directory::$handle"
+    1  DIFF  stream_filter_register(): Argument names must not be empty  ||  stream_filter_register(): Argument #N ($filter_name) must be a non-empty string
+    1  DIFF  "Notice: fwrite(): Write of 3 bytes failed with errno=write /tmp/php-temp3203423793: file   ||  "Warning: fclose(): 5 is not a valid stream resource in %s on line %d"
+    1  DIFF  Fatal error: Uncaught Error: Call to undefined function stream_bucket_prepend() in /home/d  ||  string(12) "ello, worldd"
+    1  DIFF  "done"  ||  "Warning: fwrite(): Stream filter (convert.quoted-printable-decode): invalid byte sequence
+    1  DIFF  string(29) "%00%04%00%FB%FFgrfg%03%00grfg"  ||  string(16) "%2BV-.%01%00grfg"
+    1  DIFF  Fatal error: Uncaught Error: Call to undefined function stream_isatty() in /home/dev/phpsr  ||  bool(false)
+    1  DIFF  "Encoded: Line1"  ||  "Encoded: Line1=0D=0ALine2"
+    1  DIFF  "test filtering of non buffered data"  ||  ""
+    1  DIFF  Notice: stream_filter_register(): Filter name "string.toupper" is already in use in /home/  ||  bool(false)
+TOTAL 184

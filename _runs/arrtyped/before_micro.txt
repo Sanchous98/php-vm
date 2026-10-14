@@ -1,0 +1,57 @@
+goos: linux
+goarch: amd64
+pkg: phpvm/internal/vm
+cpu: Intel(R) N100
+BenchmarkArrayGetPacked-3   	222531561	         2.788 ns/op
+BenchmarkArrayGetPacked-3   	222717100	         2.768 ns/op
+BenchmarkArrayGetPacked-3   	196660747	         2.695 ns/op
+BenchmarkArrayGetMixed-3    	46282510	        12.04 ns/op
+BenchmarkArrayGetMixed-3    	48435285	        12.36 ns/op
+BenchmarkArrayGetMixed-3    	51290344	        11.89 ns/op
+BenchmarkArrayAppend-3      	 1729426	       331.4 ns/op
+BenchmarkArrayAppend-3      	 1897597	       346.3 ns/op
+BenchmarkArrayAppend-3      	 2224614	       402.8 ns/op
+BenchmarkPacked1e3-3        	190992333	         3.072 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e3-3        	194793697	         3.118 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e3-3        	191206360	         3.046 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e4-3        	135991407	         4.437 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e4-3        	132805677	         4.397 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e4-3        	137729576	         4.390 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e5-3        	41082374	        13.21 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e5-3        	47131742	        13.06 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e5-3        	44108449	        13.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e6-3        	16189393	        37.93 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e6-3        	15038740	        37.41 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e6-3        	14575131	        37.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e7-3        	13221126	        46.52 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e7-3        	12695955	        45.88 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e7-3        	12772726	        45.81 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e3-3      	35181531	        17.16 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e3-3      	31281667	        17.90 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e3-3      	35188960	        17.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e4-3      	26632249	        22.00 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e4-3      	24115498	        22.65 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e4-3      	25380292	        22.85 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e5-3      	 7198069	        81.54 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e5-3      	 6896526	        83.74 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e5-3      	 6488799	        84.98 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e6-3      	 3852476	       148.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e6-3      	 4158260	       144.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e6-3      	 4186580	       144.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e7-3      	 3057188	       195.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e7-3      	 2997543	       222.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedInt1e7-3      	 3116128	       195.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e3-3      	26846527	        21.68 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e3-3      	27860688	        21.86 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e3-3      	25134447	        21.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e4-3      	20601139	        28.27 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e4-3      	18931687	        29.09 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e4-3      	20739650	        27.40 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e5-3      	 4947307	       118.2 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e5-3      	 4599933	       122.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e5-3      	 4899412	       123.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e6-3      	 2890281	       194.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e6-3      	 3102693	       194.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkMixedStr1e6-3      	 3102900	       193.8 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	phpvm/internal/vm	125.650s

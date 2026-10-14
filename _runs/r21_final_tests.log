@@ -1,0 +1,14 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:254:   basic                                           71/   75 (94.7%)
+    phpt_dir_test.go:254:   classes                                        274/  277 (98.9%)
+    phpt_dir_test.go:254:   func                                            12/   12 (100.0%)
+    phpt_dir_test.go:254:   lang                                           241/  250 (96.4%)
+    phpt_dir_test.go:254:   output                                          59/   60 (98.3%)
+    phpt_dir_test.go:254:   run-test                                         7/    7 (100.0%)
+    phpt_dir_test.go:254:   security                                        43/   43 (100.0%)
+    phpt_dir_test.go:254:   strings                                          9/    9 (100.0%)
+    phpt_dir_test.go:257: ИТОГО: 716 / 733 (97.7%), пропущено 106
+    phpt_dir_test.go:260:   FAIL /home/dev/phpsrc/tests/basic/029.phpt: mismatch got="array(1) {\n  [\"pics\"]=>\n  array(6) {\n    [\"name\"]=>\n    string(9) \"file1.txt\"\n    [\"full_path\"]=>\n    string(9) \"file1.t..." want="array(1) {\n  [\"pics\"]=>\n  array(6) {\n    [\"name\"]=>\n    string(9) \"file1.txt\"\n    [\"full_path\"]=>\n    string(9) \"file1.t..."
+--- PASS: TestPHPTree (4.43s)
+PASS
+ok  	phpvm/internal/php	4.451s

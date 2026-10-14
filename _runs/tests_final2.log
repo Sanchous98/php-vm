@@ -1,0 +1,209 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:239:   basic                                           71/   75 (94.7%)
+    phpt_dir_test.go:239:   classes                                        259/  277 (93.5%)
+    phpt_dir_test.go:239:   func                                            12/   12 (100.0%)
+    phpt_dir_test.go:239:   lang                                           231/  250 (92.4%)
+    phpt_dir_test.go:239:   output                                          57/   60 (95.0%)
+    phpt_dir_test.go:239:   run-test                                         7/    7 (100.0%)
+    phpt_dir_test.go:239:   security                                        43/   43 (100.0%)
+    phpt_dir_test.go:239:   strings                                          9/    9 (100.0%)
+    phpt_dir_test.go:242: ИТОГО: 689 / 733 (94.0%), пропущено 106
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/basic/029.phpt: mismatch
+        line 19:
+          got="  [\"\x97\\\x8e\\\x94\"\"]=>"
+          want="  [\"予蚕能\"]=>"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/basic/bug73969.phpt: mismatch
+        line 1:
+          got="#0 /home/dev/phpsrc/tests/basic/bug73969.php(23): c1::go()"
+          want="#0 %s(19): require()"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/basic/precision.phpt: mismatch
+          string(60) "a:4:{i:0;d:1.0E+8;i:1;d:3.0E+0;i:2;d:1.0E+103;i:3;d:1.0E+1;}"
+          array (
+            0 => 1.0E+8,
+        >   1 => 3.0E+0,
+        <   1 => 3.0,
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/basic/rfc1867_max_file_size.phpt: mismatch
+        line 39:
+          got="    string(17) \"text/plain-file3;\""
+          want="    string(16) \"text/plain-file3\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/array_access_009.phpt: mismatch
+        line 26:
+          got=""
+          want="ArrayProxy::__construct(0)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/array_access_010.phpt: mismatch
+        line 29:
+          got=""
+          want="ArrayReferenceProxy::__construct(Array)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/array_access_011.phpt: mismatch
+        line 34:
+          got=""
+          want="ArrayAccessReferenceProxy::__construct(0)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/bug27468.phpt: mismatch
+        line 1:
+          got="OK"
+          want="Warning: Undefined property: foo::$x in %s on line %d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/ctor_dtor.phpt: mismatch
+          early::__construct
+        > early::__destruct
+        < early::__construct
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/ctor_dtor_inheritance.phpt: mismatch
+          (
+              [name] => base
+          )
+        > Testing class derived
+        < base::__destruct
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/ctor_failure.phpt: mismatch
+          Test::__construct(Hello)
+          Caught Exception(Hello)
+        > Test::__destruct
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/destructor_and_exceptions.phpt: mismatch
+        > FatalException::__construct
+        < FailClass::__destruct
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/destructor_and_globals.phpt: mismatch
+          Count: 1
+          Id: 1
+          Count: 2
+        > Count: 2
+        < Count: 1
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/destructor_inheritance.phpt: mismatch
+          base::__construct
+        > Donebase::__destruct
+        < base::__destruct
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/destructor_visibility_001.phpt: mismatch
+        line 1:
+          got="===DONE==="
+          want="Fatal error: Uncaught Error: Call to private Derived::__destruct() from global scope in %s:%d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/factory_and_singleton_001.phpt: mismatch
+          int(1)
+          Destruct static
+          NULL
+        > int(1)
+        < int(0)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/factory_and_singleton_005.phpt: mismatch
+        line 1:
+          got="Done"
+          want="Fatal error: Uncaught Error: Call to protected test::__destruct() from global scope in %s:%d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/factory_and_singleton_006.phpt: mismatch
+        line 1:
+          got="Done"
+          want="Fatal error: Uncaught Error: Call to private test::__destruct() from global scope in %s:%d"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/iterators_002.phpt: mismatch
+          c_iter::valid = true
+          c_iter::current
+          double:0:0
+        > c_iter::next
+        < c_iter::__destruct
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/tostring_001.phpt: mismatch
+          test2::__toString()
+          Converted
+          ====test10====
+        > object(test3)#5 (0) {
+        < object(test3)#2 (0) {
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/tostring_002.phpt: mismatch
+        > ====DONE====
+        < Hello
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/classes/tostring_003.phpt: mismatch
+        > ====DONE====
+        < string(5) "Damn!"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/bug21961.phpt: mismatch
+        > Fatal error: Uncaught Error: Non-static method man::getName() cannot be called statically in /home/dev/phpsrc/tests/lang/bug21961.php(44) : eval()'d code:1
+        < string(14) "The old Tavern"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/bug24396.phpt: mismatch
+        > Parse error: syntax error, unexpected variable "$k", expecting ";" in /home/dev/phpsrc/tests/lang/bug24396.php on line 6
+        < (a => 1)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/bug28213.phpt: mismatch
+        line 1:
+          got="#0 [internal function]: FooBar::error(2, 'include(foobar....', '/home/dev/phpsr...', 4)"
+          want="#0 %s(%d): FooBar::error(2, 'include(foobar....', '%s', 4)"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/bug35176.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: require(): Failed opening required 'nonexistent.php' in /home/dev/phpsrc/tests/lang/bug35176.php:2"
+          want="<br />"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/engine_assignExecutionOrder_002.phpt: mismatch
+        line 26:
+          got="Y=,Z="
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/engine_assignExecutionOrder_003.phpt: mismatch
+              int(10)
+            }
+            [1]=>
+        >   int(0)
+        <   int(3)
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/engine_assignExecutionOrder_007.phpt: mismatch
+        > Parse error: syntax error, unexpected token "[" in /home/dev/phpsrc/tests/lang/engine_assignExecutionOrder_007.php on line 3
+        < Array
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.002.phpt: mismatch
+          }
+          
+          Pushing elements onto an unreferenced array, using &$value.
+        > array(3) {
+        < Loop detected
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.005.phpt: mismatch
+        > After changing $a directly, $v@0 is: original.0
+        < After changing $a directly, $v@0 is: changed.0
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.009.phpt: mismatch
+          Remove elements from a referenced array during loop, using &$value
+          key: 0; value: original.0
+          key: 1; value: original.1
+        > key: 2; value: original.2
+        < 
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.012.phpt: mismatch
+          }
+          --> Do loop:
+               iteration 0:  $k=0; $v=v.0
+        > 
+        < --> State of array after loop:
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.013.phpt: mismatch
+          }
+          --> Do loop:
+               iteration 0:  $k=0; $v=v.0
+        > 
+        < --> State of array after loop:
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.014.phpt: mismatch
+          }
+          --> Do loop:
+               iteration 0:  $k=0; $v=v.0
+        > 
+        < --> State of array after loop:
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoop.015.phpt: mismatch
+          }
+          --> Do loop:
+               iteration 0:  $k=0; $v=v.0
+        > 
+        < --> State of array after loop:
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoopObjects.002.phpt: mismatch
+        line 129:
+          got="string(10) \"Original g\""
+          want="string(10) \"Original e\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoopObjects.003.phpt: mismatch
+        line 50:
+          got="object(C)#4 (8) {"
+          want="string(16) \"Added property 0\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/foreachLoopObjects.005.phpt: mismatch
+        line 4:
+          got="NULL"
+          want="string(10) \"Original d\""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/passByReference_005.phpt: mismatch
+        line 2:
+          got="NULL"
+          want=""
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/lang/static_basic_001.phpt: mismatch
+          Same variable used as static and non static.
+          ---------
+          0
+        > 0
+        < 10
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/output/bug74725.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Exception: \xf2\xe5\xf1\xf2 in /home/dev/phpsrc/tests/output/bug74725.php:5"
+          want="<br />"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/output/ob_018.phpt: mismatch
+        line 1:
+          got=""
+          want="\x1f\x8b\b%a"
+    phpt_dir_test.go:245:   FAIL /home/dev/phpsrc/tests/output/ob_start_basic_003.phpt: mismatch
+          I have stolen your output
+        > Fatal error: Uncaught Error: Call to undefined function cause_fatal_error() in /home/dev/phpsrc/tests/output/ob_start_basic_003.php:8
+--- PASS: TestPHPTree (2.08s)
+PASS
+ok  	phpvm/internal/php	2.091s

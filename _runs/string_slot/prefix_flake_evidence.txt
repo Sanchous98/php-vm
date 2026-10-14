@@ -1,0 +1,29 @@
+--- FAIL: TestOOPGoClass (0.00s)
+panic: runtime error: invalid memory address or nil pointer dereference [recovered, repanicked]
+[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x48f55a]
+
+goroutine 9 [running]:
+testing.tRunner.func1.2({0x7ddad8, 0x81e460})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2123 +0x232
+testing.tRunner.func1()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2126 +0x329
+panic({0x7ddad8?, 0x81e460?})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/panic.go:859 +0x125
+phpvm/internal/vm.(*VM).Run.func1()
+	/home/dev/php/internal/vm/vm.go:1077 +0x6c
+panic({0x7ddad8?, 0x81e460?})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/panic.go:859 +0x125
+phpvm/internal/vm.(*VM).closeGenerator(0x3c3bdef26000, 0x3c3bdf00a160, 0x1)
+	/home/dev/php/internal/vm/generator.go:165 +0x505
+phpvm/internal/vm.(*VM).runShutdownDestructors(0x3c3bdef26000)
+	/home/dev/php/internal/vm/vm.go:5569 +0x210
+phpvm/internal/vm.(*VM).Run(0x3c3bdef26000)
+	/home/dev/php/internal/vm/vm.go:1098 +0x574
+phpvm/internal/vm.TestOOPGoClass(0x3c3bdf058008)
+	/home/dev/php/internal/vm/oop_go_test.go:47 +0x774
+testing.tRunner(0x3c3bdf058008, 0x803bb8)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2193 +0xea
+created by testing.(*T).Run in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2258 +0x4d4
+FAIL	phpvm/internal/vm	0.068s
+FAIL

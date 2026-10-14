@@ -1,0 +1,21 @@
+goos: linux
+goarch: amd64
+pkg: phpvm/internal/vm
+cpu: Intel(R) N100
+BenchmarkStringConcat-3          	  291895	      4393 ns/op	    4176 B/op	     128 allocs/op
+BenchmarkStringConcat-3          	  280033	      4121 ns/op	    4176 B/op	     128 allocs/op
+BenchmarkStringConcat-3          	  291373	      4110 ns/op	    4176 B/op	     128 allocs/op
+BenchmarkStringSubstr-3          	58728084	        20.69 ns/op	      24 B/op	       1 allocs/op
+BenchmarkStringSubstr-3          	60937089	        19.09 ns/op	      24 B/op	       1 allocs/op
+BenchmarkStringSubstr-3          	61866486	        19.21 ns/op	      24 B/op	       1 allocs/op
+BenchmarkStringRepeat-3          	16794806	        73.21 ns/op	      48 B/op	       2 allocs/op
+BenchmarkStringRepeat-3          	16349097	        86.34 ns/op	      48 B/op	       2 allocs/op
+BenchmarkStringRepeat-3          	16621028	        76.65 ns/op	      48 B/op	       2 allocs/op
+BenchmarkStringArrayWalk-3       	  106206	     12966 ns/op	   28392 B/op	     266 allocs/op
+BenchmarkStringArrayWalk-3       	   87002	     12843 ns/op	   28392 B/op	     266 allocs/op
+BenchmarkStringArrayWalk-3       	   92706	     12002 ns/op	   28392 B/op	     266 allocs/op
+BenchmarkStringSlotRoundtrip-3   	39832767	        26.20 ns/op	      24 B/op	       1 allocs/op
+BenchmarkStringSlotRoundtrip-3   	51996621	        22.21 ns/op	      24 B/op	       1 allocs/op
+BenchmarkStringSlotRoundtrip-3   	45748851	        23.49 ns/op	      24 B/op	       1 allocs/op
+PASS
+ok  	phpvm/internal/vm	19.874s

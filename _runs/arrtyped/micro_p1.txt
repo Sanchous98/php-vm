@@ -1,0 +1,30 @@
+goos: linux
+goarch: amd64
+pkg: phpvm/internal/vm
+cpu: Intel(R) N100
+BenchmarkArrayGetPacked-3   	135237841	         4.455 ns/op
+BenchmarkArrayGetPacked-3   	143809815	         4.171 ns/op
+BenchmarkArrayGetPacked-3   	134456990	         4.462 ns/op
+BenchmarkArrayAppend-3      	 1862364	       334.9 ns/op
+BenchmarkArrayAppend-3      	 1909128	       367.8 ns/op
+BenchmarkArrayAppend-3      	 2332340	       370.9 ns/op
+BenchmarkIterPacked-3       	    7920	     64132 ns/op
+BenchmarkIterPacked-3       	    8966	     67277 ns/op
+BenchmarkIterPacked-3       	    8587	     64441 ns/op
+BenchmarkPacked1e3-3        	136421276	         4.162 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e3-3        	138707748	         4.255 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e3-3        	100000000	         6.645 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e4-3        	100000000	         5.798 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e4-3        	100000000	         5.487 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e4-3        	100000000	         5.822 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e5-3        	45323193	        12.02 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e5-3        	49849644	        10.48 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e5-3        	47219120	        10.91 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e6-3        	12991848	        46.17 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e6-3        	12640036	        45.95 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e6-3        	12052057	        46.06 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e7-3        	11221837	        54.11 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e7-3        	11173120	        53.83 ns/op	       0 B/op	       0 allocs/op
+BenchmarkPacked1e7-3        	10824494	        53.23 ns/op	       0 B/op	       0 allocs/op
+PASS
+ok  	phpvm/internal/vm	25.236s

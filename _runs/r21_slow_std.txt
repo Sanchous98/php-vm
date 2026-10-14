@@ -1,0 +1,1 @@
+SLOW 2.03496712s /home/dev/phpsrc/ext/standard/tests/general_functions/proc_open_sockets1.phpt

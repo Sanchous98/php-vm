@@ -1,0 +1,593 @@
+package vm
+
+import (
+	"iter"
+	"math"
+	"strconv"
+	"strings"
+)
+
+// maxEntries — предел индекса int32 (2^31-1). PHP сам ограничивает массивы
+// HT_MAX_SIZE = 2^30, так что для PHP-совместимых программ предел недостижим;
+// guard оставлен для строгости.
+const maxEntries = math.MaxInt32
+
+// Array — PHP-массив: упорядоченная хеш-таблица с copy-on-write.
+//
+// Две репрезентации (как packed/hash в Zend):
+//
+//   - packed: ключи ровно 0..len(values)-1, значения подряд в values (24 Б/эл).
+//     Чтение $a[$i] — прямой индекс, без хеша. Доминирующий случай списков.
+//   - mixed: произвольные ключи (int|string), порядок вставки, tombstone после
+//     unset. Значения лежат в упорядоченном массиве entries ([]KV), а карты
+//     хранят только ключ -> позицию в entries (int32). Итерация идёт ТОЛЬКО по
+//     entries (последовательно, без хеша); чтение — карта + entries[idx].val.
+//
+// Переход packed->mixed — при первом «непоследовательном»/строковом ключе или
+// unset. Обратно никогда (как в PHP).
+//
+// Памятью владеет Go GC. shared — признак разделения для COW (не владение).
+type Array struct {
+	packed bool
+
+	// packed-представление
+	values []Slot
+
+	// mixed-представление
+	entries []KV             // порядок вставки; значения и tombstone здесь
+	mStr    map[string]int32 // строковый ключ -> позиция в entries
+	mInt    map[int64]int32  // int-ключ      -> позиция в entries
+
+	// nextFree — следующий авто-индекс (zend nNextFreeElement). Сентинел
+	// math.MinInt64 — «не задан»; при добавлении отрицательное значение
+	// трактуется как 0. Обновляется при любом int-ключе h: h >= nextFree ->
+	// nextFree = h+1 (не сбрасывается при unset/pop).
+	nextFree int64
+	shared   bool
+
+	// pos — внутренний указатель массива (как nInternalPointer в Zend):
+	// current/next/prev/reset/end/key. ГЛОБАЛЬНОЕ состояние массива: копируется
+	// при копировании значения и разделяет массив при изменении (COW). foreach
+	// (All()) этот указатель НЕ трогает.
+	pos int
+}
+
+// KV — элемент mixed-массива в порядке вставки.
+type KV struct {
+	key  ArrayKey
+	val  Slot
+	live bool // false -> tombstone после unset
+}
+
+// ArrayKey — ключ PHP-массива: только int или string.
+type ArrayKey struct {
+	str bool
+	i   int64
+	s   string
+}
+
+func intKey(i int64) ArrayKey     { return ArrayKey{i: i} }
+func stringKey(s string) ArrayKey { return ArrayKey{str: true, s: s} }
+
+// MakeIntKey / MakeStrKey — публичные конструкторы ключей (для встроенных).
+func MakeIntKey(i int64) ArrayKey  { return intKey(i) }
+func MakeStrKey(s string) ArrayKey { return stringKey(s) }
+
+// SetInt / SetStr — установка значения по int/string-ключу.
+func (a *Array) SetInt(k int64, v Slot) error  { return a.Set(intKey(k), v) }
+func (a *Array) SetStr(k string, v Slot) error { return a.Set(stringKey(k), v) }
+
+// phpString возвращает ключ в виде, как его печатает PHP (для отладки/тестов).
+func (k ArrayKey) phpString() string {
+	if k.str {
+		return k.s
+	}
+	return strconv.FormatInt(k.i, 10)
+}
+
+// keyFromSlot приводит слот к ключу массива по правилам PHP.
+// ok == false — недопустимый тип ключа (array/object), ошибка на уровне VM.
+func keyFromSlot(s Slot) (ArrayKey, bool) {
+	s = deref(s)
+	switch s.typ {
+	case IntType:
+		return intKey(s.Int()), true
+	case BoolType:
+		if s.BoolVal() {
+			return intKey(1), true
+		}
+		return intKey(0), true
+	case FloatType:
+		return intKey(floatToInt(s.Float())), true
+	case NullType:
+		return stringKey(""), true
+	case StringType:
+		str := s.StringVal()
+		if i, ok := canonicalIntKey(str); ok {
+			return intKey(i), true
+		}
+		return stringKey(str), true
+	}
+	return ArrayKey{}, false
+}
+
+// KeyOfWarn — как keyFromSlot, но для resource-ключа выдаёт PHP-предупреждение
+// «Resource ID#N used as offset, casting to integer (N)» и приводит к int.
+func (vm *VM) KeyOfWarn(s Slot) (ArrayKey, bool) {
+	s = deref(s)
+	if s.typ == ResourceType {
+		id := int64(s.num)
+		ids := intToString(id)
+		vm.Warn("Resource ID#" + ids + " used as offset, casting to integer (" + ids + ")")
+		return intKey(id), true
+	}
+	if s.typ == FloatType {
+		// PHP 8.1+: неявное float->int для ключа массива — Deprecated.
+		vm.floatToIntWarn(s)
+	}
+	return keyFromSlot(s)
+}
+
+// stringOffsetIndex приводит ключ доступа к строке к числовому индексу.
+// illegal=true означает, что ключ — ведуще-числовая, но не вполне числовая
+// строка (Zend печатает "Illegal string offset" и берёт числовой префикс).
+// ok=false — ключ несовместим (TypeError).
+func stringOffsetIndex(k Slot) (i int64, ok bool, illegal bool) {
+	k = deref(k)
+	switch k.typ {
+	case ArrayType, ObjectType, ClosureType, ResourceType:
+		// Zend: "Cannot access offset of type X on string".
+		return 0, false, false
+	case StringType:
+		// Zend: is_numeric_string(allow_errors=true). Пробелы по краям
+		// отбрасываются, шестнадцатеричные/двоичные/восьмеричные префиксы и
+		// «числовой префикс с хвостом» дают offset 0/значение с диагностикой
+		// "Illegal string offset", а дробные строки — TypeError.
+		s := strings.Trim(k.StringVal(), " \t\n\r\v\f")
+		if s == "" {
+			return 0, false, false
+		}
+		if len(s) >= 2 && s[0] == '0' {
+			switch s[1] {
+			case 'x', 'X', 'b', 'B', 'o', 'O':
+				return 0, true, true
+			}
+		}
+		j := 0
+		neg := false
+		if s[0] == '+' || s[0] == '-' {
+			neg = s[0] == '-'
+			j++
+		}
+		ds := j
+		for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+			j++
+		}
+		if j == ds {
+			return 0, false, false
+		}
+		if j < len(s) && (s[j] == '.' || s[j] == 'e' || s[j] == 'E') {
+			return 0, false, false
+		}
+		v, err := strconv.ParseInt(s[ds:j], 10, 64)
+		if err != nil {
+			return 0, false, false
+		}
+		if neg {
+			v = -v
+		}
+		return v, true, j != len(s)
+	}
+	return k.ToInt(), true, false
+}
+
+// stringOffsetKey приводит ключ доступа к строке: недопустимые типы (массив,
+// объект, ресурс) дают TypeError, float — Deprecated о потере точности.
+func (vm *VM) stringOffsetKey(k Slot) (int64, bool, bool) {
+	if deref(k).typ == FloatType {
+		vm.floatToIntWarn(deref(k))
+	}
+	return stringOffsetIndex(k)
+}
+
+// canonicalIntKey сообщает, является ли строка каноническим десятичным целым,
+// которое PHP приводит к int-ключу. Канонический вид: опциональный '-', затем
+// "0" либо [1-9][0-9]*, без ведущих нулей, знака '+' и пробелов; значение
+// должно помещаться в int64. Проверено: "10"->int, "01"/"1e2"/"+5"/" 10"/
+// "-0"/"00"->string, "-9223372036854775808"->int (MinInt64).
+func canonicalIntKey(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	neg := false
+	body := s
+	if s[0] == '-' {
+		neg = true
+		body = s[1:]
+	}
+	if body == "" {
+		return 0, false
+	}
+	if body[0] == '0' && (body != "0" || neg) {
+		return 0, false // ведущий ноль недопустим; "-0" тоже не каноничен
+	}
+	for i := 0; i < len(body); i++ {
+		if body[i] < '0' || body[i] > '9' {
+			return 0, false
+		}
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false // переполнение int64 -> остаётся строкой
+	}
+	return v, true
+}
+
+// newArray создаёт пустой packed-массив.
+func newArray() *Array { return &Array{packed: true, nextFree: math.MinInt64} }
+
+// NewArray создаёт пустой packed-массив (для встроенных функций).
+func NewArray() *Array { return newArray() }
+
+// Len возвращает число «живых» элементов.
+func (a *Array) Len() int {
+	if a.packed {
+		return len(a.values)
+	}
+	return len(a.mStr) + len(a.mInt)
+}
+
+// Get возвращает значение по ключу.
+func (a *Array) Get(k ArrayKey) (Slot, bool) {
+	if a.packed {
+		if !k.str && uint64(k.i) < uint64(len(a.values)) {
+			return a.values[k.i], true
+		}
+		return Slot{}, false
+	}
+	if k.str {
+		if idx, ok := a.mStr[k.s]; ok {
+			return a.entries[idx].val, true
+		}
+	} else {
+		if idx, ok := a.mInt[k.i]; ok {
+			return a.entries[idx].val, true
+		}
+	}
+	return Slot{}, false
+}
+
+// Set записывает значение по ключу. Вызывающий обязан предварительно сделать
+// Unshare (COW). Ошибка возможна только при недостижимом переполнении индекса.
+func (a *Array) Set(k ArrayKey, v Slot) error {
+	if a.packed {
+		if !k.str && k.i >= 0 {
+			if k.i < int64(len(a.values)) {
+				a.values[k.i] = v
+				return nil
+			}
+			if k.i == int64(len(a.values)) {
+				if len(a.values) >= maxEntries {
+					return errArrayTooLarge
+				}
+				a.values = append(a.values, v)
+				a.nextFree = k.i + 1
+				return nil
+			}
+		}
+		a.toMixed()
+	}
+	if k.str {
+		if idx, ok := a.mStr[k.s]; ok {
+			a.entries[idx].val = v
+			return nil
+		}
+		if len(a.entries) >= maxEntries {
+			return errArrayTooLarge
+		}
+		if a.mStr == nil {
+			a.mStr = make(map[string]int32)
+		}
+		a.mStr[k.s] = int32(len(a.entries))
+		a.entries = append(a.entries, KV{key: k, val: v, live: true})
+		return nil
+	}
+	if idx, ok := a.mInt[k.i]; ok {
+		a.entries[idx].val = v
+		return nil
+	}
+	if len(a.entries) >= maxEntries {
+		return errArrayTooLarge
+	}
+	if a.mInt == nil {
+		a.mInt = make(map[int64]int32)
+	}
+	a.mInt[k.i] = int32(len(a.entries))
+	a.entries = append(a.entries, KV{key: k, val: v, live: true})
+	if k.i >= a.nextFree {
+		if k.i < math.MaxInt64 {
+			a.nextFree = k.i + 1
+		} else {
+			a.nextFree = math.MaxInt64
+		}
+	}
+	return nil
+}
+
+// Unset удаляет ключ (tombstone: соседи не сдвигаются). Вызывающий обязан
+// предварительно сделать Unshare.
+func (a *Array) Unset(k ArrayKey) {
+	if a.packed {
+		if k.str || k.i < 0 || k.i >= int64(len(a.values)) {
+			return // такого ключа нет
+		}
+		a.toMixed()
+	}
+	if k.str {
+		if idx, ok := a.mStr[k.s]; ok {
+			delete(a.mStr, k.s)
+			a.entries[idx].live = false
+			a.entries[idx].val = Slot{}
+			if a.pos == int(idx) {
+				a.pos = a.nextLive(int(idx)) // указатель под удалённым -> на следующий
+			}
+		}
+		return
+	}
+	if idx, ok := a.mInt[k.i]; ok {
+		delete(a.mInt, k.i)
+		a.entries[idx].live = false
+		a.entries[idx].val = Slot{}
+		if a.pos == int(idx) {
+			a.pos = a.nextLive(int(idx))
+		}
+	}
+}
+
+// Append добавляет значение с авто-ключом nextFree и возвращает этот ключ.
+// Вызывающий обязан предварительно сделать Unshare.
+//
+// Если следующий ключ переполняет int64 (максимальный int-ключ = PHP_INT_MAX),
+// возвращается errNextOccupied — как PHP: "Cannot add element to the array as
+// the next element is already occupied".
+func (a *Array) Append(v Slot) (int64, error) {
+	if a.packed {
+		if a.nextFree != math.MinInt64 && a.nextFree != int64(len(a.values)) {
+			a.toMixed()
+		} else {
+			if len(a.values) >= maxEntries {
+				return 0, errArrayTooLarge
+			}
+			a.values = append(a.values, v)
+			a.nextFree = int64(len(a.values))
+			return a.nextFree - 1, nil
+		}
+	}
+	if a.nextFree == math.MaxInt64 {
+		return 0, errNextOccupied
+	}
+	k := a.nextFree
+	if k == math.MinInt64 {
+		k = 0
+	}
+	if err := a.Set(intKey(k), v); err != nil {
+		return 0, err
+	}
+	return k, nil
+}
+
+// Range... см. All ниже.
+
+// All возвращает итератор по живым элементам в порядке вставки. Итерация идёт
+// ТОЛЬКО по упорядоченному массиву (values для packed, entries для mixed),
+// последовательно и без хеша. for k, v := range a.All() { ... }.
+// HasStringKeys сообщает, есть ли в массиве строковые ключи.
+func (a *Array) HasStringKeys() bool {
+	if a == nil {
+		return false
+	}
+	for k := range a.All() {
+		if k.IsStr() {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Array) All() iter.Seq2[ArrayKey, Slot] {
+	return func(yield func(ArrayKey, Slot) bool) {
+		if a.packed {
+			for i := range a.values {
+				if !yield(intKey(int64(i)), a.values[i]) {
+					return
+				}
+			}
+			return
+		}
+		for i := range a.entries {
+			if a.entries[i].live {
+				if !yield(a.entries[i].key, a.entries[i].val) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// Values возвращает значения в порядке следования ключей (для упаковки
+// аргументов вызова), без ключей.
+func (a *Array) Values() []Slot {
+	out := make([]Slot, 0, a.Len())
+	for _, v := range a.All() {
+		out = append(out, v)
+	}
+	return out
+}
+
+// --- Внутренний указатель (current/next/prev/reset/end/key) ---
+//
+// Это отдельный механизм от All() (foreach): он глобальный для массива.
+// Изменяющие указатель операции (Next/Prev/Reset/End) должны вызываться на
+// уже Unshare()-нутом массиве — в PHP они разделяют значение (COW).
+
+func (a *Array) storeLen() int {
+	if a.packed {
+		return len(a.values)
+	}
+	return len(a.entries)
+}
+
+func (a *Array) liveAt(i int) bool {
+	if a.packed {
+		return i >= 0 && i < len(a.values)
+	}
+	return i >= 0 && i < len(a.entries) && a.entries[i].live
+}
+
+// nextLive — первый живой индекс >= i, иначе storeLen() (за концом).
+func (a *Array) nextLive(i int) int {
+	n := a.storeLen()
+	if i < 0 {
+		i = 0
+	}
+	for i < n && !a.liveAt(i) {
+		i++
+	}
+	if i > n {
+		return n
+	}
+	return i
+}
+
+// prevLive — последний живой индекс <= i; если нет — первый живой (как PHP).
+func (a *Array) prevLive(i int) int {
+	for i >= 0 && !a.liveAt(i) {
+		i--
+	}
+	if i < 0 {
+		return a.nextLive(0)
+	}
+	return i
+}
+
+// Reset — reset($a): указатель на первый элемент.
+func (a *Array) Reset() { a.pos = a.nextLive(0) }
+
+// End — end($a): указатель на последний элемент.
+func (a *Array) End() { a.pos = a.prevLive(a.storeLen() - 1) }
+
+// Next — next($a): указатель на следующий живой (или за конец).
+func (a *Array) Next() { a.pos = a.nextLive(a.pos + 1) }
+
+// Prev — prev($a): указатель на предыдущий живой.
+func (a *Array) Prev() { a.pos = a.prevLive(a.pos - 1) }
+
+// Current — current($a): значение под указателем, или false.
+func (a *Array) Current() (Slot, bool) {
+	i := a.pos
+	if a.packed {
+		if i >= 0 && i < len(a.values) {
+			return a.values[i], true
+		}
+		return Slot{}, false
+	}
+	if i >= 0 && i < len(a.entries) && a.entries[i].live {
+		return a.entries[i].val, true
+	}
+	return Slot{}, false
+}
+
+// Key — key($a): ключ под указателем, или null (ok == false).
+func (a *Array) Key() (ArrayKey, bool) {
+	i := a.pos
+	if a.packed {
+		if i >= 0 && i < len(a.values) {
+			return intKey(int64(i)), true
+		}
+		return ArrayKey{}, false
+	}
+	if i >= 0 && i < len(a.entries) && a.entries[i].live {
+		return a.entries[i].key, true
+	}
+	return ArrayKey{}, false
+}
+
+// toMixed переводит packed в mixed (после unset или непоследовательного ключа).
+func (a *Array) toMixed() {
+	n := len(a.values)
+	a.entries = make([]KV, n)
+	if n > 0 {
+		a.mInt = make(map[int64]int32, n)
+	}
+	for i := 0; i < n; i++ {
+		a.entries[i] = KV{key: intKey(int64(i)), val: a.values[i], live: true}
+		a.mInt[int64(i)] = int32(i)
+	}
+	a.values = nil
+	if n > 0 && a.nextFree < int64(n) {
+		a.nextFree = int64(n)
+	}
+	a.packed = false
+}
+
+// NextFree возвращает следующий авто-индекс (zend nNextFreeElement).
+func (a *Array) NextFree() int64 { return a.nextFree }
+
+// SetNextFree задаёт следующий авто-индекс.
+func (a *Array) SetNextFree(n int64) { a.nextFree = n }
+
+// MarkShared помечает массив разделённым (значение скопировано в другой слот).
+// Память при этом не трогается: владелец — Go GC.
+func (a *Array) MarkShared() { a.shared = true }
+
+// Shared сообщает, что массив помечен разделённым: перед записью нужен
+// Unshare (COW). Ложные срабатывания безопасны, но дороги.
+func (a *Array) Shared() bool { return a.shared }
+
+// Unshare возвращает массив, пригодный для записи: сам a, если он не разделён,
+// иначе поверхностную копию. Оригинал остаётся разделённым. Вложенные
+// массивы-значения помечаются разделёнными — иначе запись в них была бы видна
+// обоим владельцам (рекурсивный COW).
+func (a *Array) Unshare() *Array {
+	if !a.shared {
+		return a
+	}
+	c := &Array{packed: a.packed, nextFree: a.nextFree, pos: a.pos}
+	if a.packed {
+		c.values = make([]Slot, len(a.values))
+		copy(c.values, a.values)
+	} else {
+		c.entries = make([]KV, len(a.entries))
+		copy(c.entries, a.entries)
+		if a.mStr != nil {
+			c.mStr = make(map[string]int32, len(a.mStr))
+			for k, idx := range a.mStr {
+				c.mStr[k] = idx
+			}
+		}
+		if a.mInt != nil {
+			c.mInt = make(map[int64]int32, len(a.mInt))
+			for k, idx := range a.mInt {
+				c.mInt[k] = idx
+			}
+		}
+	}
+	// И a, и c теперь ссылаются на вложенные массивы -> они разделены.
+	for i := range c.values {
+		if c.values[i].typ == ArrayType {
+			c.values[i].AsArray().MarkShared()
+		}
+	}
+	for i := range c.entries {
+		if c.entries[i].live && c.entries[i].val.typ == ArrayType {
+			c.entries[i].val.AsArray().MarkShared()
+		}
+	}
+	return c
+}
+
+// Экспорт ключа для встроенных функций (var_dump и т.п.).
+func (k ArrayKey) IsStr() bool       { return k.str }
+func (k ArrayKey) StrVal() string    { return k.s }
+func (k ArrayKey) IntVal() int64     { return k.i }
+func (k ArrayKey) PHPString() string { return k.phpString() }

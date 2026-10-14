@@ -1,0 +1,61 @@
+   20  DIFF  bool(false)  ||  bool(true)
+   10  RUN  mismatch  ||  
+   10  DIFF  int(0)  ||  int(1)
+   10  DIFF  ==DONE==  ||  C::__destruct
+    9  DIFF  int(0)  ||  int(2)
+    9  DIFF  Fatal error: Generator return type must be a supertype of Generator, Generator given in /h  ||  string(3) "foo"
+    8  RUN  run: компилятор: неизвестное выражение <nil>  ||  
+    8  DIFF  object(Test)#N (0) {  ||  NULL
+    7  RUN  run: компилятор: неизвестный класс ""  ||  
+    7  DIFF  "bool(true)"  ||  "bool(false)"
+    6  DIFF  int(1)  ||  int(2)
+    5  DIFF  Fatal error: Uncaught TypeError: call_user_func_array(): Argument #N ($callback) must be a  ||  NULL
+    5  DIFF  "3"  ||  "C::__destruct"
+    5  DIFF  ""  ||  "Fatal error: Uncaught FiberError: Cannot switch fibers in current execution context in %s
+    5  DIFF  object(WeakMap)#N (0) {  ||  object(WeakMap)#N (1) {
+    4  DIFF    ||  ok
+    4  DIFF  bool(true)  ||  bool(false)
+    4  DIFF  "string(0) \"\""  ||  ""
+    4  RUN  run: phpvm: instruction budget exceeded  ||  
+    4  RUN  run: parser: ожидалось имя переменной после $, получено ""  ||  
+    4  DIFF  3  ||  C::__destruct
+    4  DIFF  object(Test)#N (0) {  ||  object(Test)#N (0) {
+    4  DIFF  "Fatal error: Generator return type must be a supertype of Generator, Generator given in /  ||  "string(3) \"foo\""
+    4  DIFF  "object(B)#N (0) {"  ||  "object(X)#N (0) {"
+    3  RUN  run: Illegal offset type  ||  
+    3  DIFF    ||  int(1)
+    3  DIFF  array(3) {  ||  array(1) {
+    3  DIFF  "int(0)"  ||  ""
+    3  RUN  run: phpvm: unknown class  ||  
+    3  DIFF  int(4)  ||  int(3)
+    3  RUN  run: phpvm: division by zero  ||  
+    3  DIFF  object(stdClass)#N (0) {  ||  object(stdClass)#N (0) {
+    3  DIFF  "==DONE=="  ||  "string(18) \"Canary::__destruct\""
+    3  DIFF  object(Closure)#N (0) {  ||  object(Closure)#N (2) {
+    3  DIFF  ""  ||  "Fatal error: Cannot assign reference to non referenceable value in %s on line %d"
+    3  DIFF  MyObject::__destruct() Must not be called  ||  
+    3  DIFF  "object(WeakMap)#N (0) {"  ||  "object(WeakMap)#%d (1) {"
+    2  DIFF  ""  ||  "bool(false)"
+    2  DIFF  float(0)  ||  array(3) {
+    2  DIFF    ||  Cannot add element to the array as the next element is already occupied
+    2  DIFF    ||  array(0) {
+    2  DIFF  ""  ||  "Fatal error: Spread operator is not supported in assignments in %s on line %d"
+    2  DIFF  NULL  ||  array(1) {
+    2  DIFF  [0] =>  ||  [0] => C1
+    2  DIFF  NULL  ||  int(2)
+    2  DIFF    ||  
+    2  DIFF  ""  ||  "Fatal error: Class A cannot implement both Iterator and IteratorAggregate at the same tim
+    2  DIFF  object(stdClass)#N (1) {  ||  object(stdClass)#N (1) {
+    2  DIFF    ||  bool(false)
+    2  DIFF  "array(1) {"  ||  ""
+    2  DIFF    ||  The use statement with non-compound name 'Exception' has no effect
+    2  DIFF  array(2) {  ||  int(1)
+    2  RUN  run: phpvm: stack overflow  ||  
+    2  DIFF  string(4) "copy"  ||  string(7) "changed"
+    2  DIFF  "bool(false)"  ||  "bool(true)"
+    2  DIFF  string(3) "foo"  ||  int(24)
+    2  DIFF  string(6) "foofoo"  ||  int(24)
+    2  DIFF  object(Test)#N (0) {  ||  int(24)
+    2  DIFF  Fatal error: Uncaught Error: Call to undefined function gc_enabled() in /home/dev/phpsrc/Z  ||  bool(true)
+    2  DIFF  object(Closure)#N (0) {  ||  object(Closure)#N (1) {
+TOTAL 1371

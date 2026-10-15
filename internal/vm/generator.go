@@ -146,6 +146,12 @@ func (vm *VM) dropSavedRegs(g *Generator) {
 		g.regs[i] = Slot{}
 	}
 	g.regs = nil
+	// Zend освобождает локальные переменные кадра немедленно
+	// (zend_free_compiled_variables -> zval_ptr_dtor): деструкторы тел,
+	// брошенных исключением или завершившихся, должны сработать здесь.
+	if vm.lifeCandidate {
+		vm.FlushLifetime()
+	}
 }
 
 // releaseInnerRef отпускает ссылку на вложенный генератор (yield from),
@@ -529,6 +535,10 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 	}
 
 	if traced {
+		// Кадр снимаем до освобождения локальных переменных: Zend при
+		// закрытии/завершении генератора обнуляет execute_data раньше, чем
+		// уничтожает CV, поэтому деструкторы локалов видят в трейсе
+		// вызывающий кадр (gh15851: Foo->__destruct <- bar()).
 		vm.popCall()
 	}
 	if outermost {

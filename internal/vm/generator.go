@@ -150,7 +150,12 @@ func (vm *VM) dropSavedRegs(g *Generator) {
 	// (zend_free_compiled_variables -> zval_ptr_dtor): деструкторы тел,
 	// брошенных исключением или завершившихся, должны сработать здесь.
 	if vm.lifeCandidate {
-		vm.FlushLifetime()
+		if err := vm.FlushLifetime(); err != nil && vm.pendingDestroyErr == nil {
+			// Ошибка деструктора локальной переменной закрываемого кадра:
+			// Zend поднимает её как текущее исключение (previous — исходное)
+			// в момент уничтожения кадра (gh14387).
+			vm.pendingDestroyErr = err
+		}
 	}
 }
 
@@ -534,6 +539,11 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 		vm.chunk = g.chunk
 		err = vm.exec(g.chunk)
 	}
+	// Позиция тела генератора в точке выхода/ошибки: кадр деструктора при
+	// уничтожении локалов брошенного генератора получает её, а не
+	// "[internal function]" (gh14387, yield_from_throw_with_throwing_exception).
+	excPC := vm.ip
+	excChunk := vm.chunk
 
 	if traced {
 		// Кадр снимаем до освобождения локальных переменных: Zend при
@@ -613,7 +623,34 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 		g.done = true
 		g.hasCur = false
 		g.ret = MakeNull()
+		// Zend: кадр брошенного генератора ещё в цепочке execute_data, поэтому
+		// деструкторы локалов видят его как "[internal function]" (gh14387).
+		if traced {
+			vm.pushGenCall(g)
+		}
+		sSet, sFile, sChunk, sPC, sLine := vm.nextFrameSet, vm.nextFrameFile, vm.nextFrameChunk, vm.nextFramePC, vm.nextFrameLine
+		if excChunk != nil && excPC > 0 {
+			vm.nextFrameSet = true
+			vm.nextFrameFile = excChunk.File
+			vm.nextFrameChunk, vm.nextFramePC = excChunk, excPC
+			vm.nextFrameLine = excChunk.LineAt(excPC - 1)
+		}
 		vm.dropSavedRegs(g)
+		vm.nextFrameSet, vm.nextFrameFile, vm.nextFrameChunk, vm.nextFramePC, vm.nextFrameLine = sSet, sFile, sChunk, sPC, sLine
+		if traced {
+			vm.popCall()
+		}
+		if derr := vm.takePendingDestroyErr(); derr != nil {
+			// Деструктор локальной переменной бросил при раскрутке кадра
+			// генератора: его исключение заменяет исходное, сцепляясь через
+			// previous (gh14387, yield_from_throw_with_throwing_exception).
+			if nth, ok := asThrowable(derr); ok {
+				if cur, ok2 := asThrowable(err); ok2 && cur != nth {
+					vm.chainPrevious(nth, cur)
+				}
+				err = nth
+			}
+		}
 		if _, ok := asThrowable(err); ok {
 			g.aborted = true
 		}

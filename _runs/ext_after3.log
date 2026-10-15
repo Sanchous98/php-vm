@@ -1,0 +1,56 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:278:   array                                          806/  809 (99.6%)
+    phpt_dir_test.go:278:   assert                                          20/   20 (100.0%)
+    phpt_dir_test.go:278:   bug49244.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug64370_var1.phpt                               1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug64370_var2.phpt                               1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug71827.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug75220.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug79821.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug80915.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug81048.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   bug81727.phpt                                    1/    1 (100.0%)
+    phpt_dir_test.go:278:   class_object                                    46/   46 (100.0%)
+    phpt_dir_test.go:278:   constant_with_typed_class_constant.phpt          1/    1 (100.0%)
+    phpt_dir_test.go:278:   crypt                                            4/    4 (100.0%)
+    phpt_dir_test.go:278:   dir                                             29/   29 (100.0%)
+    phpt_dir_test.go:278:   directory                                        2/    2 (100.0%)
+    phpt_dir_test.go:278:   file                                           415/  415 (100.0%)
+    phpt_dir_test.go:278:   filters                                         33/   33 (100.0%)
+    phpt_dir_test.go:278:   forward_static_call_array.phpt                   1/    1 (100.0%)
+    phpt_dir_test.go:278:   general_functions                              216/  217 (99.5%)
+    phpt_dir_test.go:278:   gh10885.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:278:   gh11010.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:278:   gh13279.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:278:   gh18209.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:278:   gh20695.phpt                                     1/    1 (100.0%)
+    phpt_dir_test.go:278:   ghsa-wpj3-hf5j-x4v4.phpt                         1/    1 (100.0%)
+    phpt_dir_test.go:278:   hrtime                                           2/    2 (100.0%)
+    phpt_dir_test.go:278:   http                                            33/   33 (100.0%)
+    phpt_dir_test.go:278:   image                                           22/   22 (100.0%)
+    phpt_dir_test.go:278:   mail                                            12/   12 (100.0%)
+    phpt_dir_test.go:278:   math                                            98/   98 (100.0%)
+    phpt_dir_test.go:278:   misc                                            11/   11 (100.0%)
+    phpt_dir_test.go:278:   network                                         34/   34 (100.0%)
+    phpt_dir_test.go:278:   oss_fuzz_57392.phpt                              1/    1 (100.0%)
+    phpt_dir_test.go:278:   password                                        12/   12 (100.0%)
+    phpt_dir_test.go:278:   serialize                                      148/  149 (99.3%)
+    phpt_dir_test.go:278:   setrawcookie_basic_001.phpt                      1/    1 (100.0%)
+    phpt_dir_test.go:278:   setrawcookie_basic_002.phpt                      1/    1 (100.0%)
+    phpt_dir_test.go:278:   streams                                        111/  111 (100.0%)
+    phpt_dir_test.go:278:   strings                                        601/  604 (99.5%)
+    phpt_dir_test.go:278:   time                                             3/    3 (100.0%)
+    phpt_dir_test.go:278:   url                                             31/   31 (100.0%)
+    phpt_dir_test.go:278:   versioning                                       6/    6 (100.0%)
+    phpt_dir_test.go:281: ИТОГО: 2715 / 2723 (99.7%), пропущено 971
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/array/array_product_variation5.phpt: mismatch got="array_product() version:\n\nWarning: array_product(): Multiplication is not supported on type resource in /home/dev/rtsub_..." want="array_product() version:\n\nWarning: array_product(): Multiplication is not supported on type resource in %s on line %d\nin..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/array/array_walk_closure.phpt: mismatch got="array(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(3) \"one\"\n}\narray(2) {\n  [0]=>\n  int(2)\n  [1]=>\n  string(3) \"two\"\n}\narray(2)..." want="array(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(3) \"one\"\n}\narray(2) {\n  [0]=>\n  int(2)\n  [1]=>\n  string(3) \"two\"\n}\narray(2)..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/array/bug25708.phpt: mismatch got="NULL\nNULL\nint(1)\nint(2)\n--\nNULL\nNULL\nNULL\nNULL\n--\nNULL\nNULL\nNULL\nNULL\n--\nNULL\nNULL\nNULL\nint(3)\n--\nint(4)\nNULL\nNULL\nint(3..." want="NULL\nNULL\nint(1)\nint(2)\n--\nint(1)\nint(2)\nint(1)\nint(2)\n--\nint(1)\nint(2)\nint(1)\nint(2)\n--\nint(1)\nint(3)\nint(1)\nint(3)\n--\n..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/general_functions/parse_ini_string_error.phpt: mismatch got="\nWarning: syntax error, unexpected end of file, expecting TC_DOLLAR_CURLY or TC_QUOTED_STRING or '\"' in Unknown on line ..." want="Warning: syntax error, unexpected end of file, expecting TC_DOLLAR_CURLY or TC_QUOTED_STRING or '\"' in Unknown on line 1..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/serialize/bug70219_1.phpt: mismatch got="\nDeprecated: obj implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize()..." want="Deprecated: %s implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() i..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/strings/bug55871.phpt: mismatch got="array(1) {\n  [0]=>\n  string(40) \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n}\nstring(40) \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA..." want="array(1) {\n  [0]=>\n  string(40) \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"\n}\narray(1) {\n  [0]=>\n  string(0) \"\"\n}\n\nWarnin..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/strings/bug72434.phpt: mismatch got="array(1) refcount(2){\n  [0]=>\n  object(stdClass)#3 (0) refcount(1){\n  }\n}\n" want="array(1) refcount(3){\n  [0]=>\n  object(stdClass)#%d (0) refcount(1){\n  }\n}"
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/ext/standard/tests/strings/bug72663_2.phpt: mismatch got="\nWarning: session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/rtsub_corp/ext/stan..." want="Warning: session_decode(): Unexpected end of serialized data in %s on line %d\n\nWarning: session_decode(): Failed to deco..."
+--- PASS: TestPHPTree (48.00s)
+PASS
+ok  	phpvm/internal/php	48.035s

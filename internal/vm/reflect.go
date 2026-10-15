@@ -704,6 +704,20 @@ func (vm *VM) FindClass(name string) ClassInfo {
 	if ci := vm.findClass(name); ci != nil {
 		return ci
 	}
+	// Имя анонимного класса из get_class()/__CLASS__ содержит NUL и сайт
+	// объявления (`class@anonymous\x00file:line$N`), а внутренний ключ — это
+	// `\x00anon#N`. class_alias(get_class(new class {...}), ...) должен
+	// находить такой класс (anon/011).
+	if strings.IndexByte(name, 0) >= 0 {
+		if i := strings.LastIndexByte(name, '$'); i >= 0 {
+			num := name[i+1:]
+			if num != "" && isDigits(num) {
+				if ci := vm.findClass("\x00anon#" + num); ci != nil {
+					return ci
+				}
+			}
+		}
+	}
 	for _, ci := range vm.classes {
 		if ClassHidden(ci) {
 			continue
@@ -713,6 +727,16 @@ func (vm *VM) FindClass(name string) ClassInfo {
 		}
 	}
 	return nil
+}
+
+// isDigits сообщает, что строка состоит только из цифр.
+func isDigits(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // Classes возвращает все зарегистрированные дескрипторы классов.

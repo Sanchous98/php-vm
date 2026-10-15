@@ -42,6 +42,8 @@ func NewSensitiveParameterValueClass() ClassInfo {
 			d := ctx.This[sensitiveValueData]()
 			if d != nil && len(args) > 0 {
 				d.value = args[0]
+				ctx.VM().noteStored(args[0])
+				shareSlot(args[0])
 			}
 			return MakeNull(), nil
 		}}})
@@ -72,6 +74,8 @@ func (vm *VM) makeSensitiveValue(v Slot) Slot {
 		return v
 	}
 	(*sensitiveValueData)(unsafe.Pointer(o)).value = v
+	vm.noteStored(v)
+	shareSlot(v)
 	return rc.objectSlot(o, vm.classIndex(rc))
 }
 

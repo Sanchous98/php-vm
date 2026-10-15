@@ -59,6 +59,9 @@ type Function struct {
 	// аргументов, как в Zend: ошибка привязывается к сигнатуре).
 	DefFile string
 	DefLine int
+	// DefEnd — 1-based строка закрывающей `}` тела функции/метода
+	// (ReflectionFunctionAbstract::getEndLine/`@@ start - end`); 0 — неизвестна.
+	DefEnd int
 	// ParamTypes[i] — объявленный тип параметра i, "" — не объявлен.
 	ParamTypes []string
 	// BuiltinParamTypes — типы параметров ВСТРОЕННОЙ функции, снятые с
@@ -93,6 +96,9 @@ type Function struct {
 	// если типов нет, checkParams при вызове ничего не делает.
 	typesChecked bool
 	hasTypes     bool
+	// ParamDefaults[i] — исходный текст значения по умолчанию параметра i
+	// (для ReflectionClass::__toString); "" — нет значения/неизвестно.
+	ParamDefaults []string
 	// IsFinal — метод объявлен `final` (для ReflectionMethod::isFinal).
 	IsFinal bool
 	// Attrs — атрибуты `#[...]` объявления (для ReflectionFunction/Method).

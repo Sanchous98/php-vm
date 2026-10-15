@@ -212,6 +212,10 @@ func parseFatalCompiled(pe *parseError, file string) *Compiled {
 // globalsModifyMsg — диагностика PHP 8.1+ для недопустимой записи в $GLOBALS.
 const globalsModifyMsg = "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax"
 
+// haltNoChange — маркер стека haltStack: inline-регион подключаемого файла не
+// менял __COMPILER_HALT_OFFSET__.
+const haltNoChange = int64(-2)
+
 // isAssertFuncName сообщает, что имя — встроенная функция assert().
 func isAssertFuncName(name string) bool {
 	return strings.EqualFold(strings.TrimLeft(name, "\\"), "assert")
@@ -551,7 +555,10 @@ type compiler struct {
 	// haltOffset — значение магической константы __COMPILER_HALT_OFFSET__
 	// текущего файла (-1 — __halt_compiler() не встречался).
 	haltOffset int64
-
+	// haltStack — сохранённые значения haltOffset на входе inline-региона
+	// подключаемого файла со своим __halt_compiler() (haltNoChange — регион
+	// значение не менял).
+	haltStack []int64
 	// usesFuncArg — тело ссылается на func_get_arg()/func_get_args()/
 	// func_num_args(): эти встроенные читают регистры параметров кадра
 	// напрямую, поэтому для функции отключается SSA-распределение регистров
@@ -783,8 +790,55 @@ func paramTypes(params []Param) []string {
 	return out
 }
 
-// normalizedType приводит запись типа из парсера к виду для рантайма
-// (в частности, `integer` -> `int` не требуется; тип сохраняется как в PHP для
+// classEndLine возвращает строку закрывающей `}` тела класса (fallback — строка
+// объявления, если диапазон не разобран).
+func classEndLine(cd *ClassDecl) int {
+	if cd.EndLine > 0 {
+		return cd.EndLine
+	}
+	return cd.Line
+}
+
+// paramDefaultsText возвращает исходный текст значений по умолчанию// параметров (для ReflectionClass::__toString / `Parameter #i [...]`).
+// nil, если ни у одного параметра нет значения по умолчанию.
+func paramDefaultsText(params []Param) []string {
+	any := false
+	out := make([]string, len(params))
+	for i, p := range params {
+		if p.Default == nil {
+			continue
+		}
+		any = true
+		out[i] = renderDefaultExpr(p.Default)
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
+// renderDefaultExpr рендерит константное значение по умолчанию в формате Zend
+// (одинарные кавычки для строк). Неподдерживаемые выражения дают "".
+func renderDefaultExpr(e Expr) string {
+	switch x := e.(type) {
+	case *StrLit:
+		s := strings.ReplaceAll(x.V, `\`, `\\`)
+		s = strings.ReplaceAll(s, `'`, `\'`)
+		return "'" + s + "'"
+	case *IntLit:
+		return strconv.FormatInt(x.V, 10)
+	case *BoolLit:
+		if x.V {
+			return "true"
+		}
+		return "false"
+	case *NullLit:
+		return "NULL"
+	}
+	return ""
+}
+
+// normalizedType приводит запись типа из парсера к виду для рантайма// (в частности, `integer` -> `int` не требуется; тип сохраняется как в PHP для
 // сообщений об ошибках).
 func normalizedType(t string) string { return t }
 
@@ -2776,7 +2830,8 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 		incName += "_once"
 	}
 	pre = append([]Stmt{record, &StrictStmt{Push: true, Strict: sub.StrictTypes, File: abs,
-		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: incName, CallNode: x}}, pre...)
+		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: incName, CallNode: x,
+		HaltSet: sub.HaltOffset >= 0, HaltOffset: sub.HaltOffset}}, pre...)
 	pre = append(pre, &StrictStmt{Push: false})
 	return val, pre, nil
 }
@@ -4738,7 +4793,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		}
 		// Файл объявления нужен уже при компиляции константных выражений
 		// класса (диагностики указывают на исходник объявления, gh7771).
-		vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, file), cd.Line, cd.Line)
+		vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, file), cd.Line, classEndLine(cd))
 		// Анонимные классы: видимое имя get_class()/::class —
 		// `class@anonymous\0<file>:<line>$<n>` (Zend zend_ast_create_class_decl +
 		// zend_do_link_class/anonymous naming).
@@ -5235,7 +5290,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			if cd.IsFinal || cd.IsEnum {
 				vm.MarkFinal(ci)
 			}
-			vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, base.file), cd.Line, cd.Line)
+			vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, base.file), cd.Line, classEndLine(cd))
 			if strings.HasPrefix(ci.Name(), "\x00anon#") {
 				// PHP 8.3: анонимные классы запрещены к (де)сериализации.
 				ci.SetNotSerializable()
@@ -5536,6 +5591,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						RetType:         normalizedType(m.RetType),
 						SensitiveParams: sensS, SensitiveVariadic: sensVarS,
 						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
+						ParamDefaults: paramDefaultsText(m.Params),
 					})
 				case "method":
 					if m.Readonly {
@@ -5586,7 +5642,8 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						RetType:     normalizedType(m.RetType), Executable: cf,
 						SensitiveParams: sens, SensitiveVariadic: sensVar,
 						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
-						ParamAttrs: paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
+						ParamDefaults: paramDefaultsText(m.Params),
+						ParamAttrs:    paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
 					// __toString неявно возвращает string (проверка как в Zend).
 					if m.MName == "__toString" && fn.RetType == "" {
 						fn.RetType = "string"
@@ -5618,6 +5675,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						fn.DefFile = base.file
 					}
 					fn.DefLine = m.Line
+					fn.DefEnd = m.EndLine
 					// Пустое тело без параметров: вызов можно пропустить,
 					// вернув null (skip-call).
 					if len(m.Body) == 0 && len(m.Params) == 0 && !m.ByRefReturn {
@@ -12335,6 +12393,12 @@ func (c *compiler) stmt(st Stmt) error {
 					callLine = ln
 				}
 			}
+			if s.HaltSet {
+				c.haltStack = append(c.haltStack, c.haltOffset)
+				c.haltOffset = s.HaltOffset
+			} else {
+				c.haltStack = append(c.haltStack, haltNoChange)
+			}
 			c.pushStrict(s.Strict)
 			fileName := s.File
 			if s.EvalRegion {
@@ -12351,6 +12415,12 @@ func (c *compiler) stmt(st Stmt) error {
 				c.inlineStack = append(c.inlineStack, inlineCtx{lines: s.Lines, exprs: s.ExprLines, region: region})
 			}
 		} else {
+			if n := len(c.haltStack); n > 0 {
+				if v := c.haltStack[n-1]; v != haltNoChange {
+					c.haltOffset = v
+				}
+				c.haltStack = c.haltStack[:n-1]
+			}
 			c.popStrict()
 			c.popFile()
 			if n := len(c.inlineStack); n > 0 {
@@ -14363,6 +14433,24 @@ func (c *compiler) dynCallByNameRef(name string, args []Expr, nbi *namedByRefInf
 		}
 		return c.emitCall("__php_call_named", []uint8{nameReg, arr}), nil
 	}
+	// Распаковка аргументов `f(...$args)` для функции, неизвестной на этапе
+	// компиляции: собираем массив аргументов (buildArgArray разворачивает
+	// `...`) и диспетчеризуем по имени в рантайме (argOrderError уже покрыт
+	// веткой именованных аргументов выше).
+	if hasArgSpread(args) {
+		if msg := argOrderError(args); msg != "" {
+			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
+		}
+		nameReg, err := c.expr(&StrLit{V: name})
+		if err != nil {
+			return 0, err
+		}
+		arr, err := c.buildArgArray(args, true, nbi)
+		if err != nil {
+			return 0, err
+		}
+		return c.emitCall("__php_call_named", []uint8{nameReg, arr}), nil
+	}
 	// Целевая функция неизвестна на этапе компиляции (обычно объявлена во
 	// включаемом файле). Передаём переменные-аргументы Ref-ячейками: для
 	// by-ref параметров это обеспечивает writeback, для by-value вызываемая
@@ -16214,11 +16302,17 @@ func (c *compiler) newNamed(name string, args []Expr) (uint8, error) {
 		}
 		return c.emitCall("__php_new_spread", []uint8{idxReg, arr}), nil
 	}
+	// Zend выделяет объект (ZEND_NEW) до вычисления аргументов конструктора,
+	// поэтому хендл #N занимается раньше объектов из аргументов
+	// (constexpr/new_arg_eval, readonly_clone_success2). Фазы разделены:
+	// OpNew с сентинелом newAllocOnly, затем с newCtorOnly.
+	d := c.alloc()
+	c.emitCallLineHere()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpNew, A: d, C: int32(idx) | int32(vm.NewAllocOnlySentinel)<<16})
 	argRegs, wbs, err := c.evalArgs(c.methodRefs["__construct"], args, byRefInfo{})
 	if err != nil {
 		return 0, err
 	}
-	d := c.alloc()
 	base := c.alloc()
 	for range argRegs {
 		c.alloc()
@@ -16230,7 +16324,7 @@ func (c *compiler) newNamed(name string, args []Expr) (uint8, error) {
 		}
 	}
 	c.emitCallLineHere()
-	c.chunk.Emit(vm.Instruction{Op: vm.OpNew, A: d, B: base, C: int32(idx) | int32(len(argRegs)+1)<<16})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpNew, A: d, B: base, C: int32(len(argRegs)) | int32(vm.NewCtorOnlySentinel)<<16})
 	c.restoreStmtLine()
 	c.tmp = base + uint8(len(argRegs))
 	for _, wb := range wbs {
@@ -16248,6 +16342,17 @@ func (c *compiler) anonNew(x *NewAnonClassExpr) (uint8, error) {
 	name, ok := c.anonNames[x]
 	if !ok {
 		return 0, fmt.Errorf("компилятор: анонимный класс не зарегистрирован")
+	}
+	// Родитель/интерфейсы анонимного класса, неизвестные на этапе компиляции,
+	// разрешаются в точке выполнения `new class` (Zend DECLARE_CLASS_DELAYED):
+	// дескриптор скрыт до OpDeclareClass (anon/011: `new class extends AnonBase`
+	// по class_alias, объявленному непосредственно перед выражением).
+	if x.Decl != nil {
+		if idx, ok := c.declIdx[x.Decl]; ok {
+			c.curLine = x.Decl.Line
+			c.chunk.SetLine(x.Decl.Line)
+			c.chunk.Emit(vm.Instruction{Op: vm.OpDeclareClass, C: int32(idx)})
+		}
 	}
 	// Фатальные ошибки линковки анонимного класса (напр. #[\Override] без
 	// предка) PHP поднимает в точке выполнения выражения `new class`.
@@ -19651,21 +19756,41 @@ func (c *compiler) mainStaticStmt(s *StaticVarStmt) error {
 			return nil
 		}
 		c.mainStaticSeen[n] = true
+		keyc := int32(c.chunk.AddConst(vm.StrConst(key)))
+		// Метка «объявление уже инициализировано» хранится в отдельной
+		// скрытой ячейке глобалов (ключ без ведущего `$`, поэтому он не
+		// попадает в $GLOBALS/GlobalsSnapshot). Проверять наличие самой
+		// переменной нельзя: к моменту `static $e = ...` одноимённая
+		// глобальная могла уже существовать (constexpr/new: `$e` из
+		// catch-блока), а Zend в этом случае всё равно инициализирует
+		// статическую переменную заново.
+		initKey := "\x00static\x00" + n
+		initc := int32(c.chunk.AddConst(vm.StrConst(initKey)))
 		iss := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss, C: initc})
 		jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss})
+		// Инициализатор может рекурсивно выполнить это же объявление и уже
+		// заполнить ячейку — тогда повторно не пишем.
 		if def != nil {
 			r, err := c.expr(def)
 			if err != nil {
 				return err
 			}
-			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: r, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+			iss2 := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss2, C: initc})
+			js := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss2})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: r, C: keyc})
+			c.setJump(js, c.chunk.Len())
 		} else {
 			nn := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: nn})
-			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: nn, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: nn, C: keyc})
 		}
-		c.setJump(jf, c.chunk.Len())
+		one := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpTrue, A: one})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: one, C: initc})
+		end := c.chunk.Len()
+		c.setJump(jf, end)
 	}
 	return nil
 }

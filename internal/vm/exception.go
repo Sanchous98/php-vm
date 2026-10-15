@@ -618,7 +618,14 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 			}
 			if vm.pendingDestroyErr != nil {
 				if nth, ok := asThrowable(vm.pendingDestroyErr); ok {
+					// Ошибка деструктора во время раскрутки заменяет текущее
+					// исключение и сцепляется с ним через previous, как в
+					// sweep-ветке выше (gh14387: деструктор значения yield from).
+					if cur, ok2 := asThrowable(err); ok2 && cur != nth {
+						vm.chainPrevious(nth, cur)
+					}
 					err = nth
+					vm.inFlightTh = nth
 				}
 				vm.pendingDestroyErr = nil
 			}
@@ -734,7 +741,18 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 // цепочке previous у $old, связь не создаётся — иначе цепочка зациклилась бы
 // (try_finally_recursive_previous: повторный throw того же $e из finally).
 func (vm *VM) chainPrevious(newTh, oldTh *Throwable) {
-	if newTh == nil || oldTh == nil || newTh == oldTh || newTh.Value.typ != ObjectType {
+	if newTh == nil || oldTh == nil || newTh == oldTh {
+		return
+	}
+	// Объект нового исключения мог ещё не материализоваться (ошибка типа
+	// возврата поднимается как Throwable без объекта) — выдаём его здесь,
+	// как это делает выброс (Zend присваивает хендл уже при throw).
+	if newTh.Value.typ != ObjectType {
+		if ci := vm.throwableClass(newTh); ci != nil {
+			newTh.Value = vm.throwableObject(newTh, ci)
+		}
+	}
+	if newTh.Value.typ != ObjectType {
 		return
 	}
 	no := vm.objectOf(newTh.Value)

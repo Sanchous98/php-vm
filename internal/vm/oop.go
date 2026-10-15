@@ -1088,6 +1088,41 @@ func (vm *VM) releasedObjWriteErr(recv Slot, ci ClassInfo, pname string, v Slot)
 	return NewThrowable("Error", "Object was released while assigning to property "+classDisplayName(ci)+"::$"+pname)
 }
 
+// propCoercionMayReleaseReceiver сообщает, что приведение значения к типу
+// свойства может выполнить пользовательский код (__toString объекта), который
+// способен уничтожить объект-приёмник: только в этом случае Zend проверяет
+// «Object was released while assigning» (gh10169). Для union-типов, в которые
+// объект входит сам по себе, конвертации нет (union_types/multiple_classes).
+func propCoercionMayReleaseReceiver(pd *propDecl, v Slot) bool {
+	if pd == nil || !pd.hasType || deref(v).typ != ObjectType {
+		return false
+	}
+	return !typeAllowsObjectVal(pd.typ)
+}
+
+// typeAllowsObjectVal сообщает, допускает ли объявленный тип значение-объект
+// без конвертации (имена классов, object/iterable/mixed/self и т.п.).
+func typeAllowsObjectVal(t string) bool {
+	if t == "" {
+		return true
+	}
+	low := strings.ToLower(t)
+	for _, kw := range []string{"mixed", "object", "iterable", "self", "static", "parent"} {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	for _, atom := range strings.Split(low, "|") {
+		a := strings.TrimSpace(strings.TrimPrefix(atom, "?"))
+		switch a {
+		case "int", "float", "string", "bool", "array", "callable", "false", "true", "null", "void", "never":
+		default:
+			return true // имя класса/интерфейса
+		}
+	}
+	return false
+}
+
 func (vm *VM) coercePropValue(pd *propDecl, decl ClassInfo, name string, v Slot, strict bool, refAdopt bool) (Slot, error) {
 	if pd == nil || !pd.hasType || strings.EqualFold(pd.typ, "mixed") {
 		return v, nil
@@ -1686,7 +1721,19 @@ func (vm *VM) propRefCellMode(recv Slot, pname string, argMode bool) (Slot, erro
 		}
 		key := vm.propKey(pd, decl, pname)
 		if pd.readonly {
-			if _, found := vm.getProp(recv, key); found {
+			// Клинированное свойство: одноразовая переинициализация (реальная
+			// ячейка), readonly_clone_success3/error5.
+			if ob := vm.objectOf(recv); ob != nil && ob.ConsumeReadonlyReinit(key) {
+				return vm.propRefCell(recv, key)
+			}
+			if v, found := vm.getProp(recv, key); found {
+				// Zend (8.3) разрешает ссылку на readonly-свойство с объектом:
+				// ячейка отсоединена (запись в неё само свойство не меняет,
+				// объект остаётся общим — readonly_containing_object). Для
+				// не-объектного значения — ошибка.
+				if s := valueSlot(v); deref(s).typ == ObjectType || deref(s).typ == ClosureType {
+					return MakeRef(&Ref{v: deref(s)}), nil
+				}
 				return Slot{}, NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+pname)
 			}
 			return Slot{}, NewThrowable("Error", "Cannot indirectly modify readonly property "+decl.Name()+"::$"+pname)
@@ -1925,6 +1972,15 @@ func (vm *VM) IncDecTypedProp(o Slot, name string, cur Slot, dec bool) (Slot, er
 			fmt.Sprintf("Attempt to %s/decrement property %q on %s", dir, name, valueTypeName(vm, deref(o))))
 	}
 	pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name)
+	// Zend переводит ++/-- свойства в write-контекст (FETCH_OBJ_W): для
+	// readonly-свойства ошибка поднимается ДО вычисления значения
+	// (readonly_containing_object: `++$obj->prop` с объектом-значением даёт
+	// «Cannot modify readonly property», а не «Cannot increment stdClass»).
+	if declared && pd != nil && pd.readonly {
+		if ob := vm.objectOf(o); ob == nil || !ob.ReadonlyReinitPending(vm.propKey(pd, decl, name)) {
+			return Slot{}, NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+name)
+		}
+	}
 	// PRE_INC_OBJ перечитывает ячейку свойства: обработчик ошибки, вызванный
 	// warning'ом при чтении неопределённого свойства, мог записать в это же
 	// свойство (in-de-crement/unset_property_converted_to_obj_in_error_handler).

@@ -974,8 +974,15 @@ func (ra *ssaGraph) lower(i, bi int) (*ssaOp, bool) {
 		aRaw: in.A, bRaw: in.B, cRaw: in.C, nameVal: -1}
 	read := func(r uint8) int { return ra.readVar(r, bi) }
 
+	// Фаза вызова конструктора разделённого `new` только ЧИТАЕТ объект из A
+	// (значение остаётся жить в том же регистре): роль A — use.
+	aRole := opArole[in.Op]
+	if in.Op == OpNew && int(in.C>>16) == NewCtorOnlySentinel {
+		aRole = rUse
+	}
+
 	// 1. reads (all uses, including call windows, before any def is applied)
-	switch opArole[in.Op] {
+	switch aRole {
 	case rUse, rUseDef:
 		vo.a = read(in.A)
 	}
@@ -999,7 +1006,7 @@ func (ra *ssaGraph) lower(i, bi int) (*ssaOp, bool) {
 		for k := 0; k < width; k++ {
 			vo.win = append(vo.win, read(uint8(base+k)))
 		}
-	} else if in.Op == OpNew {
+	} else if in.Op == OpNew && int(in.C>>16) == 0 {
 		// VM пишет результат в A ДО чтения ctor-аргументов из B; фиксируем B
 		// как use, чтобы результат не совпал с ним.
 		vo.b = read(in.B)
@@ -1011,7 +1018,7 @@ func (ra *ssaGraph) lower(i, bi int) (*ssaOp, bool) {
 
 	// 2. defs (register the new value as the current definition)
 	setCur := func(r uint8, v int) { ra.cur[bi][r] = v }
-	switch opArole[in.Op] {
+	switch aRole {
 	case rDef:
 		vo.da = ra.newValue(bi, i, in.A)
 		setCur(in.A, vo.da)
@@ -1063,6 +1070,14 @@ func (ra *ssaGraph) window(in Instruction) (base, width int, slot byte) {
 		return int(in.B), width, 'B'
 	case OpNew:
 		raw := int(in.C >> 16)
+		if raw == NewAllocOnlySentinel {
+			// Фаза выделения: аргументов нет (окно пусто).
+			return int(in.B), 0, 'B'
+		}
+		if raw == NewCtorOnlySentinel {
+			// Фаза вызова конструктора: argc в младших 16 битах.
+			return int(in.B), int(in.C) & 0xFFFF, 'B'
+		}
 		if raw == 0 {
 			return int(in.B), 0, 'B' // легаси: арность берётся у конструктора
 		}

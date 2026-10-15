@@ -512,6 +512,11 @@ type VM struct {
 	// исключением, отложенным во внешних finally (bug71604), и вызывающий
 	// (FINALLY_END/closeGenerator) несёт наружу именно его.
 	dispTh *Throwable
+	// abandonedExc — исключение, отброшенное return'ом из finally: в Zend оно
+	// остаётся активным (EG(exception)), и ошибка, поднятая после него
+	// (например, несоответствие типа возврата), сцепляется с ним через
+	// previous (return_types/029).
+	abandonedExc *Throwable
 	// staticRootsCache/staticRootsLen — кэш классов со статиками для сборщика.
 	staticRootsCache []*runtimeClass
 	staticRootsLen   int
@@ -7015,6 +7020,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			}
 		}
 	}
+	err = vm.chainAbandonedFinally(err)
 	vm.ctx.this, vm.ctx.self, vm.ctx.called = savedThis, savedSelf, savedCalled
 	vm.suppress = savedSuppress
 	vm.popCall()
@@ -7022,6 +7028,32 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 		vm.restoreFuncEnv(env)
 	}
 	return res, err
+}
+
+// takePendingDestroyErr забирает ошибку, отложенную уничтожением объекта
+// (деструктор бросил исключение вне активной раскрутки).
+func (vm *VM) takePendingDestroyErr() error {
+	err := vm.pendingDestroyErr
+	vm.pendingDestroyErr = nil
+	return err
+}
+
+// chainAbandonedFinally сцепляет ошибку err с исключением, отброшенным
+// return'ом из finally (Zend оставляет его активным в EG(exception), поэтому
+// поднятая следом ошибка несёт его в previous — return_types/029). Маркер
+// одноразовый: гасится независимо от наличия ошибки.
+func (vm *VM) chainAbandonedFinally(err error) error {
+	pend := vm.abandonedExc
+	vm.abandonedExc = nil
+	if pend == nil || err == nil {
+		return err
+	}
+	th, ok := asThrowable(err)
+	if !ok {
+		return err
+	}
+	vm.chainPrevious(th, pend)
+	return th
 }
 
 // CheckDefaultArg проверяет runtime-вычисленный дефолт параметра (значение
@@ -8444,6 +8476,7 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 			}
 		}
 	}
+	err = vm.chainAbandonedFinally(err)
 	if pushed {
 		vm.popCall()
 	}

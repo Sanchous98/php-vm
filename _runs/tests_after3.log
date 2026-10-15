@@ -1,0 +1,23 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:278:   basic                                           74/   75 (98.7%)
+    phpt_dir_test.go:278:   classes                                        273/  277 (98.6%)
+    phpt_dir_test.go:278:   func                                            12/   12 (100.0%)
+    phpt_dir_test.go:278:   lang                                           247/  250 (98.8%)
+    phpt_dir_test.go:278:   output                                          58/   60 (96.7%)
+    phpt_dir_test.go:278:   run-test                                         7/    7 (100.0%)
+    phpt_dir_test.go:278:   security                                        43/   43 (100.0%)
+    phpt_dir_test.go:278:   strings                                          9/    9 (100.0%)
+    phpt_dir_test.go:281: ИТОГО: 723 / 733 (98.6%), пропущено 106
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/basic/029.phpt: mismatch got="array(1) {\n  [\"pics\"]=>\n  array(6) {\n    [\"name\"]=>\n    string(9) \"file1.txt\"\n    [\"full_path\"]=>\n    string(9) \"file1.t..." want="array(1) {\n  [\"pics\"]=>\n  array(6) {\n    [\"name\"]=>\n    string(9) \"file1.txt\"\n    [\"full_path\"]=>\n    string(9) \"file1.t..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/classes/abstract_redeclare.phpt: mismatch got="Done\n" want="Fatal error: Class fail contains 1 abstract method and must therefore be declared abstract or implement the remaining me..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/classes/array_access_001.phpt: mismatch got="array(4) {\n  [0]=>\n  string(3) \"1st\"\n  [1]=>\n  int(1)\n  [2]=>\n  string(3) \"3rd\"\n  [\"4th\"]=>\n  int(4)\n}\n===EMPTY===\nObjec..." want="array(4) {\n  [0]=>\n  string(3) \"1st\"\n  [1]=>\n  int(1)\n  [2]=>\n  string(3) \"3rd\"\n  [\"4th\"]=>\n  int(4)\n}\n===EMPTY===\nObjec..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/classes/array_access_002.phpt: mismatch got="array(4) {\n  [0]=>\n  string(3) \"1st\"\n  [1]=>\n  int(1)\n  [2]=>\n  string(3) \"3rd\"\n  [\"4th\"]=>\n  int(4)\n}\n===EMPTY===\nObjec..." want="array(4) {\n  [0]=>\n  string(3) \"1st\"\n  [1]=>\n  int(1)\n  [2]=>\n  string(3) \"3rd\"\n  [\"4th\"]=>\n  int(4)\n}\n===EMPTY===\nObjec..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/classes/constants_basic_006.phpt: mismatch got="\nFatal error: Uncaught Error: Undefined constant \"K\" in /home/dev/rtsub_corp/tests/classes/constants_basic_006.php:5\nSta..." want="string(5) \"hello\"\narray(2) {\n  [\"nasty\"]=>\n  string(4) \"test\"\n  [\"hello\"]=>\n  string(5) \"nasty\"\n}\nstring(5) \"hello\"\narra..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/lang/bug35176.phpt: mismatch got="<br />\n<b>Warning</b>:  require_once(nonexistent.php) [<a href='/function.require-once.html'>function.require-once.html<..." want="<br />\n<b>Warning</b>:  require_once(nonexistent.php) [<a href='/function.require-once.html'>function.require-once.html<..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/lang/foreachLoop.016.phpt: mismatch got="\n$a\narray(1) {\n  [0]=>\n  string(8) \"original\"\n}\n\n${'a'}\narray(1) {\n  [0]=>\n  string(8) \"original\"\n}\n\n$$a\narray(1) {\n  [0..." want="$a\narray(1) {\n  [0]=>\n  string(8) \"original\"\n}\n\n${'a'}\narray(1) {\n  [0]=>\n  string(8) \"original\"\n}\n\n$$a\narray(1) {\n  [0]..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/lang/passByReference_005.phpt: mismatch got="\n ---- Pass by ref / pass by val: functions ----\n\nWarning: Undefined variable $u1 in /home/dev/rtsub_corp/tests/lang/pas..." want="---- Pass by ref / pass by val: functions ----\n\nWarning: Undefined variable $u1 in %s on line %d\n\nWarning: Undefined var..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/output/bug74725.phpt: mismatch got="\n<br />\n<b>Fatal error</b>:  Uncaught Exception: \xf2\xe5\xf1\xf2 in /home/dev/rtsub_corp/tests/output/bug74725.php:5\nStack trace:\n#..." want="<br />\n<b>Fatal error</b>:  Uncaught Exception: \xf2\xe5\xf1\xf2 in %s:5\nStack trace:\n#0 {main}\n  thrown in <b>%s</b> on line <b>5</..."
+    phpt_dir_test.go:284:   FAIL /home/dev/rtsub_corp/tests/output/ob_start_basic_003.phpt: mismatch got="I have stolen your output  thrown in /home/dev/rtsub_corp/tests/output/ob_start_basic_003.php on line 8\n" want="I have stolen your output"
+--- PASS: TestPHPTree (6.71s)
+PASS
+ok  	phpvm/internal/php	6.718s

@@ -33,7 +33,16 @@ func (vm *VM) closureMethodCall(cl *Closure, mname string, args []Slot) (Slot, b
 		res, err := vm.closureBind(cl, newThis, scope, len(args) > 1)
 		return res, true, err
 	case "__invoke":
+		// Вызов замыкания через Closure::__invoke — внутренняя диспетчеризация:
+		// кадр замыкания не имеет места вызова в userland-коде (в отличие от
+		// прямого `$f(...)`), поэтому диагностики типов без ", called in".
+		savedMark := vm.markNextFrameInternal
+		savedAlias := vm.byRefAlias
+		vm.markNextFrameInternal = true
+		vm.byRefAlias = "Closure::__invoke"
 		res, err := vm.invokeClosure(cl, args)
+		vm.byRefAlias = savedAlias
+		vm.markNextFrameInternal = savedMark
 		return res, true, err
 	case "call":
 		res, err := vm.closureCall(cl, args)
@@ -265,6 +274,16 @@ func (vm *VM) opStaticCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		}
 	}
 	if m == nil {
+		if mname == "__construct" {
+			// Zend: статический вызов __construct без найденного
+			// конструктора — Error "Cannot call constructor" (магия
+			// __callStatic его не подхватывает).
+			cerr := NewThrowable("Error", "Cannot call constructor")
+			if !vm.handleThrow(chunk, cerr) {
+				return execResult{err: cerr}
+			}
+			return execResult{next: true}
+		}
 		if cls.hasAbstract(mname) {
 			aerr := NewThrowable("Error", "Cannot call abstract method "+cls.Name()+"::"+mname+"()")
 			if !vm.handleThrow(chunk, aerr) {
@@ -412,6 +431,14 @@ func (vm *VM) opStaticCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if cls == nil {
 		return vm.throwScopeClass(chunk, in.B)
 	}
+	if n := deref(regs[in.C&0xFF]); n.typ != StringType {
+		// Zend: динамическое имя статического метода обязано быть строкой.
+		err := NewThrowable("Error", "Method name must be a string")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	mname := deref(regs[in.C&0xFF]).ToString()
 	if cls.IsTrait() {
 		vm.Deprecated("Calling static trait method " + cls.Name() + "::" + mname + " is deprecated, it should only be called on a class using the trait")
@@ -431,6 +458,13 @@ func (vm *VM) opStaticCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 		}
 	}
 	if m == nil {
+		if strings.EqualFold(mname, "__construct") {
+			cerr := NewThrowable("Error", "Cannot call constructor")
+			if !vm.handleThrow(chunk, cerr) {
+				return execResult{err: cerr}
+			}
+			return execResult{next: true}
+		}
 		if cls.hasAbstract(mname) {
 			aerr := NewThrowable("Error", "Cannot call abstract method "+cls.Name()+"::"+mname+"()")
 			if !vm.handleThrow(chunk, aerr) {
@@ -645,7 +679,7 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	if ci != nil {
 		{
 			old := regs[in.A]
-			wv := MakeString(ci.Name())
+			wv := MakeString(vm.ClassVisibleName(ci))
 			regs[in.A] = wv
 			if trackedType(old.typ) || trackedType(wv.typ) {
 				vm.wRegSlow(int(in.A), old)
@@ -695,6 +729,22 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 }
 
 func (vm *VM) opClone(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	if c := deref(regs[in.B]); c.typ == ClosureType {
+		// Клонирование замыкания: Zend создаёт копию объекта Closure
+		// (bindings/scope сохраняются).
+		if cl := c.asClosure(); cl != nil {
+			cp := *cl
+			{
+				old := regs[in.A]
+				wv := MakeClosure(&cp)
+				regs[in.A] = wv
+				if trackedType(old.typ) || trackedType(wv.typ) {
+					vm.wRegSlow(int(in.A), old)
+				}
+			}
+			return execResult{}
+		}
+	}
 	ci := vm.classInfo(regs[in.B])
 	if ci == nil {
 		err := NewThrowable("Error", "__clone method called on non-object")

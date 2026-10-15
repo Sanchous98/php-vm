@@ -172,6 +172,14 @@ func registerExceptionMembers(ci ClassInfo) {
 				} else {
 					o.SetProp("severity", MakeInt(1)) // E_ERROR
 				}
+				// ErrorException(): previous — ШЕСТОЙ аргумент (после
+				// severity/filename/line); базовый конструктор по ошибке
+				// трактует третий как previous — перезаписываем корректно.
+				if len(args) > 5 {
+					o.SetProp("previous", args[5])
+				} else {
+					o.SetProp("previous", MakeNull())
+				}
 				if len(args) > 3 {
 					a := deref(args[3])
 					if a.typ != NullType {

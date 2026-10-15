@@ -824,6 +824,10 @@ func (vm *VM) indexSafe(regs []Slot, chunk *Chunk, in Instruction, warnIllegal b
 			}
 		}
 	case ArrayType:
+		if ks := deref(regs[in.C]); ks.typ == FloatType {
+			// IS-режим: неявное float→int для ключа — Deprecated (как KeyOfWarn).
+			vm.floatToIntWarn(ks)
+		}
 		if ks := deref(regs[in.C]); ks.typ == IntType {
 			v, found := src.AsArray().GetInt(ks.Int())
 			if !found {
@@ -878,6 +882,15 @@ func (vm *VM) indexSafe(regs []Slot, chunk *Chunk, in Instruction, warnIllegal b
 			}
 		}
 	case StringType:
+		// IS-режим: приведение float-ключа к int диагностируется (Deprecated),
+		// а «String offset cast occurred» — нет (Zend FETCH_DIM_IS). Для
+		// empty()/isset() вызывающий уже напечатал Deprecated в OpIndexIsset,
+		// поэтому здесь предупреждаем только в coalesce-режиме (warnIllegal).
+		if warnIllegal {
+			if k := deref(regs[in.C]); k.typ == FloatType {
+				vm.floatToIntWarn(k)
+			}
+		}
 		i, ok, illegal := stringOffsetIndex(regs[in.C])
 		if !ok {
 			{
@@ -1011,6 +1024,29 @@ func (vm *VM) opIndexAppendRaw(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 			}
 			return execResult{next: true}
 		}
+	}
+	// Для массивов это RAW-выборка «будущего» элемента append-базы: элемент
+	// ещё не создан, поэтому отсутствие ключа — не диагностика (Zend
+	// FETCH_DIM_WRITE). Иначе (ArrayAccess-объект, строка) — обычный путь.
+	if src := deref(regs[in.B]); src.typ == ArrayType {
+		k, ok := vm.KeyOfWarn(regs[in.C])
+		if !ok {
+			err := vm.offsetTypeErr("access", regs[in.C])
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		v, _ := src.AsArray().Get(k)
+		{
+			old := regs[in.A]
+			wv := deref(v)
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
 	}
 	return vm.opIndexRaw(regs, consts, chunk, in)
 }

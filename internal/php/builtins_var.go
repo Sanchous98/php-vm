@@ -540,7 +540,15 @@ func defineFn(ctx *vm.Context) vm.Value {
 		ctx.VM().Warn("Constant " + name + " already defined")
 		return vm.Bool(false)
 	}
-	ctx.VMInstance().DefineConst(name, val)
+	dv, derr := vm.DeepDerefSlot(val)
+	if derr != nil {
+		ctx.Throw(vm.NewThrowable("ValueError", derr.Error()))
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
+		return vm.Bool(false)
+	}
+	ctx.VMInstance().DefineConst(name, dv)
 	if !userConstSet[name] {
 		userConstSet[name] = true
 		userConstNames = append(userConstNames, name)

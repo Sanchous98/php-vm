@@ -212,6 +212,10 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 	var fnScope ClassInfo
 	if cl.Fn != nil {
 		fnScope = cl.Fn.Scope
+	} else if cl.Fake && cl.Scope != nil {
+		// Фейковое замыкание из __call/__callStatic (Fn == nil): «функция» —
+		// метод класса, поэтому scope класса-источника и есть fnScope.
+		fnScope = cl.Scope
 	}
 	if newThis.typ == ObjectType {
 		if cl.Fn != nil && cl.Fn.IsStatic {
@@ -219,8 +223,12 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 			return MakeNull(), nil
 		}
 		if cl.Fake && fnScope != nil && !vm.slotInstanceOfClass(newThis, fnScope) {
+			mname := cl.MagicName
+			if cl.Fn != nil {
+				mname = cl.Fn.Name
+			}
 			vm.Warning(fmt.Sprintf("Cannot bind method %s::%s() to object of class %s",
-				ClassDisplayName(fnScope.Name()), cl.Fn.Name, ClassDisplayName(vm.classInfo(newThis).Name())))
+				ClassDisplayName(fnScope.Name()), mname, ClassDisplayName(vm.classInfo(newThis).Name())))
 			return MakeNull(), nil
 		}
 	} else {
@@ -1265,7 +1273,11 @@ func (vm *VM) CallCallableNamed(ctx *Context, c Slot, arr *Array) (Slot, error) 
 				if err != nil {
 					return Slot{}, err
 				}
-				return vm.invokeClosure(cl, args)
+				savedAlias := vm.byRefAlias
+				vm.byRefAlias = "Closure::__invoke"
+				res, err := vm.invokeClosure(cl, args)
+				vm.byRefAlias = savedAlias
+				return res, err
 			case "call":
 				newThis, rest, ok := splitFirstArg(arr)
 				if !ok {
@@ -1773,7 +1785,11 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot, strict bool) (Slot, error) 
 			return Slot{}, NewThrowable("Error", "Value is not callable")
 		}
 		if strings.EqualFold(mname, "__invoke") {
-			return vm.invokeClosure(cl, args)
+			savedAlias := vm.byRefAlias
+			vm.byRefAlias = "Closure::__invoke"
+			res, err := vm.invokeClosure(cl, args)
+			vm.byRefAlias = savedAlias
+			return res, err
 		}
 		return Slot{}, NewThrowable("Error", "Call to undefined method Closure::"+mname+"()")
 	}
@@ -1799,6 +1815,14 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot, strict bool) (Slot, error) 
 			}
 		}
 		if m := methodOrCtor(ci, mname); m != nil {
+			if _, decl, vis := ci.methodInfo(mname); decl != nil && vis != Public &&
+				!vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
+				// Недоступный метод: Zend зовёт __call, иначе Error доступа.
+				if res, ok, err := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArray(args)}); ok {
+					return res, err
+				}
+				return Slot{}, vm.accessError(decl, mname, vis)
+			}
 			return vm.invokeMethod(m, recv, tci, args)
 		}
 		if res, ok, err := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArray(args)}); ok {
@@ -1876,6 +1900,9 @@ func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot, stric
 	}
 	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
 		return res, err
+	}
+	if strings.EqualFold(mname, "__construct") {
+		return Slot{}, NewThrowable("Error", "Cannot call constructor")
 	}
 	return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined method %s::%s()", ci.Name(), mname))
 }
@@ -2038,8 +2065,14 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 						return false, nm
 					}
 				}
-				if !vm.callableMethodVisible(ci, meth, vm.ctx.self) {
-					return false, nm
+				if vis, ok := ci.MethodVisibility(meth); ok && vis != Public {
+					decl := ci
+					if _, d, dvis := ci.methodInfo(meth); d != nil && dvis != Public {
+						decl, vis = d, dvis
+					}
+					if !vm.methodAccessibleFromProto(ci, decl, meth, vis, vm.ctx.self) {
+						return false, nm
+					}
 				}
 				deprecate()
 				return true, nm

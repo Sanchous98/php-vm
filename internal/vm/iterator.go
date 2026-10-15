@@ -51,7 +51,11 @@ func newGeneratorClass(iterator ClassInfo) *runtimeClass {
 }
 
 // isObjectSlot сообщает, что слот (после разыменования) — объект.
-func isObjectSlot(s Slot) bool { return deref(s).typ == ObjectType }
+func isObjectSlot(s Slot) bool {
+	t := deref(s).typ
+	// Closure — объект класса Closure (is_object($f) === true).
+	return t == ObjectType || t == ClosureType
+}
 
 // --- Состояние итерации ---
 

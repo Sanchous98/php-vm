@@ -296,7 +296,11 @@ func (vm *VM) opGlobalIndexSet(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 	if name == "$GLOBALS" {
 		k, ok := vm.KeyOfWarn(regs[in.A])
 		if !ok {
-			return execResult{err: errIllegalOffset}
+			err := vm.offsetTypeErr("access", regs[in.A])
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
 		}
 		if vm.globals == nil {
 			vm.globals = map[string]Slot{}
@@ -362,7 +366,11 @@ func (vm *VM) opGlobalIndexSet(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 	}
 	k, ok := vm.KeyOfWarn(regs[in.A])
 	if !ok {
-		return execResult{err: errIllegalOffset}
+		err := vm.offsetTypeErr("access", regs[in.A])
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
 	}
 	a := v.AsArray().Unshare()
 	// Запись в элемент, который уже является ссылкой, идёт сквозь ячейку

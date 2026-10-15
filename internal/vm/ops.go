@@ -408,6 +408,12 @@ func looseEqual(vm *VM, a, b Slot) bool {
 		}
 		return a.ToInt() == b.ToInt()
 	}
+	if a.typ == ClosureType || b.typ == ClosureType {
+		if a.typ != ClosureType || b.typ != ClosureType {
+			return false
+		}
+		return closuresEqual(a, b)
+	}
 	if a.typ == ObjectType || b.typ == ObjectType {
 		if a.typ == ObjectType && b.typ == ObjectType {
 			return compareObjects(vm, a, b) == 0
@@ -436,6 +442,22 @@ func looseEqual(vm *VM, a, b Slot) bool {
 		return a.StringVal() == b.ToString()
 	}
 	return a.ToString() == b.ToString()
+}
+
+// closuresEqual — нестрогое равенство замыканий (Zend zend_closure_compare):
+// совпадают функция, привязка $this, scope/called, магическое имя.
+func closuresEqual(a, b Slot) bool {
+	ca, cb := a.asClosure(), b.asClosure()
+	if ca == nil || cb == nil {
+		return a.ptr == b.ptr
+	}
+	if ca.Fn != cb.Fn || ca.Scope != cb.Scope || ca.Called != cb.Called {
+		return false
+	}
+	if ca.BoundThis.typ != cb.BoundThis.typ || ca.BoundThis.ptr != cb.BoundThis.ptr {
+		return false
+	}
+	return ca.MagicName == cb.MagicName
 }
 
 // arraysEqual — нестрогое равенство массивов (==): одинаковый набор пар

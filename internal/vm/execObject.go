@@ -384,12 +384,23 @@ func (vm *VM) opPropGetIncDecDyn(regs []Slot, consts []Slot, chunk *Chunk, in In
 	return vm.opPropGetDyn(regs, consts, chunk, in)
 }
 
+// propReadNonObjectWarn — диагностика чтения свойства у не-объекта: для
+// объектов Closure это «Undefined property: Closure::$name» (объект без
+// свойств), для остальных — «Attempt to read property ... on <type>».
+func (vm *VM) propReadNonObjectWarn(recv Slot, pname string) {
+	if deref(recv).typ == ClosureType {
+		vm.Warn("Undefined property: Closure::$" + pname)
+		return
+	}
+	vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, operandTypeName(recv)))
+}
+
 func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.B])
 	pname := consts[in.C].StringVal()
 	ci := vm.classInfo(recv)
 	if ci == nil {
-		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
+		vm.propReadNonObjectWarn(recv, pname)
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -541,7 +552,7 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			}
 			return execResult{next: true}
 		}
-		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
+		vm.propReadNonObjectWarn(recv, pname)
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -770,7 +781,15 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		// Чтение-для-записи в не-объект: Zend бросает Error (не Warning).
-		err := NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", pname, valueTypeName(vm, recv)))
+		// Для составного присваивания (OpPropGetRWRead) формулировка — как у
+		// записи («Attempt to assign property»), для промежуточных звеньев
+		// цепочек и dim-базы — «Attempt to modify property».
+		var err *Throwable
+		if in.Op == OpPropGetRWRead {
+			err = vm.propWriteNonObjectErr(recv, pname)
+		} else {
+			err = NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", pname, valueTypeName(vm, recv)))
+		}
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}
@@ -992,6 +1011,35 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 				return execResult{err: derr}
 			}
 			return execResult{next: true}
+		}
+		vm.MaybeDeprecateDynamicProp(ci, vm.objectOf(recv), pname)
+		ob := vm.objectOf(recv)
+		if arrMode {
+			// FETCH_OBJ_W как базы dim-записи: без «Undefined property»;
+			// существующий массив возвращается как есть, отсутствующий
+			// создаётся null (writeback затем запишет мутированное значение).
+			if ob != nil {
+				if cur, exists := ob.props[pname]; exists {
+					cs := valueSlot(cur)
+					old := regs[in.A]
+					regs[in.A] = cs
+					if trackedType(old.typ) || trackedType(cs.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+					shareSlot(cs)
+					return execResult{}
+				}
+				vm.setProp(recv, pname, MakeNull())
+			}
+		} else {
+			// FETCH_OBJ_RW: свойство создаётся (null) сразу, поэтому
+			// последующая запись не повторяет Deprecated.
+			if ob != nil {
+				if _, exists := ob.props[pname]; !exists {
+					vm.setProp(recv, pname, MakeNull())
+				}
+			}
+			vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
 		}
 	}
 	vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
@@ -1329,6 +1377,8 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 		return execResult{next: true}
 	}
+	// PHP 8.2+: создание динамического свойства — Deprecated.
+	vm.MaybeDeprecateDynamicProp(ci, vm.objectOf(o), pname)
 	vm.setProp(o, pname, plain)
 
 	return execResult{}
@@ -1497,6 +1547,8 @@ func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		}
 		return execResult{next: true}
 	}
+	// PHP 8.2+: создание динамического свойства — Deprecated.
+	vm.MaybeDeprecateDynamicProp(ci, vm.objectOf(o), pname)
 	vm.setProp(o, pname, plain)
 
 	return execResult{}
@@ -1519,6 +1571,11 @@ func (vm *VM) propModifyNonObjectErr(recv Slot, name string) *Throwable {
 
 // propWriteNonObjectErr — Error при записи свойства в не-объект.
 func (vm *VM) propWriteNonObjectErr(recv Slot, name string) *Throwable {
+	if deref(recv).typ == ClosureType {
+		// У Closure динамические свойства запрещены (Zend: класс помечен
+		// ZEND_ACC_NO_DYNAMIC_PROPERTIES).
+		return NewThrowable("Error", "Cannot create dynamic property Closure::$"+name)
+	}
 	return NewThrowable("Error", fmt.Sprintf("Attempt to assign property %q on %s", name, valueTypeName(vm, deref(recv))))
 }
 
@@ -1568,10 +1625,20 @@ func (vm *VM) propSetRefCommon(regs []Slot, chunk *Chunk, in Instruction, ci Cla
 		}
 		return execResult{next: true}
 	}
-	if overloaded, byRef := vm.propRefOverloaded(ci, o, pname, true); overloaded && !byRef {
-		// `$obj->prop =& $x` для свойства из __get без ссылки: Zend печатает
-		// Notice и бросает Error (ссылка в overloaded-свойство невозможна).
-		vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+	if overloaded, byRef := vm.propRefOverloaded(ci, o, pname, true); overloaded {
+		// `$obj->prop =& $x` для overloaded-свойства: Zend вызывает __get
+		// (исключение из него пробрасывается), затем для не-ссылочного __get
+		// печатает Notice и всегда бросает Error — ссылка в результат
+		// магического метода невозможна.
+		if _, gerr := vm.magicGetValue(ci, o, pname); gerr != nil {
+			if !vm.handleThrow(chunk, gerr) {
+				return execResult{err: gerr}
+			}
+			return execResult{next: true}
+		}
+		if !byRef {
+			vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		}
 		err := NewThrowable("Error", "Cannot assign by reference to overloaded object")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}

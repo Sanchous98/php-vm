@@ -944,16 +944,7 @@ func (vm *VM) InstanceOfName(obj Slot, name string) bool {
 	if strings.EqualFold(name, "Stringable") && ci.lookupMethod("__toString") != nil {
 		return true
 	}
-	var target ClassInfo
-	for _, c := range vm.classes {
-		if ClassHidden(c) {
-			continue
-		}
-		if strings.EqualFold(c.Name(), name) {
-			target = c
-			break
-		}
-	}
+	target := vm.FindClass(name)
 	if target == nil {
 		return false
 	}
@@ -1693,7 +1684,14 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 		return cell, nil
 	}
 	// Создание нового динамического свойства по ссылке: те же ограничения,
-	// что и у обычной записи (WeakReference и т.п.).
+	// что и у обычной записи (WeakReference и т.п.), плюс Deprecated создания
+	// динамического свойства (PHP 8.2).
+	if err := checkDynamicProp(ci, pname); err != nil {
+		return Slot{}, err
+	}
+	vm.MaybeDeprecateDynamicProp(ci, vm.objectOf(recv), pname)
+	// Повторная проверка после обработчика ошибок: пользовательский
+	// error-handler мог уничтожить/изменить объект (dynamic_prop_deprecation_002).
 	if err := checkDynamicProp(ci, pname); err != nil {
 		return Slot{}, err
 	}

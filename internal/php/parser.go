@@ -2375,6 +2375,17 @@ func promoteConstructor(_ string, params []Param, body []Stmt) []Stmt {
 			continue
 		}
 		prop := strings.TrimPrefix(pr.Name, "$")
+		if pr.ByRef {
+			// `public array &$array` — promoted-свойство связывается с
+			// параметром по ссылке (Zend: ZEND_ASSIGN_REF при промоушене).
+			pre = append(pre, &ExprStmt{X: &AssignExpr{
+				Target: &PropExpr{Recv: &VarExpr{Name: "$this"}, Name: prop},
+				Op:     "=",
+				Value:  &VarExpr{Name: pr.Name},
+				ByRef:  true,
+			}})
+			continue
+		}
 		pre = append(pre, &ExprStmt{X: &AssignExpr{
 			Target: &PropExpr{Recv: &VarExpr{Name: "$this"}, Name: prop},
 			Op:     "=",
@@ -4525,8 +4536,9 @@ func classRefName(x Expr) string {
 		return ""
 	case *ConstExpr:
 		// `Test::NAME::CONST` — имя класса вычисляется из значения константы;
-		// резолвим в рантайме (имя содержит "::").
-		if strings.Contains(v.Name, "::") {
+		// резолвим в рантайме (имя содержит "::"), как и динамический fetch
+		// `Foo::{a()}::{b()}` (ClassExpr/NameExpr — выражение слева).
+		if strings.Contains(v.Name, "::") || v.ClassExpr != nil || v.NameExpr != nil {
 			return ""
 		}
 		return v.Name
@@ -4901,6 +4913,18 @@ func (p *Parser) firstArgLine(args []Expr) int {
 	return 0
 }
 
+// constClassNameScalarLiteral сообщает, что выражение — прямой литерал
+// int/float: Zend отвергает его как имя класса даже в `::class`
+// («Illegal class name»), тогда как прочие константные выражения
+// (bool/null/массив/арифметика) вычисляются с «Cannot use "::class" on T».
+func constClassNameScalarLiteral(e Expr) bool {
+	switch e.(type) {
+	case *IntLit, *FloatLit:
+		return true
+	}
+	return false
+}
+
 // postfixTail разбирает остаток postfix-цепочки для уже разобранного выражения.
 func (p *Parser) postfixTail(x Expr) (Expr, error) {
 	for {
@@ -4954,12 +4978,13 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 		case p.is(TOp, "::"):
 			// x::name(...) / x::CONST / x::$prop / x::${expr} / x::$var(...)
 			// Литеральное/константное не-строковое имя класса слева от `::`
-			// Zend отвергает на этапе компиляции (bug70782, bug77530).
-			// Исключение — динамический доступ `x::{expr}`: там имя класса
-			// проверяет компилятор (в константном выражении диагностика иная:
-			// "Class name must be a valid object or a string").
-			brace := p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "{"
-			if !brace && constClassNameNonString(x) {
+			// Zend отвергает на этапе компиляции (bug70782, bug77530) — кроме
+			// `::class`, где литерал оценивается и даёт «Cannot use "::class"
+			// on <type>» / «(expression)::class ...» (см. classKeyword).
+			p.next()
+			t := p.next()
+			isClassKw := t.Kind != TVar && t.Kind != TOp && strings.EqualFold(t.Val, "class")
+			if constClassNameNonString(x) && !(isClassKw && !constClassNameScalarLiteral(x)) {
 				line := 0
 				if p.exprLines != nil {
 					line = p.exprLines[x]
@@ -4969,8 +4994,6 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 				}
 				return nil, &fatalError{msg: "Illegal class name", line: line}
 			}
-			p.next()
-			t := p.next()
 			clsName := classRefName(x)
 			// Класс задан произвольным выражением (`('A' . '')::$b`, `$a[0]::C`):
 			// сохраняем выражение и резолвим класс в рантайме.

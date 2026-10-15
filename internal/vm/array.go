@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"fmt"
 	"iter"
 	"math"
 	"sort"
@@ -850,6 +851,39 @@ func (a *Array) All() iter.Seq2[ArrayKey, Slot] {
 			}
 		}
 	}
+}
+
+// DeepDerefSlot возвращает значение без ссылок внутри массивов: define()
+// копирует массив в константу, разрывая ссылки (Zend zend_hash_copy с
+// deref; тест Zend/tests/constant_arrays.phpt). Рекурсивные массивы
+// отвергаются (ValueError "Recursion detected").
+func DeepDerefSlot(s Slot) (Slot, error) {
+	return deepDerefSlot(s, nil)
+}
+
+func deepDerefSlot(s Slot, seen map[*Array]bool) (Slot, error) {
+	s = deref(s)
+	if s.typ != ArrayType {
+		return s, nil
+	}
+	src := s.AsArray()
+	if seen != nil && seen[src] {
+		return Slot{}, fmt.Errorf("define(): Argument #2 ($value) cannot be a recursive array")
+	}
+	if seen == nil {
+		seen = map[*Array]bool{}
+	}
+	seen[src] = true
+	defer delete(seen, src)
+	out := newArray()
+	for k, v := range src.All() {
+		dv, err := deepDerefSlot(v, seen)
+		if err != nil {
+			return Slot{}, err
+		}
+		_ = out.Set(k, dv)
+	}
+	return MakeArray(out), nil
 }
 
 // HasStringKeys сообщает, есть ли в массиве строковые ключи.

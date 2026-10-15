@@ -879,7 +879,12 @@ func registerSplArrayMembers(ci *runtimeClass, isIterator bool) {
 			if !ok {
 				return MakeNull(), nil
 			}
-			v, _ := d.arr.Get(k)
+			v, found := d.arr.Get(k)
+			if !found {
+				// PHP 8.3: ArrayObject/ArrayIterator::offsetGet по
+				// отсутствующему ключу печатает Warning как обычный массив.
+				ctx.vm.Warn("Undefined array key " + arrayKeyRepr(k))
+			}
 			return v, nil
 		},
 	}})

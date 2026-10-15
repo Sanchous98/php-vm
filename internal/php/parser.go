@@ -129,6 +129,11 @@ type StrictStmt struct {
 	// CallNode — узел IncludeExpr: строка конструкции берётся из карт строк
 	// файла на этапе компиляции (нужна для кадра require в трейсе).
 	CallNode Expr
+	// HaltSet/HaltOffset — подключаемый файл содержит __halt_compiler():
+	// на время компиляции региона магическая константа
+	// __COMPILER_HALT_OFFSET__ принимает смещение ЭТОГО файла (gh18850).
+	HaltSet    bool
+	HaltOffset int64
 }
 type Param struct {
 	Name             string

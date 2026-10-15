@@ -212,6 +212,10 @@ func parseFatalCompiled(pe *parseError, file string) *Compiled {
 // globalsModifyMsg — диагностика PHP 8.1+ для недопустимой записи в $GLOBALS.
 const globalsModifyMsg = "$GLOBALS can only be modified using the $GLOBALS[$name] = $value syntax"
 
+// haltNoChange — маркер стека haltStack: inline-регион подключаемого файла не
+// менял __COMPILER_HALT_OFFSET__.
+const haltNoChange = int64(-2)
+
 // isAssertFuncName сообщает, что имя — встроенная функция assert().
 func isAssertFuncName(name string) bool {
 	return strings.EqualFold(strings.TrimLeft(name, "\\"), "assert")
@@ -551,7 +555,10 @@ type compiler struct {
 	// haltOffset — значение магической константы __COMPILER_HALT_OFFSET__
 	// текущего файла (-1 — __halt_compiler() не встречался).
 	haltOffset int64
-
+	// haltStack — сохранённые значения haltOffset на входе inline-региона
+	// подключаемого файла со своим __halt_compiler() (haltNoChange — регион
+	// значение не менял).
+	haltStack []int64
 	// usesFuncArg — тело ссылается на func_get_arg()/func_get_args()/
 	// func_num_args(): эти встроенные читают регистры параметров кадра
 	// напрямую, поэтому для функции отключается SSA-распределение регистров
@@ -2757,7 +2764,8 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 		callName += "_once"
 	}
 	pre = append([]Stmt{record, &StrictStmt{Push: true, Strict: sub.StrictTypes, File: abs,
-		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: callName, CallNode: x}}, pre...)
+		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: callName, CallNode: x,
+		HaltSet: sub.HaltOffset >= 0, HaltOffset: sub.HaltOffset}}, pre...)
 	pre = append(pre, &StrictStmt{Push: false})
 	return val, pre, nil
 }
@@ -12301,6 +12309,12 @@ func (c *compiler) stmt(st Stmt) error {
 					callLine = ln
 				}
 			}
+			if s.HaltSet {
+				c.haltStack = append(c.haltStack, c.haltOffset)
+				c.haltOffset = s.HaltOffset
+			} else {
+				c.haltStack = append(c.haltStack, haltNoChange)
+			}
 			c.pushStrict(s.Strict)
 			fileName := s.File
 			if s.EvalRegion {
@@ -12317,6 +12331,12 @@ func (c *compiler) stmt(st Stmt) error {
 				c.inlineStack = append(c.inlineStack, inlineCtx{lines: s.Lines, exprs: s.ExprLines, region: region})
 			}
 		} else {
+			if n := len(c.haltStack); n > 0 {
+				if v := c.haltStack[n-1]; v != haltNoChange {
+					c.haltOffset = v
+				}
+				c.haltStack = c.haltStack[:n-1]
+			}
 			c.popStrict()
 			c.popFile()
 			if n := len(c.inlineStack); n > 0 {

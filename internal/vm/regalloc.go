@@ -1133,7 +1133,7 @@ func windowFallback(in Instruction, env *RegAllocEnv) (base, width int, slot byt
 		if raw > 0 {
 			return int(in.B), raw - 1, 'B'
 		}
-		fi := int(packed & 0xFFFFFF)
+		fi := int(packed & 0x7FFFFF)
 		na := env.FuncNumArgs(fi)
 		if na < 0 {
 			return 0, -1, 0

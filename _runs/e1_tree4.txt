@@ -1,0 +1,125 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:278:   ext                                             13/   41 (31.7%)
+    phpt_dir_test.go:281: ИТОГО: 13 / 41 (31.7%), пропущено 0
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/002.phpt: mismatch
+        line 220:
+          got=""
+          want="array(8) {"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.phpt: mismatch
+        line 16:
+          got="array(4) {"
+          want=""
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.phpt: mismatch
+        line 2:
+          got="bool(true)"
+          want=""
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/array_user_key_compare.phpt: mismatch
+        line 4:
+          got="string(1) \"A\""
+          want="string(1) \"B\""
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.phpt: mismatch
+        line 62:
+          got="object(stdClass)#4 (1) {"
+          want="object(stdClass)#1 (1) {"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/bug25708.phpt: mismatch
+          int(1)
+          int(2)
+          ----a
+        > NULL
+        < int(1)
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/bug28739.phpt: mismatch
+          string(1) "a"
+          string(1) "a"
+        > string(1) "a"
+        < Array
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/compact_this.phpt: mismatch
+          }
+          array(1) {
+            ["this"]=>
+        >   object(class@anonymous)#2 (0) {
+        <   object(class@anonymous)#1 (0) {
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/gh19300_2.phpt: mismatch
+        > bool(true)
+        < array_multisort(): Argument #1 ($array) must be an array or a sort flag
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/rsort_variation11.phpt: mismatch
+        line 61:
+          got="  int(-4)"
+          want="  bool(true)"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/sort_variation11.phpt: mismatch
+        line 9:
+          got="  bool(false)"
+          want="  NULL"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/class_object/get_declared_traits_variation1.phpt: mismatch
+        > Fatal error: Trait "AutoTrait" not found in /home/dev/e1_corp/ext/standard/tests/class_object/get_declared_traits_variation1.php on line 1
+        < *** Testing get_declared_traits() : testing autoloaded traits ***
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/class_object/get_object_vars_variation_005.phpt: mismatch
+        line 1:
+          got="array(0) {"
+          want="array(3) {"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/directory/DirectoryClass_basic_001.phpt: mismatch
+        line 2:
+          got="Class [ <user> class Directory ] {"
+          want="Class [ <internal%s> class Directory ] {"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/directory/DirectoryClass_error_001.phpt: mismatch
+        line 1:
+          got="string(6) \"Havoc!\""
+          want="Cannot modify readonly property Directory::$handle"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/math/atan_variation.phpt: mismatch
+        > float(1.5273454314033656)
+        < float(1.5273454314033659)
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/math/pow.phpt: mismatch
+          bool(true)
+          bool(true)
+          bool(true)
+        > bool(false)
+        < bool(true)
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/math/round_basic.phpt: mismatch
+        line 7:
+          got="...with precision 3.6-> float(123456789)"
+          want=""
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/bug69425.phpt: mismatch
+        line 6:
+          got="    *RECURSION*"
+          want="    int(-1)"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/bug70219.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219.php:9"
+          want="Warning: session_decode(): Failed to decode session object. Session has been destroyed in %s on line %d"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/bug70219_1.phpt: mismatch
+        line 2:
+          got=""
+          want="array(2) {"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.phpt: mismatch
+        line 4:
+          got="array(4) {"
+          want=""
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/bug72663_3.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/e1_corp/ext/standard/tests/serialize/bug72663_3.php:4"
+          want="Warning: session_decode(): Unexpected end of serialized data in %s on line %d"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/typed_property_ref_overwrite2.phpt: mismatch
+          object(Test)#1 (1) {
+            ["prop"]=>
+        >   object(Test)#2 (1) {
+        <   &object(Test)#2 (1) {
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/serialize/typed_property_refs.phpt: mismatch
+          Cannot assign null to property B::$b of type int
+          Cannot assign int to property C::$b of type string
+          Cannot assign string to property C::$a of type int
+        > object(D)#3 (2) {
+        < Reference with value of type int held by property D::$a of type int is not compatible with property D::$b of type float
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/strings/bug55871.phpt: mismatch
+        line 5:
+          got="string(40) \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\""
+          want="array(1) {"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/strings/bug72434.phpt: mismatch
+        line 1:
+          got="array(1) refcount(1){"
+          want="array(1) refcount(3){"
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/strings/bug72663_2.phpt: mismatch
+        line 1:
+          got="Fatal error: Uncaught Error: Call to undefined function session_decode() in /home/dev/e1_corp/ext/standard/tests/strings/bug72663_2.php:6"
+          want="Warning: session_decode(): Unexpected end of serialized data in %s on line %d"
+--- PASS: TestPHPTree (1.20s)
+PASS
+ok  	phpvm/internal/php	1.251s

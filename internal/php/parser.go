@@ -191,6 +191,10 @@ type ClassDecl struct {
 	// на этапе компиляции (может быть определён автозагрузкой в рантайме).
 	MissingParent    string
 	MissingInterface string
+	// MissingTraits — имена трейтов из `use`, неизвестных на этапе
+	// компиляции: автозагрузка и примешивание выполняются при объявлении
+	// класса в рантайме (Zend: DECLARE_CLASS).
+	MissingTraits []string
 	// MissingIfaces — все интерфейсы, неизвестные на этапе компиляции (нужны
 	// для рантайм-объявления класса вне верхнего уровня).
 	MissingIfaces []string
@@ -426,6 +430,9 @@ type CallExpr struct {
 	// ConstStmt — вызов define() из оператора `const NAME = ...;`: значение
 	// вычисляется в контексте константного выражения (zend_ast_evaluate).
 	ConstStmt bool
+	// Discard — вызов-оператор: результат отбрасывается (Zend USED_RET=0).
+	// Влияет на array_splice (освобождение удалённых элементов).
+	Discard bool
 }
 
 // NamedArgExpr — именованный аргумент вызова (PHP 8): `name: value`.

@@ -492,6 +492,86 @@ func (vm *VM) wDropReg(i int) {
 	}
 }
 
+// dropStmtTemps списывает временные регистры текущего кадра (>= tempLo, не
+// именованные переменные) в точке OpSweep: Zend освобождает темпы оператора
+// по его завершении. Содержимое массивов обходится (элементы-объекты теряют
+// ссылку) — точная проверка достижимости в сборщике не даст уничтожить
+// объект, на который ссылаются живые корни.
+func (vm *VM) dropStmtTemps(chunk *Chunk) {
+	f := vm.cur
+	if f == nil || chunk == nil || f.nTracked == 0 || int(chunk.tempLo) >= chunk.numRegs {
+		return
+	}
+	nwords := (chunk.numRegs + 63) / 64
+	if nwords > len(f.tracked) {
+		nwords = len(f.tracked)
+	}
+	lo := int(chunk.tempLo)
+	var seenA map[*Array]bool
+	var seenC map[*Closure]bool
+	for w := 0; w < nwords; w++ {
+		m := f.tracked[w]
+		if m == 0 {
+			continue
+		}
+		keep := chunk.varRegs[w]
+		if w >= lo/64 {
+			if w == lo/64 && lo%64 != 0 {
+				keep |= (uint64(1) << uint(lo%64)) - 1
+			}
+		} else {
+			// Весь регистровый блок ниже tempLo — переменные.
+			continue
+		}
+		m &^= keep
+		if m == 0 {
+			continue
+		}
+		f.tracked[w] &^= m
+		f.nTracked -= int32(bits.OnesCount64(m))
+		for m != 0 {
+			r := w*64 + bits.TrailingZeros64(m)
+			m &= m - 1
+			if r >= len(f.regs) {
+				continue
+			}
+			v := deref(f.regs[r])
+			switch v.typ {
+			case ObjectType:
+				vm.decObject(v.obj())
+			case ResourceType:
+				vm.dropResourceRef(v)
+			case ArrayType:
+				a := v.AsArray()
+				if a == nil || !a.objRefs {
+					continue
+				}
+				if seenA == nil {
+					seenA = map[*Array]bool{}
+				}
+				if seenA[a] {
+					continue
+				}
+				seenA[a] = true
+				vm.decRefs(v, 0)
+			case ClosureType:
+				cl := v.asClosure()
+				if cl == nil || (cl.Captures == nil && cl.BoundThis.typ == 0) {
+					continue
+				}
+				if seenC == nil {
+					seenC = map[*Closure]bool{}
+				}
+				if seenC[cl] {
+					continue
+				}
+				seenC[cl] = true
+				vm.decRefs(v, 0)
+			}
+		}
+	}
+}
+
 // dropTempRegs списывает учтённые регистры кадра, кроме именованных
 // переменных (chunk.varRegs): имитирует освобождение временных операндов при
 // раскрутке непойманного исключения из main (Zend освобождает их до печати
@@ -671,6 +751,27 @@ func (vm *VM) dropFrame(f *Frame) {
 	}
 }
 
+// ArrayRefCountDebug — число zval-владельцев массива от корней VM (для
+// debug_zval_dump: Zend печатает реальный refcount, включая копию аргумента).
+func (vm *VM) ArrayRefCountDebug(a *Array) int {
+	if a == nil {
+		return 1
+	}
+	m := newLifeVisit(vm)
+	m.countTarget = a
+	m.skipFuncArgs = true
+	pc := vm.ip - 1
+	if pc < 0 {
+		pc = 0
+	}
+	vm.markRoots(m, vm.chunk, pc)
+	m.finishWeakMaps()
+	if m.countN < 1 {
+		return 1
+	}
+	return m.countN
+}
+
 // FlushLifetime немедленно выполняет проход сборщика, если есть кандидаты;
 // возвращает ошибку деструктора (Zend поднимает её в текущем операторе).
 func (vm *VM) FlushLifetime() error {
@@ -678,6 +779,98 @@ func (vm *VM) FlushLifetime() error {
 		return nil
 	}
 	return vm.sweepLifetime(false, vm.chunk, vm.ip-1).err
+}
+
+// FreeSpliceRemoved — Zend-семантика array_splice с неиспользуемым
+// результатом (USED_RET=0): удалённые значения освобождаются до конца
+// нативного вызова, поэтому __destruct объектов, потерявших последнюю ссылку,
+// выполняется здесь же — в порядке удалённых элементов. Точная проверка
+// достижимости не даёт уничтожить объект, на который ссылается живой граф
+// (refcount-оценка VM может быть занижена). Первая ошибка деструктора
+// возвращается; последующие поглощаются (в Zend новое исключение внутри
+// активного не всплывает отдельно).
+func (vm *VM) FreeSpliceRemoved(values []Slot) *Throwable {
+	var objs []*Object
+	seenA := map[*Array]bool{}
+	seenC := map[*Closure]bool{}
+	for _, v := range values {
+		collectRemovedObjs(v, &objs, seenA, seenC)
+	}
+	// Освобождение удалённых значений: списание оценок ссылок (Ref.Set в
+	// set(refArrayArg) учёта не ведёт), затем — немедленный __destruct
+	// объектов, ставших недостижимыми.
+	for _, v := range values {
+		vm.noteDropped(v)
+	}
+	var first *Throwable
+	for _, o := range objs {
+		if o == nil || o.dead || o.gcPending || o.refs > 0 {
+			continue
+		}
+		if !classHasDtor(o.class) && !vm.isLifetimeSpecial(o) {
+			continue
+		}
+		if vm.spliceReachable(o) {
+			continue
+		}
+		if err := vm.destroyObject(o); err != nil {
+			if t, ok := err.(*Throwable); ok && first == nil {
+				first = t
+			}
+		}
+	}
+	return first
+}
+
+// spliceReachable проверяет достижимость объекта от корней VM (в момент
+// выполнения нативного вызова). Регистры вызывающего кадра видны: аргументы
+// лежат в его окне.
+func (vm *VM) spliceReachable(o *Object) bool {
+	m := newLifeVisit(vm)
+	pc := vm.ip - 1
+	if pc < 0 {
+		pc = 0
+	}
+	vm.markRoots(m, vm.chunk, pc)
+	m.finishWeakMaps()
+	return m.objs[o]
+}
+
+// collectRemovedObjs собирает объекты, которые держит удалённое значение
+// (сам объект, элементы массива, захваты замыкания), в порядке обхода.
+func collectRemovedObjs(s Slot, out *[]*Object, seenA map[*Array]bool, seenC map[*Closure]bool) {
+	for i := 0; s.typ == RefType && i < 100; i++ {
+		r := s.Ref()
+		if r == nil {
+			return
+		}
+		s = r.v
+	}
+	switch s.typ {
+	case ObjectType:
+		if o := s.obj(); o != nil {
+			*out = append(*out, o)
+		}
+	case ArrayType:
+		a := s.AsArray()
+		if a == nil || seenA[a] {
+			return
+		}
+		seenA[a] = true
+		for _, v := range a.All() {
+			collectRemovedObjs(v, out, seenA, seenC)
+		}
+	case ClosureType:
+		cl := s.asClosure()
+		if cl == nil || seenC[cl] {
+			return
+		}
+		seenC[cl] = true
+		for _, c := range cl.Captures {
+			collectRemovedObjs(c, out, seenA, seenC)
+		}
+		collectRemovedObjs(cl.BoundThis, out, seenA, seenC)
+	}
 }
 
 // noteDroppedValue — как noteDropped для Value-границы (значения свойств).
@@ -725,6 +918,37 @@ type lifeVisit struct {
 
 	// depth — защита от абсурдно глубокой рекурсии рефлексии.
 	depth int
+
+	// countTarget/countN — подсчёт zval-владельцев массива для
+	// debug_zval_dump (ArrayRefCountDebug).
+	countTarget *Array
+	countN      int
+	// skipFuncArgs — не считать корни cur/pendingFuncArgs (для подсчёта
+	// владельцев: аргументы уже лежат в регистрах кадра).
+	skipFuncArgs bool
+}
+
+// noteOwner учитывает слот, значением которого (после разыменования) является
+// целевой массив. Ячейка-ссылка считается один раз: её значение — один zval,
+// сколько бы переменных на неё ни ссылалось.
+func (m *lifeVisit) noteOwner(s Slot) {
+	if m.countTarget == nil {
+		return
+	}
+	for i := 0; s.typ == RefType && i < 100; i++ {
+		r := s.Ref()
+		if r == nil {
+			return
+		}
+		if m.refs[r] {
+			return
+		}
+		m.refs[r] = true
+		s = r.v
+	}
+	if s.typ == ArrayType && s.AsArray() == m.countTarget {
+		m.countN++
+	}
 }
 
 var (
@@ -750,6 +974,7 @@ func newLifeVisit(vm *VM) *lifeVisit {
 
 // slot помечает значение слота (разворачивая ссылки).
 func (m *lifeVisit) slot(s Slot) {
+	m.noteOwner(s)
 	for i := 0; s.typ == RefType && i < 100; i++ {
 		r := s.Ref()
 		if r == nil {
@@ -825,6 +1050,7 @@ func (m *lifeVisit) slotMirror(s Slot) {
 // slotBare помечает значение, не учитывая его в inRefs: слоты регистров и
 // прочие «временные» места, чья потеря не отслеживается счётчиком ссылок.
 func (m *lifeVisit) slotBare(s Slot) {
+	m.noteOwner(s)
 	for i := 0; s.typ == RefType && i < 100; i++ {
 		r := s.Ref()
 		if r == nil {
@@ -1048,22 +1274,31 @@ func (m *lifeVisit) rvalue(v reflect.Value, depth int) {
 }
 
 // containsHeapField — грубая проверка, может ли тип содержать Slot.
+// seen защищает от циклов в графе типов (struct → *struct → …).
 func containsHeapField(t reflect.Type) bool {
+	return containsHeapFieldSeen(t, map[reflect.Type]bool{})
+}
+
+func containsHeapFieldSeen(t reflect.Type, seen map[reflect.Type]bool) bool {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	if t == slotType {
 		return true
 	}
+	if seen[t] {
+		return false
+	}
+	seen[t] = true
 	switch t.Kind() {
 	case reflect.Struct:
 		for i := 0; i < t.NumField(); i++ {
-			if containsHeapField(t.Field(i).Type) {
+			if containsHeapFieldSeen(t.Field(i).Type, seen) {
 				return true
 			}
 		}
 	case reflect.Slice, reflect.Array:
-		return containsHeapField(t.Elem())
+		return containsHeapFieldSeen(t.Elem(), seen)
 	}
 	return false
 }
@@ -1564,11 +1799,13 @@ func (vm *VM) markRoots(m *lifeVisit, chunk *Chunk, pc int) {
 	for _, s := range vm.headerCallbacks {
 		m.slot(s)
 	}
-	for _, s := range vm.curFuncArgs {
-		m.slotBare(s)
-	}
-	for _, s := range vm.pendingFuncArgs {
-		m.slotBare(s)
+	if !m.skipFuncArgs {
+		for _, s := range vm.curFuncArgs {
+			m.slotBare(s)
+		}
+		for _, s := range vm.pendingFuncArgs {
+			m.slotBare(s)
+		}
 	}
 	if vm.namedVariadicTail != nil {
 		m.array(vm.namedVariadicTail)

@@ -1720,7 +1720,9 @@ func (vm *VM) IsDumpPlainObject(o *Object) bool {
 		return false
 	}
 	switch rc.Name() {
-	case "ArrayObject", "ArrayIterator", "SplObjectStorage":
+	case "ArrayObject", "ArrayIterator", "SplObjectStorage", "DateInterval", "DatePeriod", "DateTimeZone":
+		// Объявленные свойства печатаются в порядке объявления (property_info
+		// Zend), а не алфавитным fallback'ом.
 		return true
 	case "ReflectionParameter":
 		// У ReflectionParameter Zend показывает единственное свойство name
@@ -1869,6 +1871,13 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 				continue
 			}
 			if isTyped {
+				// Объявленный дефолт (в т.ч. у нативных классов вроде
+				// DateInterval, объекты которых не проходят applyDefaults)
+				// печатается как значение, а не uninitialized (bug69425).
+				if dv, has := c.defaults[name]; has {
+					out = append(out, DumpEntry{Key: name, Val: valueSlot(dv), Suffix: suffix, Decl: effDecl[name]})
+					continue
+				}
 				out = append(out, DumpEntry{Key: name, Uninit: true, Type: uninitType, Suffix: suffix, Decl: effDecl[name]})
 				continue
 			}

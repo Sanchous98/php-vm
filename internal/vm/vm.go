@@ -111,6 +111,12 @@ type VM struct {
 	// serialize()/unserialize() (внутри __sleep/__wakeup/автозагрузки) создают
 	// собственный var_hash, а не переиспользуют внешний.
 	serializeLock int
+	// sessionActive — активна ли сессия (session_start); см. session.go.
+	sessionActive bool
+	// retUsed — Zend USED_RET() для ближайшего опкода вызова: false для
+	// вызова-оператора (результат отбрасывается). Читается нативным вызовом
+	// (Context.retUsed) и сразу сбрасывается в true.
+	retUsed bool
 	// Диагностика (Warning/Notice/Deprecated): файл/строка текущей операции,
 	// уровень error_reporting и счётчик подавления оператором `@`.
 	curFile string
@@ -602,6 +608,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.funcIndex = nil
 	vm.ip = 0
 	vm.fp = 0
+	vm.retUsed = true
 	vm.cur = &vm.frames[0]
 	vm.out = os.Stdout
 	// материализуем константы всех функций один раз
@@ -980,6 +987,16 @@ func (vm *VM) GlobalsSetRef(key string, cell Slot) {
 		vm.globals["$GLOBALS"] = MakeArray(ga)
 	}
 }
+
+// SetSessionActive помечает сессию активной (session_start/session_decode).
+func (vm *VM) SetSessionActive(v bool) { vm.sessionActive = v }
+
+// SessionActive сообщает, активна ли сессия (session_start()).
+func (vm *VM) SessionActive() bool { return vm.sessionActive }
+
+// SyncGlobalsFromSnapshot — экспорт для встроенных (запись по ссылке в
+// $GLOBALS['x'] должна быть видна самой переменной $x).
+func (vm *VM) SyncGlobalsFromSnapshot() { vm.syncGlobalsFromSnapshot() }
 
 // syncGlobalsFromSnapshot переносит записи снимка $GLOBALS в таблицу глобальных
 // переменных (нужно для `$GLOBALS['x'][...] = ...`).
@@ -3772,6 +3789,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				break
 			}
 			if f := vm.cur; f.nTracked != 0 {
+				// Темпы оператора: Zend освобождает временные значения по
+				// концу оператора (FREE), даже если регистр будет
+				// переиспользован следующим. Без этого объект, удерживаемый
+				// массивом-временем, доживал бы до перезаписи регистра
+				// (сдвиг хендлов: compact_this, array_walk_closure).
+				vm.dropStmtTemps(chunk)
+			}
+			if f := vm.cur; f.nTracked != 0 {
 				// Быстрая проверка: есть ли учтённый регистр, который в этой
 				// точке мёртв по SSA и не является именованной переменной
 				// (только такие списываются). Частый случай — узкий чанк
@@ -6480,6 +6505,10 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 				}
 				return Slot{}, th
 			}
+			// USED_RET для нативного вызова (array_splice): из ближайшего
+			// опкода вызова; флаг сбрасывается, чтобы не протёк во вложенные.
+			vm.ctx.retUsed = vm.retUsed
+			vm.retUsed = true
 			res, err = fn.Executable.Call(vm, &vm.ctx, args)
 			if pushed {
 				vm.popCall()

@@ -903,6 +903,12 @@ func registerSplArrayMembers(ci *runtimeClass, isIterator bool) {
 				_, _ = a.Append(args[1])
 			} else if k, ok := ctx.vm.KeyOfWarn(args[0]); ok {
 				_ = a.Set(k, args[1])
+				// Хранилище — объект: запись идёт в его таблицу свойств
+				// (Zend spl_array_set_dim: ArrayObject поверх объекта пишет
+				// динамические свойства без deprecation).
+				if o := d.srcObject(); o != nil {
+					o.SetProp(k.PHPString(), deref(args[1]))
+				}
 			}
 			d.arr = a
 			return MakeNull(), nil
@@ -1135,6 +1141,16 @@ func (d *splArrayData) setSrcObj(s Slot) {
 		return
 	}
 	d.srcObj = Slot{}
+}
+
+// srcObject возвращает объект-хранилище ArrayObject/ArrayIterator, если он
+// был передан в конструктор (Zend: таблица свойств объекта — хранилище).
+func (d *splArrayData) srcObject() *Object {
+	v := deref(d.srcObj)
+	if v.typ != ObjectType {
+		return nil
+	}
+	return v.obj()
 }
 
 // splArrayFromArg строит хранимый массив из аргумента конструктора/обмена:

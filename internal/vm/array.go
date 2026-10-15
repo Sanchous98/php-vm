@@ -893,6 +893,34 @@ func deepDerefSlot(s Slot, seen map[*Array]bool) (Slot, error) {
 	return MakeArray(out), nil
 }
 
+// WalkNextLive — первая живая позиция хранения >= i (для позиционной
+// итерации array_walk: томбстоуны пропускаются, как HT-итератор Zend).
+func (a *Array) WalkNextLive(i int) (int, bool) {
+	n := a.nextLive(i)
+	return n, n < a.storeLen()
+}
+
+// WalkElementAt — значение живого элемента по позиции хранения.
+func (a *Array) WalkElementAt(i int) (Slot, bool) { return a.elementAt(i) }
+
+// WalkKeyAt — ключ живого элемента по позиции хранения.
+func (a *Array) WalkKeyAt(i int) (ArrayKey, bool) { return a.keyAt(i) }
+
+// WalkSetAt — замена значения живого элемента по позиции хранения (только на
+// Unshare()-нутом массиве).
+func (a *Array) WalkSetAt(i int, v Slot) {
+	if a.packed {
+		if i >= 0 && i < a.storeLen() {
+			a.setAt(i, v)
+		}
+		return
+	}
+	if i >= 0 && i < len(a.entries) && a.entries[i].live {
+		a.noteVal(v)
+		a.entries[i].val = v
+	}
+}
+
 // HasStringKeys сообщает, есть ли в массиве строковые ключи.
 func (a *Array) HasStringKeys() bool {
 	if a == nil || a.packed {

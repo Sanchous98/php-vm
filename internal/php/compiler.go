@@ -1282,6 +1282,9 @@ func (c *compiler) setUndef(name string) {
 // storeVar пишет регистр в именованную переменную.
 func (c *compiler) storeVar(name string, reg uint8) {
 	if c.isRef(name) {
+		// Запись определяет переменную: снимаем флаг «undefined» и у
+		// ref-переменных (иначе после записи в ссылку чтение даёт
+		// "Undefined variable" — bug77135).
 		c.clearUndef(name)
 		if c.useGlobal(name) {
 			key := c.globalKey(name)
@@ -1359,6 +1362,7 @@ func (c *compiler) setVarRegs() {
 		}
 	}
 	c.chunk.SetVarRegs(vars, refs)
+	c.chunk.SetTempLo(c.nvars)
 	// Пользовательское подмножество (без внутренних времён) — для освобождения
 	// временных операндов на раскрутке непойманного исключения (bug69740).
 	c.chunk.SetUserVarRegs(c.vars, c.refs)
@@ -3050,6 +3054,11 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_const_prop_name", constPropNameBuiltin),
 		vm.Register("__php_new_spread", newSpreadBuiltin),
 		vm.Register("__php_require_class", requireClassFn),
+		vm.Register("__php_use_trait", useTraitFn),
+		vm.Register("__php_sync_globals_snapshot", func(ctx *vm.Context) vm.Value {
+			ctx.VM().SyncGlobalsFromSnapshot()
+			return vm.MakeNull()
+		}),
 		vm.Register("__php_variance_check", varianceCheckFn),
 		vm.Register("__php_call_named", callNamedBuiltin),
 		vm.Register("__php_call_cb_named", callCbNamedBuiltin),
@@ -5658,12 +5667,17 @@ classLoop:
 			if td != nil && !td.IsTrait {
 				return nil, base.newFatal(fmt.Sprintf("%s cannot use %s - it is not a trait", cd.Name, tn))
 			}
+			if td == nil {
+				// Трейт неизвестен на этапе компиляции: может быть загружен
+				// автозагрузкой при объявлении класса (Zend откладывает
+				// объявление и применяет трейт в рантайме).
+				cd.MissingTraits = append(cd.MissingTraits, tn)
+				continue
+			}
 			ti, ok := classIdx[tn]
 			if !ok {
-				if td != nil {
-					if di, ok2 := base.declIndexAll[td]; ok2 {
-						ti, ok = di, true
-					}
+				if di, ok2 := base.declIndexAll[td]; ok2 {
+					ti, ok = di, true
 				}
 			}
 			if !ok {
@@ -6566,6 +6580,10 @@ compatLoop:
 			if s.MissingInterface != "" {
 				mc.curLine = s.Line
 				mc.emitClassGuard(s.MissingInterface, true)
+			}
+			for _, tn := range s.MissingTraits {
+				mc.curLine = s.Line
+				mc.emitLateTraitUse(s.Name, tn)
 			}
 			if s.IfaceNotInterface != "" {
 				// «Интерфейс», оказавшийся классом: Zend фаталит при
@@ -11416,6 +11434,10 @@ func (c *compiler) stmt(st Stmt) error {
 			c.discardResult = true
 			discard = true
 		}
+		// Вызов-оператор: результат отбрасывается (Zend USED_RET=0).
+		if ce, ok := s.X.(*CallExpr); ok {
+			ce.Discard = true
+		}
 		_, err := c.expr(s.X)
 		if discard {
 			c.discardResult = false
@@ -11855,6 +11877,10 @@ func (c *compiler) stmt(st Stmt) error {
 		if s.MissingInterface != "" {
 			c.curLine = s.Line
 			c.emitClassGuard(s.MissingInterface, true)
+		}
+		for _, tn := range s.MissingTraits {
+			c.curLine = s.Line
+			c.emitLateTraitUse(s.Name, tn)
 		}
 		if s.IfaceNotInterface != "" {
 			// Zend сообщает об «интерфейсе»-классе при связывании, уже после
@@ -13164,12 +13190,23 @@ func (c *compiler) emitCall(name string, argRegs []uint8) uint8 {
 	if !ok {
 		panic("unknown builtin " + name)
 	}
-	return c.emitCallRegs(i, argRegs, nil)
+	return c.emitCallRegs(i, argRegs, nil, false)
 }
 
 // emitClassGuard эмитит вызов __php_require_class(name, isIface): запускает
 // автозагрузку для неизвестного родителя/интерфейса и бросает Error, если
 // класс так и не был определён.
+// emitLateTraitUse эмитит автозагрузку трейта, неизвестного на этапе
+// компиляции, и примешивание его к уже созданному классу (Zend применяет
+// трейты при объявлении класса).
+func (c *compiler) emitLateTraitUse(clsName, traitName string) {
+	cr := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: cr, C: int32(c.chunk.AddConst(vm.StrConst(clsName)))})
+	tr := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: tr, C: int32(c.chunk.AddConst(vm.StrConst(traitName)))})
+	c.emitCall("__php_use_trait", []uint8{cr, tr})
+}
+
 func (c *compiler) emitClassGuard(name string, isIface bool) {
 	nameReg := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nameReg,
@@ -13425,7 +13462,7 @@ func (c *compiler) includeExpr(x *IncludeExpr) (uint8, error) {
 
 // emitCallRegs генерирует OpCall по индексу функции, размещая аргументы в
 // непрерывном окне и выполняя writeback-и by-ref аргументов после вызова.
-func (c *compiler) emitCallRegs(fi int, argRegs []uint8, wbs []func()) uint8 {
+func (c *compiler) emitCallRegs(fi int, argRegs []uint8, wbs []func(), discard bool) uint8 {
 	want := c.funcs[fi].NumArgs
 	nreg := len(argRegs)
 	if want > nreg {
@@ -13452,6 +13489,10 @@ func (c *compiler) emitCallRegs(fi int, argRegs []uint8, wbs []func()) uint8 {
 		}
 	}
 	packed := int32(fi) | int32(len(argRegs)+1)<<24
+	if discard {
+		// Бит 23 — результат вызова-оператора отбрасывается (USED_RET=0).
+		packed |= 1 << 23
+	}
 	c.emitCallLineHere()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpCall, A: base, B: base, C: packed})
 	c.restoreStmtLine()
@@ -13991,7 +14032,13 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		if (a.Name == "$GLOBALS" || a.Name == "GLOBALS") && !info.silent {
 			c.emitByRefError(info, pos)
 		}
-		if c.isRef(a.Name) {
+		// Zend SEND_VAR_EX: простая переменная становится ссылкой на своё
+		// значение и передаётся ЯЧЕЙКОЙ вызывающего (только для настоящих
+		// by-ref параметров: pos >= 0). Для «возможно-записи» вызовов с
+		// неизвестной сигнатурой (pos == -1) сохраняется временная ячейка с
+		// writeback — иначе переменная статически помечается ссылкой и её
+		// более ранние записи/диагностика ломаются (bug77135).
+		if a.NameExpr == nil && a.Name != "this" && a.Name != "$this" && pos >= 0 {
 			return c.refCell(a.Name), nil, nil
 		}
 		// Чтение значения для Ref-ячейки: неопределённая переменная при
@@ -14072,6 +14119,9 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
 		if err != nil {
 			return 0, nil, err
+		}
+		if isGlobalsVar(ix.Arr) && !info.silent {
+			return cell, func() { c.emitCall("__php_sync_globals_snapshot", nil) }, nil
 		}
 		return cell, nil, nil
 	}
@@ -14755,7 +14805,7 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			if na.throwMsg != "" {
 				return c.emitNamedArgError("Error", na.throwMsg), nil
 			}
-			return c.emitCallRegs(fi, argRegs, wbs), nil
+			return c.emitCallRegs(fi, argRegs, wbs, x.Discard), nil
 		}
 	case *YieldExpr:
 		return c.yieldExpr(x)

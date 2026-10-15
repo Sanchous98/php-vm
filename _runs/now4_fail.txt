@@ -1,0 +1,13 @@
+/ext/standard/tests/array/array_walk_closure.phpt
+/ext/standard/tests/array/bug25708.phpt
+/ext/standard/tests/array/compact_this.phpt
+/ext/standard/tests/serialize/bug69425.phpt
+/ext/standard/tests/serialize/bug70219.phpt
+/ext/standard/tests/serialize/bug70219_1.phpt
+/ext/standard/tests/serialize/bug70436.phpt
+/ext/standard/tests/serialize/bug72663_3.phpt
+/ext/standard/tests/serialize/typed_property_ref_overwrite2.phpt
+/ext/standard/tests/serialize/typed_property_refs.phpt
+/ext/standard/tests/strings/bug55871.phpt
+/ext/standard/tests/strings/bug72434.phpt
+/ext/standard/tests/strings/bug72663_2.phpt

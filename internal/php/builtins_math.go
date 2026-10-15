@@ -78,6 +78,8 @@ func roundFn(ctx *vm.Context) vm.Value {
 		if !ok {
 			return *new(vm.Value)
 		}
+		// Z_PARAM_LONG: float->int с Deprecated при потере точности.
+		ctx.VM().FloatToIntWarn(arg(ctx, 1))
 		p = pv.ToInt()
 	}
 	mode := int64(1)
@@ -86,6 +88,7 @@ func roundFn(ctx *vm.Context) vm.Value {
 		if !ok {
 			return *new(vm.Value)
 		}
+		ctx.VM().FloatToIntWarn(arg(ctx, 2))
 		mode = mv.ToInt()
 	}
 	// Zend: целое при неотрицательной точности не округляется вовсе.

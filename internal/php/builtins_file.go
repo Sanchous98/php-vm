@@ -4909,17 +4909,23 @@ func dirFn(ctx *vm.Context) vm.Value {
 	return slot
 }
 
-// registerDirectoryMethods дополняет нативный класс Directory методами
-// read/rewind/close (PHP 8: Directory::read() — та же операция, что readdir()
-// по свойству handle; на закрытом ресурсе — TypeError).
+// registerDirectoryMethods оформляет встроенный класс Directory: readonly
+// свойства path/handle (объявленные, без значений по умолчанию — до dir()
+// они uninitialized) и методы close/rewind/read (PHP 8).
 func registerDirectoryMethods(classes []vm.ClassInfo) {
 	for _, ci := range classes {
 		if ci.Name() != "Directory" {
 			continue
 		}
-		ci.Method("read", vm.Register("read", dirMethodRead))
-		ci.Method("rewind", vm.Register("rewind", dirMethodRewind))
+		vm.MarkInternal(ci)
+		ci.SetPropMeta("path", "string", true, false, vm.Public)
+		ci.SetPropMeta("handle", "mixed", true, false, vm.Public)
 		ci.Method("close", vm.Register("close", dirMethodClose))
+		ci.Method("rewind", vm.Register("rewind", dirMethodRewind))
+		ci.Method("read", vm.Register("read", dirMethodRead))
+		vm.SetInternalMethodSig("Directory", "close", "standard", nil, "void")
+		vm.SetInternalMethodSig("Directory", "rewind", "standard", nil, "void")
+		vm.SetInternalMethodSig("Directory", "read", "standard", nil, "string|false")
 		return
 	}
 }
@@ -4935,7 +4941,9 @@ func dirThisHandle(ctx *vm.Context, method string) *fsHandle {
 	}
 	hv, ok := o.Class().GetProp(o, "handle")
 	if !ok {
-		ctx.Throw(vm.NewThrowable("TypeError", msg))
+		// Zend: несозданный/неинициализированный handle — Error
+		// "Unable to find my handle property" (dir.c php_dir_get_this).
+		ctx.Throw(vm.NewThrowable("Error", "Unable to find my handle property"))
 		return nil
 	}
 	var hs vm.Slot

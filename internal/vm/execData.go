@@ -1,6 +1,8 @@
 package vm
 
-import "strings"
+import (
+	"strings"
+)
 
 // execData.go — глобальные и ссылочные опкоды (global*/ref*).
 
@@ -286,7 +288,9 @@ func (vm *VM) opGlobalAppend(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 	if vm.globals == nil {
 		vm.globals = map[string]Slot{}
 	}
-	vm.globals[name] = MakeArray(a)
+	// Запись сквозь Ref-ячейку (`global $arr` или by-ref ячейка вызывающего):
+	// замена записи таблицы сломала бы алиасы.
+	vm.storeGlobalArray(name, a)
 	shareSlot(regs[in.A])
 	return execResult{}
 }
@@ -603,6 +607,9 @@ func (vm *VM) opGlobalRefSet(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 				}
 				return execResult{next: true}
 			}
+			// Снимок $GLOBALS должен видеть запись в глобальную ссылку
+			// (переменная-ссылка и $GLOBALS['x'] — одна ячейка).
+			vm.syncGlobalsSnapshot(key)
 		} else {
 			vm.globals[key] = regs[in.A]
 		}

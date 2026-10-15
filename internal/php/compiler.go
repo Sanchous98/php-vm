@@ -14969,7 +14969,21 @@ func (c *compiler) staticCall(cls, name string, nameExpr Expr, args []Expr) (uin
 			return 0, err
 		}
 	}
-	argRegs, wbs, err := c.evalArgs(c.methodRefs[name], args, c.methodArgInfo(name))
+	argMask := c.methodRefs[name]
+	argInfo := c.methodArgInfo(name)
+	// Класс статически известен и метод с таким именем найден в нём: точная
+	// by-ref маска (иначе неизвестная сигнатура даёт консервативный
+	// forWrite-режим, теряющий «Undefined variable» у by-value аргументов —
+	// passByReference_005).
+	if nameExpr == nil && sel >= 3 {
+		if idx := int(sel) - 3; idx >= 0 && idx < len(c.classes) && c.classes[idx] != nil {
+			if fn, ok := c.classes[idx].MethodFunction(name); ok && fn != nil {
+				argMask = fn.ByRefArgs
+				argInfo = byRefInfo{}
+			}
+		}
+	}
+	argRegs, wbs, err := c.evalArgs(argMask, args, argInfo)
 	if err != nil {
 		return 0, err
 	}

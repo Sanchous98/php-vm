@@ -1168,8 +1168,14 @@ func (vm *VM) SymtabBindRef(name string, ref Slot) {
 			if vm.globals == nil {
 				vm.globals = map[string]Slot{}
 			}
+			old, had := vm.globals[key]
 			vm.globals[key] = ref
 			vm.syncGlobalsSnapshot(key)
+			// Сначала привязка ссылки, затем снятие старого значения
+			// (деструктор старого объекта пишет через новую ссылку, GH-18209).
+			if had {
+				vm.noteDropped(old)
+			}
 			return
 		}
 		if vm.cur != nil {
@@ -1186,8 +1192,14 @@ func (vm *VM) SymtabBindRef(name string, ref Slot) {
 	if vm.globals == nil {
 		vm.globals = map[string]Slot{}
 	}
+	old, had := vm.globals["$"+name]
 	vm.globals["$"+name] = ref
 	vm.syncGlobalsSnapshot("$" + name)
+	// Привязка ссылки до снятия старого значения (GH-18209: деструктор
+	// заменяемого объекта пишет через уже привязанную ссылку).
+	if had {
+		vm.noteDropped(old)
+	}
 }
 
 // CountRefHolders считает, сколько «живых» слотов ссылаются на r: в глобальных

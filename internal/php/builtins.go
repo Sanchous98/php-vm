@@ -675,6 +675,21 @@ func builtins() []*vm.Function {
 			// Сессия не поддерживается: как Zend при пустом хранилище —
 			// $_SESSION становится пустым массивом (unset_cv05/06).
 			ctx.VM().SetSuperglobalSynced("$_SESSION", vm.MakeArray(vm.NewArray()))
+			// trans-sid: SID добавляется сканером (session-канал) только при
+			// use_trans_sid && !use_only_cookies.
+			if iniBoolInt(iniValues["session.use_trans_sid"]) != 0 &&
+				iniBoolInt(iniValues["session.use_only_cookies"]) == 0 {
+				urlRewriterActivate(ctx, true)
+				name := iniValues["session.name"]
+				if name == "" {
+					name = "PHPSESSID"
+				}
+				id := sessionIDValue
+				if id == "" {
+					id = phpSessionGenerateID()
+				}
+				urlRewriteAddVar(&urlRewriteSess, name, id)
+			}
 			return vm.Bool(true)
 		}),
 		vm.Register("session_unset", func(ctx *vm.Context) vm.Value {
@@ -701,7 +716,30 @@ func builtins() []*vm.Function {
 			}
 			return vm.MakeArray(arr)
 		}),
-		vm.Register("output_add_rewrite_var", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("output_add_rewrite_var", func(ctx *vm.Context) vm.Value {
+			// Переменная url_rewriter'а: активирует собственный буфер-сканер
+			// (URL-Rewriter) и добавляет url-приложение/hidden-поле.
+			name := arg0(ctx).ToString()
+			value := arg(ctx, 1).ToString()
+			urlRewriterActivate(ctx, false)
+			urlRewriteAddVar(&urlRewriteOut, name, value)
+			return vm.Bool(true)
+		}),
+		vm.Register("output_reset_rewrite_vars", func(ctx *vm.Context) vm.Value {
+			urlRewriteOut.urlApp = ""
+			urlRewriteOut.formApp = ""
+			return vm.Bool(true)
+		}),
+		vm.Register("__php_url_rewriter_out", urlRewriterOutFn),
+		vm.Register("__php_url_rewriter_sess", urlRewriterSessFn),
+		vm.Register("session_commit", func(ctx *vm.Context) vm.Value {
+			urlRewriterDeactivate(ctx, true)
+			return vm.Bool(true)
+		}),
+		vm.Register("session_write_close", func(ctx *vm.Context) vm.Value {
+			urlRewriterDeactivate(ctx, true)
+			return vm.Bool(true)
+		}),
 		vm.Register("header_register_callback", headerRegisterCallbackFn),
 		vm.Register("phpcredits", phpcreditsFn),
 		vm.Register("uniqid", uniqidFn),

@@ -401,6 +401,13 @@ func openUserStream(ctx *vm.Context, path, mode string) (*fsHandle, bool) {
 		ctx.VM().Warning(fmt.Sprintf("stream_wrapper_register(): class '%s' not found", cls))
 		return nil, false
 	}
+	if !hasMethod(ci, "stream_open") {
+		// Обёртка без stream_open: открытие не удаётся (Zend печатает
+		// "Method X::stream_open is not implemented", fopen даёт false;
+		// userstreams.phpt открывает bogon:// под @).
+		lastUserOpenErr = "operation failed"
+		return nil, false
+	}
 	u := &userStream{vm: ctx.VMInstance(), ctx: ctx, obj: obj}
 	u.hasRead = hasMethod(ci, "stream_read")
 	u.hasWrite = hasMethod(ci, "stream_write")
@@ -703,6 +710,9 @@ func streamSupportsLockFn(ctx *vm.Context) vm.Value {
 type streamContext struct {
 	options vm.Slot
 	params  vm.Slot
+	// holds — число внешних держателей контекста (сокеты, proc_open и т.п.):
+	// видно в debug_zval_dump как refcount (gh10885).
+	holds int
 }
 
 func streamContextCreateFn(ctx *vm.Context) vm.Value {

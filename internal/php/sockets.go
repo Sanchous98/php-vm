@@ -140,6 +140,12 @@ func streamSocketServerFn(ctx *vm.Context) vm.Value {
 		canRead: true, canWrite: true, isSocket: true,
 		sockType: sock, blockMode: true, ln: ln, conn: uc,
 	}
+	// Контекст (4-й аргумент) удерживается потоком: refcount виден в
+	// debug_zval_dump (gh10885).
+	h.ctxRef = contextArgSlot(ctx, 4)
+	if h.ctxRef != nil {
+		h.ctxRef.holds++
+	}
 	return fsNewResource(h, "stream")
 }
 

@@ -2547,6 +2547,16 @@ func defaultIniValues() map[string]string {
 		"error_log":                   "",
 		"html_errors":                 "0",
 		"docref_root":                 "",
+		"docref_ext":                  "",
+		"url_rewriter.hosts":          "",
+		"url_rewriter.tags":           "form=",
+		"session.trans_sid_hosts":     "",
+		"session.trans_sid_tags":      "a=href,area=href,frame=src,form=",
+		"session.name":                "PHPSESSID",
+		"session.use_trans_sid":       "0",
+		"session.use_only_cookies":    "1",
+		"session.use_cookies":         "1",
+		"session.use_strict_mode":     "0",
 		"user_agent":                  "",
 		"disable_functions":           "",
 		"enable_post_data_reading":    "1",
@@ -4580,7 +4590,11 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if r.Closed {
 			b.WriteString("resource(" + strconv.FormatInt(r.ID, 10) + ") of type (Unknown) refcount(1)\n")
 		} else {
-			b.WriteString("resource(" + strconv.FormatInt(r.ID, 10) + ") of type (" + r.Kind + ") refcount(2)\n")
+			refc := 2
+			if sc, ok := r.Val.(*streamContext); ok {
+				refc += sc.holds
+			}
+			b.WriteString("resource(" + strconv.FormatInt(r.ID, 10) + ") of type (" + r.Kind + ") refcount(" + strconv.Itoa(refc) + ")\n")
 		}
 	case vm.StringType:
 		v := s.StringVal()

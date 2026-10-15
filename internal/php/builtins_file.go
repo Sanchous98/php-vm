@@ -1094,6 +1094,9 @@ type fsHandle struct {
 	noWrapper bool
 	// outVM — VM для маршрутизации записи в php://stdout/php://stderr.
 	outVM *vm.VM
+	// ctxRef — stream-контекст, удерживаемый потоком (сокет): refcount для
+	// debug_zval_dump растёт, пока поток живёт (gh10885).
+	ctxRef *streamContext
 }
 
 // modeCaps разбирает режим потока и возвращает права чтения/записи.
@@ -1219,6 +1222,7 @@ func ResetResourceState() {
 	phpStdinRaw = nil
 	procHandles = map[int64]*procHandle{}
 	resetCookieState()
+	urlRewriteResetAll()
 }
 
 // parsedDataURI — результат разбора data://-URI.
@@ -2255,6 +2259,10 @@ func fcloseFn(ctx *vm.Context) vm.Value {
 	// popen-поток: fclose ждёт процесс (pclose-семантика дтора потока).
 	if h.popenProc != nil {
 		h.popenProc.finish(true)
+	}
+	if h.ctxRef != nil {
+		h.ctxRef.holds--
+		h.ctxRef = nil
 	}
 	closeFilters(h)
 	h.Close()

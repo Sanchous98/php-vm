@@ -7221,7 +7221,7 @@ func (vm *VM) DynStaticCall(cls Slot, mname string, args []Slot) (Slot, error) {
 		return Slot{}, NewThrowable("Error", "Call to undefined method "+ci.Name()+"::"+mname+"()")
 	}
 	if vis != Public && !vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
-		if pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname); ok {
+		if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 			m, decl, vis = pm, pdecl, pvis
 		} else {
 			return Slot{}, vm.accessError(decl, mname, vis)

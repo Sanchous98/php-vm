@@ -2698,6 +2698,19 @@ func (c *runtimeClass) methodProto(name string) ClassInfo {
 // котором скомпилирован вызов, объявляет собственный private-метод name,
 // вызывается именно он — даже если у объекта (подкласса) есть свой private
 // метод с тем же именем.
+// scopePrivateMethod — private-метод вызывающей области для вызова
+// $obj->m()/C::m(): Zend (zend_std_get_method/zend_std_get_static_method)
+// использует его, только если получатель/вызываемый класс — экземпляр
+// (подкласс) класса области. Иначе ищется метод самого класса (bug41961:
+// X::test() на объекте ChildClass должен вызвать ChildClass::secret(), а не
+// private X::secret()).
+func (vm *VM) scopePrivateMethod(ci ClassInfo, name string) (*Function, ClassInfo, Visibility, bool) {
+	if ci == nil || vm.ctx.self == nil || !ci.IsA(vm.ctx.self) {
+		return nil, nil, Public, false
+	}
+	return scopeMethod(vm.ctx.self, name)
+}
+
 func scopeMethod(scope ClassInfo, name string) (*Function, ClassInfo, Visibility, bool) {
 	rc, ok := scope.(*runtimeClass)
 	if !ok || rc == nil {

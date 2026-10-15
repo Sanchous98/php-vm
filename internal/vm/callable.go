@@ -1411,7 +1411,7 @@ func (vm *VM) MethodCallNamed(recv Slot, mname string, arr *Array) (Slot, error)
 	var m *Function
 	var decl ClassInfo
 	var vis Visibility
-	if pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname); ok {
+	if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 		m, decl, vis = pm, pdecl, pvis
 	} else {
 		m, decl, vis = ci.methodInfo(mname)
@@ -1430,7 +1430,7 @@ func (vm *VM) MethodCallNamed(recv Slot, mname string, arr *Array) (Slot, error)
 		return Slot{}, NewThrowable("Error", "Call to undefined method "+ci.Name()+"::"+mname+"()")
 	}
 	if vis != Public && !vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
-		if pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname); ok {
+		if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 			m, decl, vis = pm, pdecl, pvis
 		} else {
 			return Slot{}, vm.accessError(decl, mname, vis)
@@ -1497,7 +1497,7 @@ func (vm *VM) StaticCallNamed(cls Slot, mname string, arr *Array) (Slot, error) 
 		return Slot{}, NewThrowable("Error", "Call to undefined method "+ci.Name()+"::"+mname+"()")
 	}
 	if vis != Public && !vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
-		if pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname); ok {
+		if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 			m, decl, vis = pm, pdecl, pvis
 		} else {
 			return Slot{}, vm.accessError(decl, mname, vis)

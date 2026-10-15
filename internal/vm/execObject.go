@@ -2093,7 +2093,7 @@ func (vm *VM) opMethodCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	}
 	if m == nil {
 		mname = consts[in.C&0xFFFF].StringVal()
-		if pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname); ok {
+		if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 			m, decl, vis = pm, pdecl, pvis
 		} else {
 			m, decl, vis = ci.methodInfo(mname)
@@ -2148,7 +2148,7 @@ func (vm *VM) opMethodCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			mname = m.Name
 		}
 		if !vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
-			pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
+			pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname)
 			if !ok {
 				// Zend zend_std_get_method: недоступный метод при наличии
 				// __call вызывает __call, а не бросает Error.

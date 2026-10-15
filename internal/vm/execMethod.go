@@ -97,7 +97,7 @@ func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 		m, decl, vis = ic.fn, ic.decl, ic.vis
 	}
 	if m == nil {
-		if pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname); ok {
+		if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 			m, decl, vis = pm, pdecl, pvis
 		} else {
 			m, decl, vis = ci.methodInfo(mname)
@@ -148,7 +148,7 @@ func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 		return execResult{next: true}
 	}
 	if vis != Public && !vm.methodAccessibleFromProto(ci, decl, methodNameForProto(m, mname), vis, vm.ctx.self) {
-		pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
+		pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname)
 		if !ok {
 			// Zend zend_std_get_method: недоступный метод при наличии __call
 			// вызывает __call, а не бросает Error.
@@ -299,7 +299,7 @@ func (vm *VM) opStaticCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		if mname == "" {
 			mname = consts[in.C&0xFFFF].StringVal()
 		}
-		pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
+		pm, pdecl, pvis, ok := vm.scopePrivateMethod(cls, mname)
 		if !ok {
 			// Zend zend_std_get_static_method: недоступный статический метод
 			// при наличии __callStatic вызывает __callStatic, а не Error.
@@ -462,7 +462,7 @@ func (vm *VM) opStaticCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 		return execResult{next: true}
 	}
 	if vis != Public && !vm.methodAccessibleFromProto(cls, decl, methodNameForProto(m, mname), vis, vm.ctx.self) {
-		pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
+		pm, pdecl, pvis, ok := vm.scopePrivateMethod(cls, mname)
 		if !ok {
 			// Недоступный статический метод + __callStatic → __callStatic.
 			if mname != "__construct" && mname != "__destruct" {

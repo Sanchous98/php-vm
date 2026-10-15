@@ -643,6 +643,12 @@ func builtins() []*vm.Function {
 			ctx.VM().Warn("Undefined global variable " + name)
 			return vm.MakeNull()
 		}),
+		// FUNC_ARG-append, который нельзя оптимизировать в чтение:
+		// отложенная ошибка `test($x[][$y])` (func_arg_fetch_optimization).
+		vm.Register("__php_append_read_error", func(ctx *vm.Context) vm.Value {
+			ctx.Throw(vm.NewThrowable("Error", "Cannot use [] for reading"))
+			return *new(vm.Value)
+		}),
 		vm.Register("error_log", errorLogFn),
 		vm.Register("memory_get_usage", func(ctx *vm.Context) vm.Value { return vm.Int(0) }),
 		vm.Register("memory_get_peak_usage", func(ctx *vm.Context) vm.Value { return vm.Int(0) }),

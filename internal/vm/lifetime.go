@@ -2103,6 +2103,11 @@ func (vm *VM) CollectCycles() (int, error) {
 	if vm.sweepBusy {
 		return 0, nil
 	}
+	// Пустой буфер возможных корней: Zend не запускает проход
+	// (gc_037: второй gc_collect_cycles не увеличивает runs).
+	if vm.gcRoots == 0 && !vm.lifeCandidate && !vm.lifeUrgent {
+		return 0, nil
+	}
 	vm.lifeCandidate = false
 	vm.lifeUrgent = false
 	// Деструкторы, вызванные сборщиком циклов, в трейсе не имеют позиции в
@@ -2113,6 +2118,7 @@ func (vm *VM) CollectCycles() (int, error) {
 	vm.dtorInternal = savedInternal
 	vm.gcRuns++
 	vm.gcCollected += int64(out.count)
+	vm.gcRoots = 0
 	return out.count, out.err
 }
 
@@ -2123,7 +2129,7 @@ func (vm *VM) GCRuns() int64 { return vm.gcRuns }
 func (vm *VM) GCCollected() int64 { return vm.gcCollected }
 
 // GCRootCount возвращает размер буфера возможных корней (gc_status()["roots"]).
-func (vm *VM) GCRootCount() int64 { return 0 }
+func (vm *VM) GCRootCount() int64 { return vm.gcRoots }
 
 // NoteRefCycle — экспорт noteRefArrayCycle для встроенных функций
 // (unserialize строит само-ссылочные массивы через R:-ссылки: gc_022).
@@ -2139,6 +2145,10 @@ func (vm *VM) noteSelfRefArray(a *Array, v Slot) {
 	if deref(v).AsArray() == a {
 		if vm.cyclicArrs == nil {
 			vm.cyclicArrs = map[*Array]bool{}
+		}
+		if !vm.cyclicArrs[a] {
+			// Новый возможный корень в буфере (gc_status()["roots"]).
+			vm.gcRoots++
 		}
 		vm.cyclicArrs[a] = true
 	}
@@ -2231,6 +2241,10 @@ func (vm *VM) noteRefArrayCycle(val Slot, r *Ref) {
 	if vm.arrayContainsRef(a, r, 0, nil) {
 		if vm.cyclicArrs == nil {
 			vm.cyclicArrs = map[*Array]bool{}
+		}
+		if !vm.cyclicArrs[a] {
+			// Новый возможный корень в буфере (gc_status()["roots"]).
+			vm.gcRoots++
 		}
 		vm.cyclicArrs[a] = true
 	}

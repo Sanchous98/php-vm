@@ -202,6 +202,10 @@ func buildServer(m *vm.VM, server *vm.Array, p PhpT, file string, cfg *inputConf
 			argv = append([]string{file}, strings.Fields(p.Args)...)
 		case p.HasGet && p.Get != "" && !strings.Contains(p.Get, "="):
 			argv = strings.Split(p.Get, "+")
+		default:
+			// CLI: даже без --ARGS-- $argv = [имя скрипта], $argc = 1
+			// (get_defined_vars проверяет argc на глобальном уровне).
+			argv = []string{file}
 		}
 		if argv != nil {
 			arr := vm.NewArray()

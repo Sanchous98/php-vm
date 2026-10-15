@@ -43,6 +43,15 @@ func (vm *VM) closureMethodCall(cl *Closure, mname string, args []Slot) (Slot, b
 }
 
 func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	// Имя метода обязано быть строкой: Zend бросает Error даже при наличии
+	// __call (objects_025: $a->$b() с $b = NULL).
+	if n := deref(regs[in.C&0xFF]); n.typ != StringType {
+		err := NewThrowable("Error", "Method name must be a string")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	recv := deref(regs[in.B])
 	// Вызов метода на замыкании (Closure::call/bindTo/...).
 	if recv.typ == ClosureType {
@@ -1058,6 +1067,16 @@ func (vm *VM) staticGetDynCommon(regs []Slot, consts []Slot, chunk *Chunk, in In
 			}
 		}
 	} else {
+		if !rw {
+			// Динамическое имя: чтение несуществующего статического свойства —
+			// Error (Foo::${42}; int_static_prop_name).
+			err := NewThrowable("Error", "Access to undeclared static property "+
+				cls.Name()+"::$"+deref(regs[in.C]).ToString())
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		{
 			old := regs[in.A]
 			wv := MakeNull()

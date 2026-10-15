@@ -329,7 +329,11 @@ type compiler struct {
 	internal   int
 	isMain     bool
 	funcName   string
-	file       string // путь к компилируемому файлу (для __FILE__/__DIR__)
+	// funcArgDepth > 0 — компилируется аргумент вызова (FUNC_ARG): append-база
+	// `$x[]` там допустима на компиляции, ошибка "Cannot use [] for reading"
+	// откладывается до рантайма (func_arg_fetch_optimization).
+	funcArgDepth int
+	file         string // путь к компилируемому файлу (для __FILE__/__DIR__)
 	globals    map[string]bool
 	staticKeys map[string]string
 	// detached — static/global-переменные, для которых текущий вызов сделал
@@ -3832,17 +3836,26 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 		return *new(vm.Slot)
 	}
 	if !ok {
+		// Имя конструкции в диагностиках: require/include (+_once), как в
+		// Zend (require_once_warning_to_exception).
+		kw := "include"
+		if require {
+			kw = "require"
+		}
+		if once {
+			kw += "_once"
+		}
 		if require {
 			// Zend: сначала Warning о потоке, затем Error (include_path в
 			// тексте исключения).
-			ctx.VM().Warning(fmt.Sprintf("require(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
+			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
 			ctx.Throw(vm.NewThrowable("Error", fmt.Sprintf("Failed opening required '%s' (include_path='%s')", p, fsIncludePath)))
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
 			}
 		} else {
-			ctx.VM().Warning(fmt.Sprintf("include(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
-			ctx.VM().Warning(fmt.Sprintf("include(): Failed opening '%s' for inclusion (include_path='%s')", p, fsIncludePath))
+			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
+			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", kw, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)
 	}
@@ -4001,6 +4014,16 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		idx[f.Name] = i
 	}
 	var decls []*FuncDecl
+	// Верхнеуровневые объявления текущего файла: повторное безусловное
+	// объявление в одном скрипте — фатал (function_redecl). Условные
+	// объявления (внутри if/циклов) сюда не попадают.
+	topFuncDecls := map[*FuncDecl]bool{}
+	for _, st := range prog.Stmts {
+		if fd, ok := st.(*FuncDecl); ok {
+			topFuncDecls[fd] = true
+		}
+	}
+	seenTopFunc := map[string]*FuncDecl{}
 	for _, fd := range collectFuncDecls(prog.Stmts) {
 		if _, exists := idx[fd.Name]; !exists {
 			idx[fd.Name] = len(funcs)
@@ -4018,7 +4041,22 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				VariadicByRef: variadicByRef(fd.Params), Variadic: variadicParams(fd.Params),
 			})
 			decls = append(decls, fd)
+			if topFuncDecls[fd] {
+				seenTopFunc[strings.ToLower(fd.Name)] = fd
+			}
 		} else if linkBase == nil {
+			if prev := seenTopFunc[strings.ToLower(fd.Name)]; prev != nil {
+				line := prog.Lines[fd]
+				if line <= 0 {
+					line = fd.DefLine
+				}
+				prevLine := prog.Lines[prev]
+				if prevLine <= 0 {
+					prevLine = prev.DefLine
+				}
+				return nil, &fatalError{msg: fmt.Sprintf("Cannot redeclare %s() (previously declared in %s:%d)",
+					fd.Name, file, prevLine), line: line}
+			}
 			// В одном файле повторное объявление перезаписывает
 			// предыдущее (историческое поведение).
 			decls = append(decls, fd)
@@ -4327,21 +4365,24 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		if cd.IsInterface || cd.IsTrait {
 			continue
 		}
-		serializable, hasSer, hasUnser := false, false, false
+		// Deprecated печатается для конкретного класса, у которого есть
+		// реализация serialize() (своя или унаследованная), но нет ПАРЫ
+		// __serialize/__unserialize. Абстрактный класс без конкретного
+		// serialize — не триггер (sd4/sd6), наследник с парой — тоже нет.
+		if !declImplementsSerializable(cd, serDeclByName) {
+			continue
+		}
+		hasConcreteSer, hasSer, hasUnser := false, false, false
 		for cur := cd; cur != nil; {
-			for _, in := range cur.Interfaces {
-				if strings.EqualFold(in, "Serializable") {
-					serializable = true
-				}
-			}
 			for _, m := range cur.Members {
-				if m.Kind != "method" {
-					continue
-				}
-				if strings.EqualFold(m.MName, "__serialize") {
+				switch strings.ToLower(m.MName) {
+				case "serialize":
+					if m.Kind == "method" && !m.Abstract {
+						hasConcreteSer = true
+					}
+				case "__serialize":
 					hasSer = true
-				}
-				if strings.EqualFold(m.MName, "__unserialize") {
+				case "__unserialize":
 					hasUnser = true
 				}
 			}
@@ -4355,8 +4396,8 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				// Диагностику печатает runSubCode при исполнении фрагмента.
 				if pi, ok := ciLookup(classIdx, cur.Parent); ok {
 					pci := classes[pi]
-					if classInheritsInterface(pci, "Serializable") {
-						serializable = true
+					if pci.HasMethod("serialize") {
+						hasConcreteSer = true
 					}
 					if pci.HasMethod("__serialize") {
 						hasSer = true
@@ -4369,7 +4410,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			}
 			cur = next
 		}
-		if !serializable || (hasSer && hasUnser) {
+		if !hasConcreteSer || (hasSer && hasUnser) {
 			continue
 		}
 		compilerDeprecations = append(compilerDeprecations, fmt.Sprintf(
@@ -8936,10 +8977,21 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	statics := collectStatics(body)
 	{
 		seen := map[string]bool{}
+		// Захваченные use(...) переменные конфликтуют со static (Zend:
+		// "Duplicate declaration of static variable $a", static_variables_closure_bind).
+		for _, u := range captures {
+			seen[u.Name] = true
+			_ = u
+		}
 		for _, sv := range statics {
 			if seen[sv.Name] {
-				cc.chunk.Emit(vm.Instruction{Op: vm.OpFatal,
-					C: int32(cc.chunk.AddConst(vm.StrConst("Duplicate declaration of static variable " + sv.Name)))})
+				// Компайл-фатал (Zend сообщает его даже для невызываемой
+				// функции/замыкания, static_variables_closure_bind).
+				ln := staticDeclLine(cc, body, sv.Name)
+				if ln <= 0 {
+					ln = cc.curLine
+				}
+				return nil, &fatalError{msg: "Duplicate declaration of static variable " + sv.Name, line: ln}
 			}
 			seen[sv.Name] = true
 			if sv.Conditional {
@@ -13060,13 +13112,26 @@ func (c *compiler) evalArgs(mask []bool, args []Expr, info byRefInfo) ([]uint8, 
 				continue
 			}
 		}
-		r, err := c.expr(a)
+		r, err := c.exprArg(a, false)
 		if err != nil {
 			return nil, nil, err
 		}
 		regs[i] = r
 	}
 	return regs, wbs, nil
+}
+
+// exprArg компилирует аргумент вызова по значению: append-выражение в корне
+// (`f($a[])`) — компайл-фатал, как в Zend; вложенный append (`f($x[][$k])`)
+// откладывает ошибку до рантайма (FETCH_DIM_FUNC_ARG).
+func (c *compiler) exprArg(a Expr, byRefPos bool) (uint8, error) {
+	if ie, ok := a.(*IndexExpr); ok && ie.Key == nil && !byRefPos {
+		return 0, &fatalError{msg: "Cannot use [] for reading", line: c.exprLine(a)}
+	}
+	c.funcArgDepth++
+	r, err := c.expr(a)
+	c.funcArgDepth--
+	return r, err
 }
 
 // methodArgInfo описывает передачу аргументов метода: при неизвестной
@@ -13434,6 +13499,14 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			return 0, err
 		}
 		if x.Key == nil {
+			if c.funcArgDepth > 0 {
+				// FUNC_ARG: append допустим на компиляции, ошибка — Error в
+				// рантайме (FETCH_DIM_FUNC_ARG, func_arg_fetch_optimization).
+				if _, err := c.expr(x.Arr); err != nil {
+					return 0, err
+				}
+				return c.emitCall("__php_append_read_error", nil), nil
+			}
 			return 0, &fatalError{msg: "Cannot use [] for reading", line: c.exprLine(x)}
 		}
 		k, err := c.expr(x.Key)
@@ -14424,7 +14497,7 @@ func (c *compiler) evalDynArgs(args []Expr) ([]uint8, []func(), error) {
 			}
 			continue
 		}
-		r, err := c.expr(a)
+		r, err := c.exprArg(a, false)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -18091,4 +18164,52 @@ func closureQualifiedName(ns string) string {
 		return ns + `\{closure}`
 	}
 	return "{closure}"
+}
+
+// staticDeclLine ищет строку объявления static-переменной с данным именем в
+// теле функции (для точной локации фатала "Duplicate declaration").
+func staticDeclLine(c *compiler, body []Stmt, name string) int {
+	var found int
+	var walk func([]Stmt)
+	walk = func(list []Stmt) {
+		for _, st := range list {
+			if found > 0 {
+				return
+			}
+			switch s := st.(type) {
+			case *StaticVarStmt:
+				for _, n := range s.Names {
+					if n == name {
+						found = c.stmtLines[s]
+						return
+					}
+				}
+			case *BlockStmt:
+				walk(s.Body)
+			case *IfStmt:
+				walk(s.Then)
+				walk(s.Else)
+			case *WhileStmt:
+				walk(s.Body)
+			case *DoWhileStmt:
+				walk(s.Body)
+			case *ForStmt:
+				walk(s.Body)
+			case *ForeachStmt:
+				walk(s.Body)
+			case *TryStmt:
+				walk(s.Body)
+				for _, cc := range s.Catches {
+					walk(cc.Body)
+				}
+				walk(s.Finally)
+			case *SwitchStmt:
+				for _, cs := range s.Cases {
+					walk(cs.Body)
+				}
+			}
+		}
+	}
+	walk(body)
+	return found
 }

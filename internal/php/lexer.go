@@ -1078,7 +1078,7 @@ func (l *Lexer) heredoc() error {
 		l.pos++
 	}
 	if l.pos >= len(l.src) {
-		return fmt.Errorf("lexer: незакрытый heredoc на позиции %d", start)
+		return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 	}
 	nowdoc := false
 	var label string
@@ -1090,7 +1090,7 @@ func (l *Lexer) heredoc() error {
 			l.pos++
 		}
 		if l.pos >= len(l.src) {
-			return fmt.Errorf("lexer: незакрытый heredoc на позиции %d", start)
+			return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 		}
 		label = l.src[s:l.pos]
 		l.pos++
@@ -1102,7 +1102,7 @@ func (l *Lexer) heredoc() error {
 			l.pos++
 		}
 		if l.pos >= len(l.src) {
-			return fmt.Errorf("lexer: незакрытый heredoc на позиции %d", start)
+			return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 		}
 		label = l.src[s:l.pos]
 		l.pos++
@@ -1114,7 +1114,7 @@ func (l *Lexer) heredoc() error {
 		label = l.src[s:l.pos]
 	}
 	if label == "" {
-		return fmt.Errorf("lexer: пустая метка heredoc на позиции %d", start)
+		return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 	}
 	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
 		l.pos++

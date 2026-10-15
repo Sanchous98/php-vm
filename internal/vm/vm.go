@@ -138,6 +138,7 @@ type VM struct {
 	// iniLookup — доступ к INI-настройкам (log_errors/error_log/date.timezone)
 	// для журналирования диагностик. Ставится хост-пакетом php.
 	iniLookup func(name string) (string, bool)
+	gcRoots   int64
 	// exceptionHandler — пользовательский обработчик непойманных исключений
 	// (set_exception_handler). inExcHandler защищает от рекурсии.
 	exceptionHandler Slot
@@ -641,6 +642,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.requestEndDone = false
 	vm.gcRuns = 0
 	vm.gcCollected = 0
+	vm.gcRoots = 0
 	vm.gcDtorCount = 0
 	vm.freeObjIDs = nil
 	vm.lifeCandidate = false

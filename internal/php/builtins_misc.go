@@ -1095,15 +1095,10 @@ func callUserFuncArrayFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	if args[1].Type() != vm.ArrayType {
-		// param-имя есть только у аргумента #2 ($args).
-		ctx.Throw(vm.NewThrowable("TypeError",
-			vm.ArgTypeError("call_user_func_array", 2, "args", "array", phpTypeName(ctx, 1), "", 0)))
-		if ctx.HasThrown() {
-			return *new(vm.Value)
-		}
+	arr := requireArrayArgNamed(ctx, 1, "call_user_func_array", "args")
+	if ctx.HasThrown() {
+		return *new(vm.Value)
 	}
-	arr := arg(ctx, 1).AsArray()
 	if arr.HasStringKeys() {
 		res, err := ctx.VMInstance().CallCallableNamedDirect(ctx, derefSlot(args[0]), arr)
 		throwCallable(ctx, err)
@@ -1179,7 +1174,7 @@ func forwardStaticCallArrayFn(ctx *vm.Context) vm.Value {
 			return *new(vm.Value)
 		}
 	}
-	arr := requireArrayArg(ctx, 1, "forward_static_call_array")
+	arr := requireArrayArgNamed(ctx, 1, "forward_static_call_array", "args")
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
@@ -4703,6 +4698,12 @@ func debugObjRefCount(o *vm.Object) int {
 	if o != nil && int(o.Refs()) > n {
 		n = int(o.Refs())
 	}
+	// Кейс enum всегда держится таблицей констант класса: Zend учитывает
+	// эту ссылку с самого первого обращения (в VM учёт отстаёт до первого
+	// прохода жизненного цикла).
+	if o != nil && n < 2 && o.Class() != nil && o.Class().IsEnum() {
+		n = 2
+	}
 	return n
 }
 
@@ -4771,10 +4772,8 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		}
 		b.WriteString(pad + "}\n")
 	case vm.ObjectType:
-		if d, ok := st.vm.EnumDump(s); ok {
-			b.WriteString(d + "\n")
-			return
-		}
+		// debug_zval_dump печатает enum-кейс как обычный объект (в отличие от
+		// var_dump, где Zend выводит enum(Class::Case)).
 		o := st.vm.SlotObject(s)
 		if o == nil {
 			b.WriteString("NULL\n")

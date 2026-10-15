@@ -361,6 +361,13 @@ func (o *Object) ConsumeReadonlyReinit(name string) bool {
 	return true
 }
 
+// ReadonlyReinitPending сообщает, что для свойства разрешена одноразовая
+// переинициализация (состояние после clone), не снимая разрешение: Zend
+// снимает флаг только после успешной проверки типа значения.
+func (o *Object) ReadonlyReinitPending(name string) bool {
+	return o != nil && o.readonlyReinit != nil && o.readonlyReinit[name]
+}
+
 // PropertyNames возвращает свойства объекта в порядке PHP.
 func (o *Object) PropertyNames() []string {
 	if o == nil || o.class == nil {

@@ -431,15 +431,17 @@ func (vm *VM) opStaticCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if cls == nil {
 		return vm.throwScopeClass(chunk, in.B)
 	}
-	if n := deref(regs[in.C&0xFF]); n.typ != StringType {
-		// Zend: динамическое имя статического метода обязано быть строкой.
+	mnameSlot := deref(regs[in.C&0xFF])
+	if mnameSlot.typ != StringType {
+		// Zend: имя метода обязано быть строкой (ZEND_INIT_STATIC_METHOD_CALL);
+		// иначе Error "Method name must be a string" (Test::{$null}()).
 		err := NewThrowable("Error", "Method name must be a string")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}
 		return execResult{next: true}
 	}
-	mname := deref(regs[in.C&0xFF]).ToString()
+	mname := mnameSlot.ToString()
 	if cls.IsTrait() {
 		vm.Deprecated("Calling static trait method " + cls.Name() + "::" + mname + " is deprecated, it should only be called on a class using the trait")
 	}
@@ -1126,11 +1128,10 @@ func (vm *VM) staticGetDynCommon(regs []Slot, consts []Slot, chunk *Chunk, in In
 			}
 		}
 	} else {
-		if !rw {
-			// Динамическое имя: чтение несуществующего статического свойства —
-			// Error (Foo::${42}; int_static_prop_name).
-			err := NewThrowable("Error", "Access to undeclared static property "+
-				cls.Name()+"::$"+deref(regs[in.C]).ToString())
+		// Чтение необъявленного статического свойства — Error (Zend
+		// FETCH_STATIC_PROP_R). В IS-режиме (isset/??/@) ошибки нет.
+		if !rw && vm.suppress == 0 {
+			err := NewThrowable("Error", "Access to undeclared static property "+cls.Name()+"::$"+deref(regs[in.C]).ToString())
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
 			}

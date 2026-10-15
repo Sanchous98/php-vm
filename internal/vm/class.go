@@ -1841,7 +1841,7 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 			if hasPd && pd.vis == Private {
 				key := mangledPropKey(c, name)
 				seen[key] = true
-				suffix := `:"` + c.name + `":private`
+				suffix := `:"` + classDisplayName(c) + `":private`
 				if v, ok := o.propValueRaw(key); ok {
 					out = append(out, DumpEntry{Key: name, Val: v, Suffix: suffix, Decl: c.name})
 					continue

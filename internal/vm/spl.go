@@ -195,6 +195,9 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	// FilterIterator/CallbackFilterIterator: фильтрующая обёртка над
 	// итератором (gc_046). FilterIterator абстрактен, рабочая реализация —
 	// CallbackFilterIterator с callable-предикатом.
+	iterIter := RegisterClass[iterIteratorData]("IteratorIterator", nil)
+	iterIter.Implements(iterator)
+	registerIteratorIteratorMembers(iterIter)
 	filterIter := NewClass("FilterIterator", nil)
 	filterIter.SetAbstract()
 	filterIter.Implements(iterator)
@@ -245,7 +248,7 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	observer := NewInterface("SplObserver", nil)
 	subject := NewInterface("SplSubject", nil)
 
-	return []ClassInfo{seekable, arrayObject, arrayIterator, recArrayIterator, recIteratorIterator, simpleXml, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakMapIter, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
+	return []ClassInfo{seekable, arrayObject, arrayIterator, recArrayIterator, recIteratorIterator, simpleXml, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakMapIter, weakRef, recFilterIter, observer, subject, filterIter, iterIter, cbFilterIter}
 }
 
 // filterIterData — состояние FilterIterator/CallbackFilterIterator:
@@ -286,6 +289,96 @@ func (vm *VM) filterIterSkip(d *filterIterData, withCallback bool) (bool, error)
 			return false, err
 		}
 	}
+}
+
+// iterIteratorData — SPL IteratorIterator: обёртка над внутренним итератором
+// (Zend spl_iterators.c spl_dual_it). inner — вложенный итератор.
+type iterIteratorData struct {
+	Object
+	inner Slot
+	// attached — внутренний итератор привязан первым rewind() (Zend
+	// spl_dual_it: до rewind valid() = false, current()/key() = null).
+	attached bool
+}
+
+// registerIteratorIteratorMembers регистрирует конструктор и методы
+// IteratorIterator: операции передаются вложенному итератору, наследники
+// (в т.ч. анонимные) могут вызывать их через parent::.
+func registerIteratorIteratorMembers(ci *runtimeClass) {
+	ci.Constructor(&Function{Name: "__construct", NumArgs: 1, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[iterIteratorData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			if len(args) > 0 {
+				a := deref(args[0])
+				if a.typ != ObjectType {
+					return Slot{}, ctx.vm.argTypeError("IteratorIterator::__construct", 1, "iterator", "Traversable",
+						valueTypeName(ctx.vm, a), "", 0)
+				}
+				d.inner = a
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("getInnerIterator", &Function{Name: "getInnerIterator", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[iterIteratorData](); d != nil {
+				return d.inner, nil
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("rewind", &Function{Name: "rewind", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[iterIteratorData](); d != nil && deref(d.inner).Type() == ObjectType {
+				d.attached = true
+				if err := ctx.vm.iterInvoke(d.inner, "rewind", nil); err != nil {
+					return Slot{}, err
+				}
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("valid", &Function{Name: "valid", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[iterIteratorData](); d != nil && d.attached && deref(d.inner).Type() == ObjectType {
+				ok, err := ctx.vm.iterValid2(d.inner)
+				if err != nil {
+					return Slot{}, err
+				}
+				return MakeBool(ok), nil
+			}
+			return MakeBool(false), nil
+		},
+	}})
+	ci.Method("current", &Function{Name: "current", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[iterIteratorData](); d != nil && d.attached && deref(d.inner).Type() == ObjectType {
+				return ctx.vm.iterCall(d.inner, "current")
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("key", &Function{Name: "key", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[iterIteratorData](); d != nil && d.attached && deref(d.inner).Type() == ObjectType {
+				return ctx.vm.iterCall(d.inner, "key")
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("next", &Function{Name: "next", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[iterIteratorData](); d != nil && deref(d.inner).Type() == ObjectType {
+				if err := ctx.vm.iterInvoke(d.inner, "next", nil); err != nil {
+					return Slot{}, err
+				}
+			}
+			return MakeNull(), nil
+		},
+	}})
 }
 
 func registerFilterIteratorMembers(ci *runtimeClass, withCallback bool) {

@@ -416,6 +416,16 @@ type VM struct {
 	// самом конце запроса, после shutdown-функций.
 	headerCallbacks []Slot
 
+	// genDelegPos — делегирующий генератор, чья приостановленная позиция
+	// служит местом вызова вложенного генератора в трейсе (Zend: кадр
+	// yield from).
+	genDelegPos *Generator
+	// genResumeDepth — глубина вложенных resume генераторов (0 — внешний).
+	genResumeDepth int
+	// genCallDepth — глубина вложенных next/send/throw генераторов: флаг
+	// DO_INIT проверяется только на внешнем вызове (Zend zend_generator_resume).
+	genCallDepth int
+
 	// nextObjID — счётчик PHP-хендлов объектов (#N в var_dump).
 	nextObjID int
 
@@ -6269,6 +6279,43 @@ func (vm *VM) warnByRefArgs(fn *Function, args []Slot) {
 	_ = vm.byRefArgsDiag(fn, args)
 }
 
+// checkByRefArgs — диагностика by-ref параметра, получившего значение
+// (не ссылку): при вызове через call_user_func*/из внутренней функции Zend
+// печатает Warning (zend_wrong_parameters_call_error), при прямом вызове
+// (операнд SEND_VAL/CONST) — фатальную Error
+// (zend_check_arg_send_type, "could not be passed by reference").
+func (vm *VM) checkByRefArgs(fn *Function, args []Slot) error {
+	if vm.cufCall || vm.argNoLoc > 0 {
+		vm.warnByRefArgs(fn, args)
+		return nil
+	}
+	return vm.byRefArgsError(fn, args)
+}
+
+// byRefArgsError формирует Error для by-ref параметра со значением-аргументом.
+func (vm *VM) byRefArgsError(fn *Function, args []Slot) error {
+	for i := range fn.ByRefArgs {
+		if !fn.ByRefArgs[i] {
+			continue
+		}
+		if fn.VariadicByRef && i >= len(fn.ByRefArgs)-1 {
+			continue
+		}
+		if i < len(args) && !args[i].IsRef() {
+			name := ""
+			tail := fn.VariadicByRef && i >= len(fn.ParamNames)-1
+			if !tail && i < len(fn.ParamNames) && fn.ParamNames[i] != "" {
+				name = " ($" + fn.ParamNames[i] + ")"
+			}
+			th := NewThrowable("Error", fmt.Sprintf("%s(): Argument #%d%s could not be passed by reference",
+				argFuncDisplayName(fn), i+1, name))
+			th.Trace = vm.captureExceptionTrace()
+			return th
+		}
+	}
+	return nil
+}
+
 // tooFewArgs формирует ошибку ArgumentCountError для вызова userland-функции
 // с меньшим числом аргументов, чем объявлено обязательных.
 func (vm *VM) tooFewArgs(fn *Function, passed int) *Throwable {
@@ -6529,7 +6576,10 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			// Диагностику by-ref смотрим на исходных аргументах: variadic-хвост
 			// ещё не упакован (value-аргументы вариативного by-ref параметра
 			// Zend оборачивает в ссылку без предупреждения).
-			if berr := vm.byRefArgsDiag(fn, args); berr != nil {
+			if berr := vm.checkByRefArgs(fn, args); berr != nil {
+				if haveEnv {
+					vm.restoreFuncEnv(env)
+				}
 				return Slot{}, berr
 			}
 		}
@@ -6755,6 +6805,10 @@ type wbSkipEntry struct {
 	ob   *Object
 	name string
 	real bool
+	// roOK — дим-запись в readonly-свойство, разрешённая одноразовой
+	// переинициализацией после clone (FETCH_OBJ_W снял флаг IS_PROP_REINITABLE):
+	// запись-обратно выполняется без повторной readonly-проверки.
+	roOK bool
 }
 
 // pushWbSkip регистрирует отмену записи-обратно для ob::$name.
@@ -6773,6 +6827,29 @@ func (vm *VM) dropWbSkip(ob *Object, name string) {
 	if n := len(vm.wbSkip); vm.wbSkip[n-1].ob == ob && vm.wbSkip[n-1].name == name {
 		vm.wbSkip = vm.wbSkip[:n-1]
 	}
+}
+
+// pushWbSkipReadonly помечает, что запись-обратно в readonly-свойство уже
+// разрешена снятым флагом переинициализации.
+func (vm *VM) pushWbSkipReadonly(ob *Object, name string) {
+	if ob == nil {
+		return
+	}
+	vm.wbSkip = append(vm.wbSkip, wbSkipEntry{ob: ob, name: name, roOK: true})
+}
+
+// takeWbSkipReadonly снимает со стека совпадающую пометку roOK для ob::$name.
+func (vm *VM) takeWbSkipReadonly(ob *Object, name string) bool {
+	if ob == nil {
+		return false
+	}
+	if n := len(vm.wbSkip); n > 0 {
+		if e := vm.wbSkip[n-1]; e.ob == ob && e.name == name && e.roOK {
+			vm.wbSkip = vm.wbSkip[:n-1]
+			return true
+		}
+	}
+	return false
 }
 
 // accessError формирует PHP-совместимую ошибку доступа к непубличному методу.
@@ -6814,13 +6891,14 @@ func frameCalleeName(fr callFrameInfo) string {
 	return name
 }
 
-// funcDisplayName рендерит имя функции для трейсов (Scope::Name).
+// funcDisplayName рендерит имя функции для трейсов (Scope::Name). Для методов
+// анонимных классов — имя предка/первого интерфейса (`Two@anonymous`).
 func funcDisplayName(fn *Function) string {
 	if fn.DisplayName != "" {
 		return fn.DisplayName
 	}
 	if fn.Scope != nil {
-		return fn.Scope.Name() + "::" + fn.Name
+		return classDisplayName(fn.Scope) + "::" + fn.Name
 	}
 	return fn.Name
 }
@@ -7498,7 +7576,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		return Slot{}, aerr
 	}
 	if len(fn.ByRefArgs) > 0 {
-		if berr := vm.byRefArgsDiag(fn, args); berr != nil {
+		if berr := vm.checkByRefArgs(fn, args); berr != nil {
 			return Slot{}, berr
 		}
 	}
@@ -7597,7 +7675,7 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		return Slot{}, aerr
 	}
 	if len(fn.ByRefArgs) > 0 {
-		if berr := vm.byRefArgsDiag(fn, args); berr != nil {
+		if berr := vm.checkByRefArgs(fn, args); berr != nil {
 			return Slot{}, berr
 		}
 	}
@@ -8176,7 +8254,17 @@ func (vm *VM) evalThunk(th *Thunk) (Slot, error) {
 	th.materialize()
 	th.busy = true
 	vm.thunkEvalDepth++
+	// Константа перечисления вычисляется без отдельного кадра в трейсе
+	// (Zend вычисляет их на объявлении: enum/update-class-constant-failure),
+	// а константные выражения свойств/ленивых констант кадр показывают
+	// (type_declarations/typed_properties_022, enum/offsetGet-in-const-expr).
+	hiddenFrame := th.self != nil && th.self.IsEnum()
+	savedSuppress := vm.suppressNextFrame
+	if hiddenFrame {
+		vm.suppressNextFrame = true
+	}
 	res, err := vm.invokeMethod(th.fn, Slot{}, th.self, nil)
+	vm.suppressNextFrame = savedSuppress
 	vm.thunkEvalDepth--
 	th.busy = false
 	if err != nil {

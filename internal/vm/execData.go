@@ -156,21 +156,50 @@ func (vm *VM) opGlobalUnset(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 }
 
 func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	name := "$" + deref(regs[in.C]).ToString()
-	// `$$x` с $x == "this" внутри метода — сам объект (indirect_reference_this).
-	if name == "$this" && vm.ctx.this.typ == ObjectType {
-		r := vm.ctx.this
+	name := deref(regs[in.C]).ToString()
+	if vm.inFunction {
+		// `${"this"}` в объектном контексте — связанный $this.
+		if name == "this" && deref(vm.cur.this).typ == ObjectType {
+			r := vm.cur.this
+			{
+				old := regs[in.A]
+				wv := r
+				regs[in.A] = wv
+				if trackedType(old.typ) || trackedType(wv.typ) {
+					vm.wRegSlow(int(in.A), old)
+				}
+			}
+			shareSlot(r)
+			return execResult{}
+		}
+		// В теле функции динамическое имя (`$$x`, `${expr}`) ищет переменную в
+		// таблице символов кадра (Zend FETCH_R по локальной области), а не в
+		// глобальной таблице: `$var="a"; $$var` в функции не видит глобальную $a.
+		if v, ok := vm.SymtabGet(name); ok {
+			r := deref(v)
+			{
+				old := regs[in.A]
+				wv := r
+				regs[in.A] = wv
+				if trackedType(old.typ) || trackedType(wv.typ) {
+					vm.wRegSlow(int(in.A), old)
+				}
+			}
+			shareSlot(r)
+			return execResult{}
+		}
+		vm.warnUndefVar("$" + name)
 		{
 			old := regs[in.A]
-			wv := r
+			wv := MakeNull()
 			regs[in.A] = wv
 			if trackedType(old.typ) || trackedType(wv.typ) {
 				vm.wRegSlow(int(in.A), old)
 			}
 		}
-		shareSlot(r)
 		return execResult{}
 	}
+	name = "$" + name
 	if v, ok := vm.globals[name]; ok {
 		r := deref(v)
 		{
@@ -197,11 +226,8 @@ func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 }
 
 func (vm *VM) opGlobalSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	if vm.globals == nil {
-		vm.globals = map[string]Slot{}
-	}
-	name := "$" + deref(regs[in.C]).ToString()
-	if name == "$this" {
+	name := deref(regs[in.C]).ToString()
+	if name == "this" {
 		// `$$a = ...` с $a == "this": Zend запрещает переприсваивать $this.
 		err := NewThrowable("Error", "Cannot re-assign $this")
 		if !vm.handleThrow(chunk, err) {
@@ -209,6 +235,20 @@ func (vm *VM) opGlobalSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 		}
 		return execResult{next: true}
 	}
+	if vm.inFunction {
+		// Динамическое имя в теле функции пишет в локальную область кадра.
+		if err := vm.SymtabSet(name, regs[in.A]); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		return execResult{}
+	}
+	if vm.globals == nil {
+		vm.globals = map[string]Slot{}
+	}
+	name = "$" + name
 	v := deref(regs[in.A])
 	{
 		old := regs[in.A]

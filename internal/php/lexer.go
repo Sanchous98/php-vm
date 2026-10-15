@@ -46,7 +46,8 @@ type AttrRaw struct {
 
 // InterpPart — часть интерполированной строки: литерал или выражение.
 type InterpPart struct {
-	Text   string
+	Text string
+	// IsExpr — часть является выражением (иначе — литеральный текст).
 	IsExpr bool
 	// DollarBrace — часть вида ${...} (устаревшая форма интерполяции).
 	DollarBrace bool
@@ -56,6 +57,82 @@ type InterpPart struct {
 	// Heredoc — часть получена из heredoc-строки (для heredoc PHP-диагностики
 	// подавляются, как в `php -r`; см. parser.interp).
 	Heredoc bool
+}
+
+// interpPartText готовит текст простой интерполяции `$name[...]` к повторному
+// разбору. Смещение внутри скобок в PHP — это T_NUM_STRING: число-литерал
+// (десятичное или hex) используется как СТРОКА-ключ, которая затем проходит
+// обычное преобразование ключа массива («00», «-0», «0x0» остаются строками,
+// «0»/«1»/«-1» становятся int). Поэтому такие смещения оборачиваем в кавычки:
+// без этого `"$a[00]"` читал бы int-ключ 0 (Zend/tests/numeric_strings/
+// neg_num_string).
+func interpPartText(raw string) string {
+	if !strings.Contains(raw, "[") {
+		return raw
+	}
+	var b strings.Builder
+	for i := 0; i < len(raw); i++ {
+		c := raw[i]
+		if c != '[' {
+			b.WriteByte(c)
+			continue
+		}
+		depth := 0
+		j := i
+		for j < len(raw) {
+			if raw[j] == '[' {
+				depth++
+			} else if raw[j] == ']' {
+				depth--
+				if depth == 0 {
+					break
+				}
+			}
+			j++
+		}
+		if j >= len(raw) {
+			b.WriteString(raw[i:])
+			break
+		}
+		off := raw[i+1 : j]
+		if isInterpNumOffset(off) {
+			b.WriteString(`["`)
+			b.WriteString(off)
+			b.WriteString(`"]`)
+		} else {
+			b.WriteString(raw[i : j+1])
+		}
+		i = j
+	}
+	return b.String()
+}
+
+// isInterpNumOffset сообщает, что смещение интерполяции — числовой литерал
+// (T_NUM_STRING: десятичный или hex), т.е. в PHP это строка-ключ.
+func isInterpNumOffset(s string) bool {
+	if s == "" || strings.TrimSpace(s) != s {
+		return false
+	}
+	if s[0] == '-' {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	if len(s) > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		for i := 2; i < len(s); i++ {
+			if !isHexDigit(s[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // interpDollarBraceText строит текст для повторного разбора `${...}`:
@@ -814,7 +891,7 @@ func (l *Lexer) string(q byte) error {
 				}
 				break
 			}
-			parts = append(parts, InterpPart{Text: l.src[vs:l.pos], IsExpr: true})
+			parts = append(parts, InterpPart{Text: interpPartText(l.src[vs:l.pos]), IsExpr: true})
 			hasExpr = true
 			continue
 		}
@@ -1055,7 +1132,7 @@ func (l *Lexer) interp(escapes bool, stop func() bool) (string, []InterpPart, bo
 				}
 				break
 			}
-			parts = append(parts, InterpPart{Text: l.src[vs:l.pos], IsExpr: true})
+			parts = append(parts, InterpPart{Text: interpPartText(l.src[vs:l.pos]), IsExpr: true})
 			hasExpr = true
 			continue
 		}

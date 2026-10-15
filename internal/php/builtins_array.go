@@ -1109,11 +1109,20 @@ func arraySliceFn(ctx *vm.Context) vm.Value {
 	out := vm.NewArray()
 	a := arg(ctx, 0)
 	if a.Type() != vm.ArrayType {
+		// null/scalar для параметра array — TypeError (Zend коэрсит только
+		// scalar-параметры; null допустим лишь для nullable).
+		arrayArgError(ctx, 0, "array_slice")
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
 		return vm.MakeArray(out)
 	}
 	arr := a.AsArray()
 	n := arr.Len()
 	preserve := len(ctx.Args()) >= 4 && arg(ctx, 3).ToBool()
+	if arg(ctx, 1).Type() == vm.NullType {
+		ctx.VM().Deprecated("array_slice(): Passing null to parameter #2 ($offset) of type int is deprecated")
+	}
 	off := int(arg(ctx, 1).ToInt())
 	if off < 0 {
 		off = n + off
@@ -2114,6 +2123,19 @@ func arrayArgError(ctx *vm.Context, i int, fn string) {
 	if ctx.HasThrown() {
 		return
 	}
+}
+
+// requireArrayArgNamed — как requireArrayArg, но с явным именем параметра в
+// диагностике (Zend печатает имя из сигнатуры: call_user_func_array($args)).
+func requireArrayArgNamed(ctx *vm.Context, i int, fn, param string) *vm.Array {
+	if arg(ctx, i).Type() != vm.ArrayType {
+		ctx.Throw(vm.NewThrowable("TypeError",
+			vm.ArgTypeError(fn, i+1, param, "array", phpTypeName(ctx, i), "", 0)))
+		if ctx.HasThrown() {
+			return *new(*vm.Array)
+		}
+	}
+	return arg(ctx, i).AsArray()
 }
 
 // requireArrayArg проверяет, что аргумент #i (нумерация с 0) — массив.

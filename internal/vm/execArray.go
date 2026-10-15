@@ -125,7 +125,7 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 	if ks := deref(regs[in.C]); ks.typ == IntType {
 		v, found := src.AsArray().GetInt(ks.Int())
 		if !found {
-			vm.Warn("Undefined array key " + intToString(ks.Int()))
+			vm.warnUndefArrayKey(src.AsArray(), intKey(ks.Int()))
 		}
 		v = snapReadVal(v)
 		// Элемент-ссылка разыменовывается при чтении (FETCH_DIM_R):
@@ -152,7 +152,7 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 	}
 	v, found := src.AsArray().Get(k)
 	if !found {
-		vm.Warn("Undefined array key " + arrayKeyRepr(k))
+		vm.warnUndefArrayKey(src.AsArray(), k)
 	}
 	v = deref(v)
 	shareSlot(v)
@@ -281,7 +281,7 @@ func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 	if ks := deref(regs[in.C]); ks.typ == IntType {
 		v, found := src.AsArray().GetInt(ks.Int())
 		if !found {
-			vm.Warn("Undefined array key " + intToString(ks.Int()))
+			vm.warnUndefArrayKey(src.AsArray(), intKey(ks.Int()))
 		}
 		{
 			old := regs[in.A]
@@ -303,7 +303,7 @@ func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 	}
 	v, found := src.AsArray().Get(k)
 	if !found {
-		vm.Warn("Undefined array key " + arrayKeyRepr(k))
+		vm.warnUndefArrayKey(src.AsArray(), k)
 	}
 	{
 		old := regs[in.A]
@@ -314,6 +314,18 @@ func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		}
 	}
 	return execResult{}
+}
+
+// warnUndefArrayKey предупреждает о недостающем ключе массива. Для снимка
+// $GLOBALS Zend читает символьную таблицу и сообщает «Undefined global
+// variable $name» (FETCH_R), а не «Undefined array key» — в т.ч. для
+// динамических и числовых ключей (Zend/tests/restrict_globals/valid).
+func (vm *VM) warnUndefArrayKey(arr *Array, k ArrayKey) {
+	if g := deref(vm.globals["$GLOBALS"]); g.typ == ArrayType && g.AsArray() == arr {
+		vm.Warn("Undefined global variable $" + k.phpString())
+		return
+	}
+	vm.Warn("Undefined array key " + arrayKeyRepr(k))
 }
 
 // opListFetchRef — ссылочная выборка элемента для деструктуризации

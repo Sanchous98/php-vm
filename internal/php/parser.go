@@ -1945,6 +1945,13 @@ func (p *Parser) statementInner() (Stmt, error) {
 		var defs []Stmt
 		for {
 			namePos := p.cur().Pos
+			// Имя константы верхнего уровня — идентификатор; ключевое слово
+			// здесь Parse error (в классе const-имена могут быть любыми).
+			// true/false/null PHP лексит как T_STRING — они допустимы как
+			// имена (ошибка «Cannot redeclare constant» выдаётся позже).
+			if t := p.cur(); t.Kind == TKeyword && t.Val != "true" && t.Val != "false" && t.Val != "null" {
+				return nil, p.syntaxErrExpect(t, "identifier")
+			}
 			name := tokName(p.next())
 			if err := p.expect(TOp, "="); err != nil {
 				return nil, err
@@ -2439,6 +2446,9 @@ func (p *Parser) classDecl() (Stmt, error) {
 	finalCount := 0
 	isReadonly := false
 	readonlyCount := 0
+	// `#[A] readonly class Foo`: атрибуты прикреплены к первому токену
+	// (модификатору), а не к `class` — забираем их до разбора модификаторов.
+	preAttrs := p.takeAttrs()
 	for {
 		switch {
 		case p.kw("abstract"):
@@ -2480,7 +2490,7 @@ modsDone:
 	}
 	classLine := p.lineAt(p.cur().Pos)
 	classPos := p.cur().Pos
-	classAttrs := p.parseAttrs(p.takeAttrs())
+	classAttrs := p.parseAttrs(append(preAttrs, p.takeAttrs()...))
 	p.next()
 
 	// Имя класса/интерфейса/трейта не может быть зарезервированным ключевым
@@ -3359,6 +3369,13 @@ func (p *Parser) funcDecl() (Stmt, error) {
 	attrs := p.parseAttrs(p.takeAttrs())
 	p.next() // function
 	byref := p.accept(TOp, "&")
+	// Имя функции верхнего уровня — только T_STRING: ключевое слово здесь
+	// даёт Parse error (Zend: function_declaration_statement требует T_STRING;
+	// сообщение LALR — «expecting "("»: после function парсер ждёт также
+	// открывающую скобку анонимной функции).
+	if t := p.cur(); t.Kind == TKeyword {
+		return nil, p.syntaxErrExpect(t, `"("`)
+	}
 	rawName := tokName(p.next())
 	name := p.qualifyDecl(rawName)
 	params, err := p.paramList()
@@ -3541,6 +3558,15 @@ func (p *Parser) singleType() string {
 		b.WriteString(p.next().Val)
 	}
 	raw := b.String()
+	if qualified {
+		// Квалифицированная запись встроенного типа (\int, namespace\int) —
+		// компайл-фатал: Zend zend_compile_single_typename сверяет
+		// разрешённое имя со списком builtin_types до разрешения имени.
+		if unq, ok := qualifiedBuiltinType(raw); ok {
+			p.typeErr = &fatalError{msg: "Type declaration '" + unq + "' must be unqualified", line: line}
+			return p.resolveTypeAlias(raw)
+		}
+	}
 	p.maybeConfusableTypeWarning(raw, qualified, line)
 	return p.resolveTypeAlias(raw)
 }
@@ -3551,6 +3577,28 @@ var confusableTypeSuggestion = map[string]string{
 	"integer": "int",
 	"double":  "float",
 	"boolean": "bool",
+}
+
+// qualifiedBuiltinTypes — имена встроенных типов, которые Zend запрещает
+// записывать квалифицированно (\int, namespace\int): список builtin_types из
+// zend_compile.c (array/callable/static/self/parent в него не входят — они
+// разбираются как ключевые слова).
+var qualifiedBuiltinTypes = map[string]bool{
+	"null": true, "true": true, "false": true, "int": true, "float": true,
+	"string": true, "bool": true, "void": true, "never": true,
+	"iterable": true, "object": true, "mixed": true,
+}
+
+// qualifiedBuiltinType возвращает (в нижнем регистре) имя встроенного типа,
+// если raw записан квалифицированно (с ведущим "\" или "namespace\").
+func qualifiedBuiltinType(raw string) (string, bool) {
+	n := strings.TrimPrefix(raw, "namespace\\")
+	n = strings.TrimPrefix(n, "\\")
+	n = strings.ToLower(n)
+	if qualifiedBuiltinTypes[n] {
+		return n, true
+	}
+	return "", false
 }
 
 // maybeConfusableTypeWarning регистрирует Warning для неоднозначных имён типов
@@ -4741,7 +4789,8 @@ func (p *Parser) unaryExpr() (Expr, error) {
 			if err := p.expect(TOp, ")"); err != nil {
 				return nil, err
 			}
-		} else if !p.is(TOp, ";") && !p.is(TEOF, "") && !p.is(TInlineHTML, "") {
+		} else if !p.is(TOp, ";") && !p.is(TEOF, "") && !p.is(TInlineHTML, "") &&
+			!atBracketOrEOF(p.cur()) && !p.is(TOp, ",") {
 			arg, err = p.expr()
 			if err != nil {
 				return nil, err
@@ -5974,6 +6023,15 @@ func (p *Parser) arrayElems(end string) (Expr, error) {
 			}
 			first, err = p.expr()
 			if err != nil {
+				// Ключевое слово в позиции элемента массива: LALR-состояние
+				// принимает здесь ещё и "]", поэтому Zend добавляет
+				// «expecting "]"» (Zend/tests/grammar/regression_012).
+				if pe, ok := err.(*parseError); ok {
+					if t := p.cur(); t.Kind == TKeyword {
+						return nil, p.syntaxErrExpect(t, `"]"`)
+					}
+					_ = pe
+				}
 				return nil, err
 			}
 			if p.accept(TOp, "=>") {

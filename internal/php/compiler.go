@@ -5033,6 +5033,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 					if cd.IsTrait {
 						return nil, base.newFatal("Cannot apply #[AllowDynamicProperties] to trait")
 					}
+					if cd.IsReadonly && !strings.HasPrefix(cd.Name, "\x00anon#") && !strings.HasPrefix(cd.Name, "\x00") {
+						return nil, base.newFatal("Cannot apply #[AllowDynamicProperties] to readonly class " + cd.Name)
+					}
 				}
 			}
 			if cd.IsReadonly {
@@ -5369,6 +5372,10 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						base := "class"
 						if p := ci.Parent(); p != nil {
 							base = p.Name()
+						} else if len(cd.Interfaces) > 0 {
+							// Zend берёт имя первого интерфейса как префикс
+							// анонимного имени (Two@anonymous).
+							base = strings.TrimLeft(cd.Interfaces[0], "\\")
 						}
 						fn.DisplayName = base + "@anonymous::" + m.MName
 					}
@@ -6719,6 +6726,11 @@ func (c *compiler) magicConst(x *MagicExpr) uint8 {
 			s = closureQualifiedName(x.NS)
 		}
 	case "__CLASS__":
+		if c.curClass == nil {
+			// Вне класса __CLASS__ — пустая строка (в отличие от self::class).
+			s = ""
+			break
+		}
 		r := c.alloc()
 		// B=255 — специальный селектор __CLASS__: имя области класса, а вне
 		// класса — пустая строка (в отличие от self::class, который вне класса
@@ -10507,6 +10519,14 @@ func arrowFreeVars(body Expr, params []Param) []string {
 		case nil:
 		case *VarExpr:
 			add(x.Name)
+			// `${expr}`/`$$var`: имя переменной вычисляется выражением —
+			// переменные оттуда тоже захватываются (arrow_functions/003).
+			if x.NameExpr != nil {
+				walk(x.NameExpr)
+			}
+		case *StaticPropExpr:
+			walk(x.ClassExpr)
+			walk(x.NameExpr)
 		case *ClosureExpr:
 			for _, u := range x.Uses {
 				add(u.Name)
@@ -13993,10 +14013,24 @@ func (c *compiler) exprArg(a Expr, byRefPos bool) (uint8, error) {
 	return r, err
 }
 
+// nativeValueMethods — методы встроенных классов (Generator/ArrayAccess и
+// т.п.) без by-ref параметров: вызов с переменной-аргументом не должен
+// подавлять диагностику «Undefined variable» (Zend/tests/generators/errors/
+// resume_running_generator_error_003: `$gen->send($y)`).
+var nativeValueMethods = map[string]bool{
+	"send": true, "throw": true, "current": true, "next": true, "valid": true,
+	"key": true, "getReturn": true, "rewind": true, "count": true, "getName": true,
+	"getMessage": true, "getCode": true, "getFile": true, "getLine": true,
+	"getTrace": true, "getTraceAsString": true, "getPrevious": true,
+}
+
 // methodArgInfo описывает передачу аргументов метода: при неизвестной
 // сигнатуре переменные уходят «для возможной записи» (SEND_VAR_EX).
 func (c *compiler) methodArgInfo(name string) byRefInfo {
 	if c.methodRefs[name] == nil {
+		if nativeValueMethods[name] {
+			return byRefInfo{}
+		}
 		return byRefInfo{silent: true, forWrite: true}
 	}
 	return byRefInfo{}
@@ -14108,11 +14142,8 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		// Временное выражение (результат вызова/константа) в by-ref позиции:
 		// Zend бросает Error "Cannot use temporary expression in write
 		// context" (gh12102_1/3).
-		if isTemporaryExpr(ix.Arr) || callResultBase(ix.Arr) {
-			c.emitNamedArgError("Error", "Cannot use temporary expression in write context")
-			z := c.alloc()
-			c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: z})
-			return z, nil, nil
+		if tempWriteBase(ix.Arr) {
+			return c.emitTempWriteErr(ix), nil, nil
 		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 		cell, err := c.refCellForExpr(ix)
@@ -14126,6 +14157,9 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		return cell, nil, nil
 	}
 	if pe, ok := e.(*PropExpr); ok {
+		if tempWriteBase(pe.Recv) {
+			return c.emitTempWriteErr(pe), nil, nil
+		}
 		cell, err := c.refCellForExpr(pe)
 		if err != nil {
 			return 0, nil, err
@@ -14166,6 +14200,32 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 	cell := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpNewRef, A: cell, B: valReg})
 	return cell, nil, nil
+}
+
+// emitTempWriteErr эмитит рантайм-ошибку «Cannot use temporary expression in
+// write context»: Zend в write-контексте отвергает CONST/TMP-базу
+// (zend_use_tmp_in_write_context_helper), напр. `$fn([0, 1][0])` для by-ref
+// параметра (Zend/tests/varSyntax/tempDimFetchByRefError).
+func (c *compiler) emitTempWriteErr(e Expr) uint8 {
+	c.emitLine(c.exprLine(e))
+	return c.emitNamedArgError("Error", "Cannot use temporary expression in write context")
+}
+
+// tempWriteBase сообщает, что база обращения — CONST/TMP (литерал или
+// результат операции), а не переменная/вызов: такая база недопустима в
+// write-контексте (по ссылке). Результаты вызовов/new — VAR, они допустимы.
+func tempWriteBase(e Expr) bool {
+	switch x := e.(type) {
+	case *IntLit, *FloatLit, *StrLit, *BoolLit, *NullLit, *ArrayLit,
+		*BinExpr, *LogicalExpr, *UnaryExpr, *CastExpr, *TernaryExpr,
+		*CoalesceExpr, *MatchExpr, *MagicExpr, *ConstExpr, *ClassKeywordExpr:
+		return true
+	case *IndexExpr:
+		return x.Key == nil || tempWriteBase(x.Arr)
+	case *PropExpr:
+		return tempWriteBase(x.Recv)
+	}
+	return false
 }
 
 // indexChainHasProp сообщает, что в цепочке индексов есть обращение к
@@ -14648,6 +14708,12 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 		switch x.Name {
 		case "func_get_arg", "func_get_args", "func_num_args":
 			c.usesFuncArg = true
+		}
+		// func_num_args()/func_get_args() принимают ровно 0 аргументов:
+		// иначе ArgumentCountError (nullsafe_operator/013).
+		if mn := strings.ToLower(x.Name); (mn == "func_num_args" || mn == "func_get_args" || mn == "get_called_class") && len(x.Args) > 0 {
+			return c.emitNamedArgError("ArgumentCountError",
+				mn+"() expects exactly 0 arguments, "+strconv.Itoa(len(x.Args))+" given"), nil
 		}
 		if x.Fallback != "" {
 			switch x.Fallback {
@@ -15343,6 +15409,22 @@ func (c *compiler) newStatic(args []Expr) (uint8, error) {
 // компиляции: имя грузится в регистр, а сам объект создаётся OpNewDyn
 // (резолв по имени в vm.classes в рантайме).
 func (c *compiler) newByClassName(name string, args []Expr) (uint8, error) {
+	// self/parent без подходящей области видимости: Zend бросает Error в
+	// момент вычисления выражения (в т.ч. при вычислении значения параметра
+	// по умолчанию — constexpr/new_self_parent).
+	switch strings.ToLower(strings.TrimLeft(name, "\\")) {
+	case "self":
+		if c.curClass == nil {
+			return c.emitNamedArgError("Error", `Cannot access "self" when no class scope is active`), nil
+		}
+	case "parent":
+		if c.curClass == nil {
+			return c.emitNamedArgError("Error", `Cannot access "parent" when no class scope is active`), nil
+		}
+		if c.curClass.Parent() == nil {
+			return c.emitNamedArgError("Error", `Cannot access "parent" when current class scope has no parent`), nil
+		}
+	}
 	nameReg := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nameReg,
 		C: int32(c.chunk.AddConst(vm.StrConst(strings.TrimLeft(name, "\\"))))})
@@ -17425,6 +17507,17 @@ func (c *compiler) refCellForExpr(value Expr) (uint8, error) {
 	case *IndexExpr:
 		if v.Key == nil {
 			break
+		}
+		// `$ref =& $GLOBALS['x']`: ссылка на саму глобальную переменную, а не
+		// на элемент снимка-массива (Zend: FETCH_R на символьной таблице).
+		if isGlobalsVar(v.Arr) {
+			if sl, ok := v.Key.(*StrLit); ok {
+				kr, err := c.expr(&StrLit{V: sl.V})
+				if err != nil {
+					return 0, err
+				}
+				return c.emitCall("__php_globals_ref", []uint8{kr}), nil
+			}
 		}
 		arr, wb, err := c.indexBase(v, true)
 		if err != nil {

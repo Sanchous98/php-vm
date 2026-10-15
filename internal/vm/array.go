@@ -138,6 +138,16 @@ func stringKey(s string) ArrayKey { return ArrayKey{str: true, s: s} }
 func MakeIntKey(i int64) ArrayKey  { return intKey(i) }
 func MakeStrKey(s string) ArrayKey { return stringKey(s) }
 
+// KeyFromString канонизирует строковый ключ по правилам PHP-массива
+// («1» → int-ключ 1) — как keyFromSlot для строк; нужно встроенным,
+// строящим массивы из внешних данных (json_decode).
+func KeyFromString(s string) ArrayKey {
+	if i, ok := canonicalIntKey(s); ok {
+		return intKey(i)
+	}
+	return stringKey(s)
+}
+
 // SetStr — установка значения по строковому ключу (SetInt см. ниже).
 func (a *Array) SetStr(k string, v Slot) error { return a.Set(stringKey(k), v) }
 

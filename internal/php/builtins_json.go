@@ -1,6 +1,9 @@
 package php
 
 import (
+	"encoding/json/jsontext"
+	"errors"
+	"io"
 	"math"
 	"phpvm/internal/vm"
 	"sort"
@@ -448,14 +451,195 @@ func (e *jsonEncoder) encodeString(s string) bool {
 
 // --- JSON DECODE ---
 
-type jsonParser struct {
+// jsonTextParser — обход токенов encoding/json/jsontext: синтаксис, кавычки и
+// escape'ы (включая суррогатные пары) делает стандартная библиотека; мы строим
+// PHP-дерево (упорядоченные массивы/объекты) и переводим ошибки в коды
+// json_last_error, как PHP: 3 — управляющий символ, 4 — синтаксис,
+// 5 — невалидный UTF-8, 10 — одиночный суррогат.
+type jsonTextParser struct {
 	vm       *vm.VM
-	s        string
-	i        int
+	dec      *jsontext.Decoder
 	flags    int64
 	maxDepth int
 	assoc    bool
 	err      int
+}
+
+// jsonClassifyError переводит ошибку jsontext в код json_last_error PHP.
+func jsonClassifyError(err error) int {
+	switch {
+	case err == nil, errors.Is(err, io.EOF):
+		return jsonErrorSyntax
+	case strings.Contains(err.Error(), "invalid UTF-8"):
+		return jsonErrorUTF8
+	case strings.Contains(err.Error(), "surrogate"):
+		return jsonErrorUTF16
+	case strings.Contains(err.Error(), "control character"):
+		return jsonErrorCtrlChar
+	}
+	return jsonErrorSyntax
+}
+
+// sanitizeInvalidUTF8 обрабатывает невалидные UTF-8 байты внутри строковых
+// литералов ДО jsontext: substitute=false — выбросить (JSON_INVALID_UTF8_IGNORE),
+// substitute=true — заменить на U+FFFD (JSON_INVALID_UTF8_SUBSTITUTE). Вне строк
+// невалидные байты остаются — их отвергнет парсер (как PHP: Syntax error).
+func sanitizeInvalidUTF8(s string, substitute bool) string {
+	if utf8.ValidString(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr := false
+	for i := 0; i < len(s); {
+		c := s[i]
+		if !inStr {
+			b.WriteByte(c)
+			if c == '"' {
+				inStr = true
+			}
+			i++
+			continue
+		}
+		switch {
+		case c == '\\':
+			b.WriteByte(c)
+			if i+1 < len(s) {
+				b.WriteByte(s[i+1])
+				i += 2
+			} else {
+				i++
+			}
+		case c == '"':
+			b.WriteByte(c)
+			inStr = false
+			i++
+		case c < 0x80:
+			b.WriteByte(c)
+			i++
+		default:
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if r == utf8.RuneError && size == 1 {
+				if substitute {
+					b.WriteRune(0xFFFD)
+				}
+				i++
+				continue
+			}
+			b.WriteString(s[i : i+size])
+			i += size
+		}
+	}
+	return b.String()
+}
+
+func (p *jsonTextParser) fail(err error) (vm.Slot, bool) {
+	p.err = jsonClassifyError(err)
+	return vm.MakeNull(), false
+}
+
+func (p *jsonTextParser) parseValue(depth int) (vm.Slot, bool) {
+	if depth > p.maxDepth {
+		p.err = jsonErrorDepth
+		return vm.MakeNull(), false
+	}
+	kind := p.dec.PeekKind()
+	if kind == jsontext.KindInvalid {
+		// Значения нет: ошибка синтаксиса либо пустой ввод.
+		_, err := p.dec.ReadToken()
+		return p.fail(err)
+	}
+	switch kind {
+	case 'n', 't', 'f':
+		tok, err := p.dec.ReadToken()
+		if err != nil {
+			return p.fail(err)
+		}
+		switch tok.Kind() {
+		case 'n':
+			return vm.MakeNull(), true
+		case 't':
+			return vm.MakeBool(true), true
+		default:
+			return vm.MakeBool(false), true
+		}
+	case '"':
+		tok, err := p.dec.ReadToken()
+		if err != nil {
+			return p.fail(err)
+		}
+		return vm.MakeString(tok.String()), true
+	case '0':
+		tok, err := p.dec.ReadToken()
+		if err != nil {
+			return p.fail(err)
+		}
+		if n, ierr := tok.Int(); ierr == nil {
+			return vm.MakeInt(n), true
+		}
+		if p.flags&jsonBigintAsString != 0 {
+			return vm.MakeString(tok.String()), true
+		}
+		f, ferr := tok.Float()
+		if ferr != nil {
+			return p.fail(ferr)
+		}
+		return vm.MakeFloat(f), true
+	case '[':
+		if _, err := p.dec.ReadToken(); err != nil {
+			return p.fail(err)
+		}
+		arr := vm.NewArray()
+		for p.dec.PeekKind() != ']' {
+			v, ok := p.parseValue(depth + 1)
+			if !ok {
+				return vm.MakeNull(), false
+			}
+			_, _ = arr.Append(v)
+		}
+		if _, err := p.dec.ReadToken(); err != nil {
+			return p.fail(err)
+		}
+		return vm.MakeArray(arr), true
+	case '{':
+		if _, err := p.dec.ReadToken(); err != nil {
+			return p.fail(err)
+		}
+		order := []string{}
+		slots := map[string]vm.Slot{}
+		for p.dec.PeekKind() != '}' {
+			kt, err := p.dec.ReadToken()
+			if err != nil {
+				return p.fail(err)
+			}
+			key := kt.String()
+			v, ok := p.parseValue(depth + 1)
+			if !ok {
+				return vm.MakeNull(), false
+			}
+			if _, dup := slots[key]; !dup {
+				order = append(order, key)
+			}
+			slots[key] = v
+		}
+		if _, err := p.dec.ReadToken(); err != nil {
+			return p.fail(err)
+		}
+		if p.assoc {
+			arr := vm.NewArray()
+			for _, k := range order {
+				// Числовые строки канонизируются в int-ключи, как PHP-массив.
+				_ = arr.Set(vm.KeyFromString(k), slots[k])
+			}
+			return vm.MakeArray(arr), true
+		}
+		props := make(map[string]vm.Value, len(order))
+		for _, k := range order {
+			props[k] = slots[k]
+		}
+		return makeStdClass(p.vm, order, props), true
+	}
+	return p.fail(nil)
 }
 
 func jsonDecodeFn(ctx *vm.Context) vm.Value {
@@ -472,7 +656,17 @@ func jsonDecodeFn(ctx *vm.Context) vm.Value {
 	if len(ctx.Args()) >= 3 && !arg(ctx, 2).IsNull() {
 		depth = int(arg(ctx, 2).ToInt())
 	}
-	p := &jsonParser{vm: ctx.VM(), s: s, flags: flags, maxDepth: depth, assoc: assoc}
+	// Флаги невалидного UTF-8 обрабатываем ДО парсера, по строковым литералам:
+	// IGNORE выбрасывает байты, SUBSTITUTE заменяет на U+FFFD (php_base64-style
+	// точность; jsontext умеет только замену).
+	if flags&jsonInvalidUTF8Ignore != 0 {
+		s = sanitizeInvalidUTF8(s, false)
+	} else if flags&jsonInvalidUTF8Substitute != 0 {
+		s = sanitizeInvalidUTF8(s, true)
+	}
+	// AllowDuplicateNames — как PHP: последнее значение побеждает.
+	dec := jsontext.NewDecoder(strings.NewReader(s), jsontext.AllowDuplicateNames(true))
+	p := &jsonTextParser{vm: ctx.VM(), dec: dec, flags: flags, maxDepth: depth, assoc: assoc}
 	v, ok := p.parseValue(0)
 	if ctx.HasThrown() {
 		return *new(vm.Value)
@@ -481,312 +675,11 @@ func jsonDecodeFn(ctx *vm.Context) vm.Value {
 		jsonLastError = p.err
 		return vm.MakeNull()
 	}
-	p.skipWS()
-	if p.i != len(p.s) {
-		jsonLastError = jsonErrorSyntax
+	// После значения допускается только пробел.
+	if _, err := dec.ReadToken(); !errors.Is(err, io.EOF) {
+		jsonLastError = jsonClassifyError(err)
 		return vm.MakeNull()
 	}
 	jsonLastError = 0
 	return v
-}
-
-func (p *jsonParser) skipWS() {
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
-			p.i++
-		} else {
-			break
-		}
-	}
-}
-
-func hex4(s string) int {
-	v := 0
-	for i := 0; i < 4; i++ {
-		c := s[i]
-		var d int
-		switch {
-		case c >= '0' && c <= '9':
-			d = int(c - '0')
-		case c >= 'a' && c <= 'f':
-			d = int(c-'a') + 10
-		case c >= 'A' && c <= 'F':
-			d = int(c-'A') + 10
-		default:
-			return -1
-		}
-		v = v<<4 | d
-	}
-	return v
-}
-
-func (p *jsonParser) parseValue(depth int) (vm.Slot, bool) {
-	if depth > p.maxDepth {
-		p.err = jsonErrorDepth
-		return vm.MakeNull(), false
-	}
-	p.skipWS()
-	if p.i >= len(p.s) {
-		p.err = jsonErrorSyntax
-		return vm.MakeNull(), false
-	}
-	c := p.s[p.i]
-	switch {
-	case c == 'n':
-		if strings.HasPrefix(p.s[p.i:], "null") {
-			p.i += 4
-			return vm.MakeNull(), true
-		}
-	case c == 't':
-		if strings.HasPrefix(p.s[p.i:], "true") {
-			p.i += 4
-			return vm.MakeBool(true), true
-		}
-	case c == 'f':
-		if strings.HasPrefix(p.s[p.i:], "false") {
-			p.i += 5
-			return vm.MakeBool(false), true
-		}
-	case c == '"':
-		return p.parseString()
-	case c == '[':
-		return p.parseArray(depth)
-	case c == '{':
-		return p.parseObject(depth)
-	case c == '-' || (c >= '0' && c <= '9'):
-		return p.parseNumber()
-	}
-	p.err = jsonErrorSyntax
-	return vm.MakeNull(), false
-}
-
-func (p *jsonParser) parseString() (vm.Slot, bool) {
-	p.i++ // "
-	var b strings.Builder
-	for p.i < len(p.s) {
-		c := p.s[p.i]
-		if c == '"' {
-			p.i++
-			return vm.MakeString(b.String()), true
-		}
-		if c == '\\' {
-			p.i++
-			if p.i >= len(p.s) {
-				break
-			}
-			esc := p.s[p.i]
-			switch esc {
-			case '"':
-				b.WriteByte('"')
-				p.i++
-			case '\\':
-				b.WriteByte('\\')
-				p.i++
-			case '/':
-				b.WriteByte('/')
-				p.i++
-			case 'b':
-				b.WriteByte('\b')
-				p.i++
-			case 'f':
-				b.WriteByte('\f')
-				p.i++
-			case 'n':
-				b.WriteByte('\n')
-				p.i++
-			case 'r':
-				b.WriteByte('\r')
-				p.i++
-			case 't':
-				b.WriteByte('\t')
-				p.i++
-			case 'u':
-				if p.i+4 >= len(p.s) {
-					p.err = jsonErrorSyntax
-					return vm.MakeNull(), false
-				}
-				h := hex4(p.s[p.i+1 : p.i+5])
-				if h < 0 {
-					p.err = jsonErrorSyntax
-					return vm.MakeNull(), false
-				}
-				p.i += 5
-				r := rune(h)
-				if r >= 0xD800 && r <= 0xDBFF {
-					if p.i+5 < len(p.s) && p.s[p.i] == '\\' && p.s[p.i+1] == 'u' {
-						h2 := hex4(p.s[p.i+2 : p.i+6])
-						if h2 >= 0xDC00 && h2 <= 0xDFFF {
-							r = 0x10000 + (r-0xD800)<<10 + (rune(h2) - 0xDC00)
-							p.i += 6
-						} else {
-							p.err = jsonErrorUTF16
-							return vm.MakeNull(), false
-						}
-					} else {
-						p.err = jsonErrorUTF16
-						return vm.MakeNull(), false
-					}
-				} else if r >= 0xDC00 && r <= 0xDFFF {
-					p.err = jsonErrorUTF16
-					return vm.MakeNull(), false
-				}
-				b.WriteRune(r)
-			default:
-				p.err = jsonErrorSyntax
-				return vm.MakeNull(), false
-			}
-			continue
-		}
-		if c < 0x20 {
-			p.err = jsonErrorCtrlChar
-			return vm.MakeNull(), false
-		}
-		b.WriteByte(c)
-		p.i++
-	}
-	p.err = jsonErrorSyntax
-	return vm.MakeNull(), false
-}
-
-func (p *jsonParser) parseNumber() (vm.Slot, bool) {
-	start := p.i
-	if p.s[p.i] == '-' {
-		p.i++
-	}
-	for p.i < len(p.s) && p.s[p.i] >= '0' && p.s[p.i] <= '9' {
-		p.i++
-	}
-	isFloat := false
-	if p.i < len(p.s) && p.s[p.i] == '.' {
-		isFloat = true
-		p.i++
-		for p.i < len(p.s) && p.s[p.i] >= '0' && p.s[p.i] <= '9' {
-			p.i++
-		}
-	}
-	if p.i < len(p.s) && (p.s[p.i] == 'e' || p.s[p.i] == 'E') {
-		isFloat = true
-		p.i++
-		if p.i < len(p.s) && (p.s[p.i] == '+' || p.s[p.i] == '-') {
-			p.i++
-		}
-		for p.i < len(p.s) && p.s[p.i] >= '0' && p.s[p.i] <= '9' {
-			p.i++
-		}
-	}
-	tok := p.s[start:p.i]
-	if tok == "" || tok == "-" {
-		p.err = jsonErrorSyntax
-		return vm.MakeNull(), false
-	}
-	if !isFloat {
-		if n, err := strconv.ParseInt(tok, 10, 64); err == nil {
-			return vm.MakeInt(n), true
-		}
-		if p.flags&jsonBigintAsString != 0 {
-			return vm.MakeString(tok), true
-		}
-	}
-	f, err := strconv.ParseFloat(tok, 64)
-	if err != nil {
-		p.err = jsonErrorSyntax
-		return vm.MakeNull(), false
-	}
-	return vm.MakeFloat(f), true
-}
-
-func (p *jsonParser) parseArray(depth int) (vm.Slot, bool) {
-	p.i++ // [
-	arr := vm.NewArray()
-	p.skipWS()
-	if p.i < len(p.s) && p.s[p.i] == ']' {
-		p.i++
-		return vm.MakeArray(arr), true
-	}
-	for {
-		v, ok := p.parseValue(depth + 1)
-		if !ok {
-			return vm.MakeNull(), false
-		}
-		arr.Append(v)
-		p.skipWS()
-		if p.i >= len(p.s) {
-			p.err = jsonErrorSyntax
-			return vm.MakeNull(), false
-		}
-		if p.s[p.i] == ',' {
-			p.i++
-			continue
-		}
-		if p.s[p.i] == ']' {
-			p.i++
-			return vm.MakeArray(arr), true
-		}
-		p.err = jsonErrorSyntax
-		return vm.MakeNull(), false
-	}
-}
-
-func (p *jsonParser) parseObject(depth int) (vm.Slot, bool) {
-	p.i++ // {
-	props := map[string]vm.Value{}
-	order := []string{}
-	p.skipWS()
-	if p.i < len(p.s) && p.s[p.i] == '}' {
-		p.i++
-		if p.assoc {
-			return vm.MakeArray(vm.NewArray()), true
-		}
-		return makeStdClass(p.vm, order, props), true
-	}
-	for {
-		p.skipWS()
-		if p.i >= len(p.s) || p.s[p.i] != '"' {
-			p.err = jsonErrorSyntax
-			return vm.MakeNull(), false
-		}
-		k, ok := p.parseString()
-		if !ok {
-			return vm.MakeNull(), false
-		}
-		key := k.ToString()
-		p.skipWS()
-		if p.i >= len(p.s) || p.s[p.i] != ':' {
-			p.err = jsonErrorSyntax
-			return vm.MakeNull(), false
-		}
-		p.i++
-		v, ok := p.parseValue(depth + 1)
-		if !ok {
-			return vm.MakeNull(), false
-		}
-		if _, dup := props[key]; !dup {
-			order = append(order, key)
-		}
-		props[key] = v
-		p.skipWS()
-		if p.i >= len(p.s) {
-			p.err = jsonErrorSyntax
-			return vm.MakeNull(), false
-		}
-		if p.s[p.i] == ',' {
-			p.i++
-			continue
-		}
-		if p.s[p.i] == '}' {
-			p.i++
-			break
-		}
-		p.err = jsonErrorSyntax
-		return vm.MakeNull(), false
-	}
-	if p.assoc {
-		arr := vm.NewArray()
-		for _, k := range order {
-			arr.SetStr(k, slotFromValue(props[k]))
-		}
-		return vm.MakeArray(arr), true
-	}
-	return makeStdClass(p.vm, order, props), true
 }

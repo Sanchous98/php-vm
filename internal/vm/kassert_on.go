@@ -12,7 +12,7 @@ func (c *Chunk) checkConstKinds() {
 	for i, in := range c.code {
 		var want Type
 		switch in.Op {
-		case OpAddIntK, OpSubIntK, OpMulIntK,
+		case OpAddIntK, OpSubIntK, OpMulIntK, OpModIntK,
 			OpLessIntK, OpLessOrEqualIntK, OpGreaterIntK,
 			OpGreaterEqualIntK, OpEqualIntK, OpJumpIfLessIntK:
 			want = IntType

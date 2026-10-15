@@ -663,10 +663,12 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	// материализуем константы всех функций один раз
 	chunk.materialize()
 	chunk.checkConstKinds()
+	chunk.resetIC()
 	for _, f := range funcs {
 		if cf, ok := f.Executable.(*CompiledFunction); ok {
 			cf.chunk.materialize()
 			cf.chunk.checkConstKinds()
+			cf.chunk.resetIC()
 		}
 	}
 	for _, c := range classes {
@@ -4200,6 +4202,23 @@ func (vm *VM) exec(chunk *Chunk) error {
 				}
 			}
 		case OpMod:
+			a, b := &regs[in.B], &regs[in.C]
+			if a.typ == IntType && b.typ == IntType {
+				ai, bi := int64(a.num), int64(b.num)
+				if bi == 0 {
+					if !vm.handleThrow(chunk, errModByZero) {
+						return errModByZero
+					}
+					continue
+				}
+				d := &regs[in.A]
+				if in.A != in.B && int(in.A) != int(in.C) && trackedType(d.typ) {
+					vm.wDropReg(int(in.A))
+				}
+				// Go: INT_MIN % -1 == 0 (как и в PHP), паники нет.
+				d.typ, d.num, d.ptr = IntType, uint64(ai%bi), nil
+				break
+			}
 			r, err := vm.modSlow(regs[in.B], regs[in.C])
 			if err != nil {
 				if !vm.handleThrow(chunk, err) {
@@ -4961,6 +4980,38 @@ func (vm *VM) exec(chunk *Chunk) error {
 					}
 				}
 			}
+		case OpModIntK:
+			a := &regs[in.B]
+			if a.typ == IntType {
+				ai, bi := int64(a.num), chunk.constInts[in.C]
+				if bi == 0 {
+					if !vm.handleThrow(chunk, errModByZero) {
+						return errModByZero
+					}
+					continue
+				}
+				d := &regs[in.A]
+				if in.A != in.B && trackedType(d.typ) {
+					vm.wDropReg(int(in.A))
+				}
+				d.typ, d.num, d.ptr = IntType, uint64(ai%bi), nil
+			} else {
+				r, err := vm.modSlow(*a, consts[in.C])
+				if err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return err
+					}
+					continue
+				}
+				{
+					old := regs[in.A]
+					wv := r
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+				}
+			}
 
 		case OpAddIntImm:
 			a := &regs[in.B]
@@ -5039,6 +5090,38 @@ func (vm *VM) exec(chunk *Chunk) error {
 				}
 			} else {
 				r, err := vm.mulSlow(*a, MakeInt(int64(in.C)))
+				if err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return err
+					}
+					continue
+				}
+				{
+					old := regs[in.A]
+					wv := r
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+				}
+			}
+		case OpModIntImm:
+			a := &regs[in.B]
+			if a.typ == IntType {
+				ai, bi := int64(a.num), int64(in.C)
+				if bi == 0 {
+					if !vm.handleThrow(chunk, errModByZero) {
+						return errModByZero
+					}
+					continue
+				}
+				d := &regs[in.A]
+				if in.A != in.B && trackedType(d.typ) {
+					vm.wDropReg(int(in.A))
+				}
+				d.typ, d.num, d.ptr = IntType, uint64(ai%bi), nil
+			} else {
+				r, err := vm.modSlow(*a, MakeInt(int64(in.C)))
 				if err != nil {
 					if !vm.handleThrow(chunk, err) {
 						return err
@@ -5961,6 +6044,24 @@ func (vm *VM) exec(chunk *Chunk) error {
 				continue
 			}
 		case OpPropGet:
+			// Ультра-быстрый путь в самом диспетчере (IC прогрет): пропускает
+			// вызов обработчика и его ранние guard'ы. Медленный путь — ниже.
+			if recv := deref(regs[in.B]); recv.typ == ObjectType {
+				if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastGet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(recv.num) {
+					ob := (*Object)(recv.ptr)
+					if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
+						if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
+							old := regs[in.A]
+							regs[in.A] = s
+							if trackedType(old.typ) || trackedType(s.typ) {
+								vm.wRegSlow(int(in.A), old)
+							}
+							shareSlot(s)
+							break
+						}
+					}
+				}
+			}
 			if hr := vm.opPropGet(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
@@ -6058,6 +6159,28 @@ func (vm *VM) exec(chunk *Chunk) error {
 				continue
 			}
 		case OpPropSet:
+			// Ультра-быстрый путь в диспетчере (IC прогрет): публичное
+			// нетипизированное не-readonly свойство в слоте.
+			if d := deref(regs[in.A]); d.typ == ObjectType {
+				if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastSet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(d.num) {
+					ob := (*Object)(d.ptr)
+					if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
+						cur := ob.slots[ic.propIdx]
+						if cur.typ != RefType && cur.typ != slotUninit {
+							val := deref(regs[in.B])
+							ob.slots[ic.propIdx] = val
+							vm.noteDropped(cur)
+							vm.noteStored(val)
+							old := regs[in.B]
+							regs[in.B] = val
+							if trackedType(old.typ) || trackedType(val.typ) {
+								vm.wRegSlow(int(in.B), old)
+							}
+							break
+						}
+					}
+				}
+			}
 			if hr := vm.opPropSet(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
@@ -6857,7 +6980,9 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			}
 		}
 		args = cf.PackVariadic(args)
-		vm.mergeNamedVariadic(args, fn)
+		if vm.namedVariadicTail != nil {
+			vm.mergeNamedVariadic(args, fn)
+		}
 	}
 	vm.pendingFrameNamed = extras
 	vm.pushCall(fn, rawArgs)
@@ -8272,7 +8397,9 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		env = vm.enterFuncEnv(cf, namedCount)
 		haveEnv = true
 		args = cf.PackVariadic(args)
-		vm.mergeNamedVariadic(args, fn)
+		if vm.namedVariadicTail != nil {
+			vm.mergeNamedVariadic(args, fn)
+		}
 	}
 	traced := true
 	if vm.suppressNextFrame {
@@ -8628,9 +8755,11 @@ func (vm *VM) icAt(chunk *Chunk) *icEntry {
 
 // icProp резолвит объявленное свойство для инструкции с per-pc IC: повторные
 // исполнения (горячие циклы) не обходят иерархию классов и не ищут слот.
-func (vm *VM) icProp(ci ClassInfo, name string, chunk *Chunk) (*propDecl, ClassInfo, string, int, bool) {
+func (vm *VM) icProp(ci ClassInfo, name string, nameC int32, chunk *Chunk) (*propDecl, ClassInfo, string, int, bool) {
 	ic := vm.icAt(chunk)
-	if ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == name && ic.propScope == vm.ctx.self {
+	if ic != nil && ic.propState == icMono && ic.propClass == ci &&
+		((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == name)) &&
+		ic.propScope == vm.ctx.self {
 		return ic.propPd, ic.propDecl, ic.propKey, ic.propIdx, ic.propOk
 	}
 	pd, decl, key, idx, ok := vm.scopedSlot(ci, name)
@@ -8651,12 +8780,15 @@ func (vm *VM) icProp(ci ClassInfo, name string, chunk *Chunk) (*propDecl, ClassI
 		case icDisabled:
 			return pd, decl, key, idx, ok
 		}
-		ic.propClass, ic.propScope, ic.propName = ci, vm.ctx.self, name
+		ic.propClass, ic.propScope, ic.propName, ic.propNameC = ci, vm.ctx.self, name, nameC
 		ic.propPd, ic.propDecl, ic.propKey, ic.propIdx, ic.propOk = pd, decl, key, idx, ok
 		ic.propAccess = true
 		if ok && pd != nil && pd.vis != Public && vm.propAccessErr(pd, decl, name) != nil {
 			ic.propAccess = false
 		}
+		ic.propFastGet = ok && idx >= 0 && (ic.propAccess || (pd != nil && pd.vis == Public))
+		ic.propFastSet = ic.propFastGet && pd != nil && !pd.readonly && !pd.hasType && !ci.IsEnum()
+		ic.propClassIdx = int32(vm.classIndex(ci))
 	}
 	return pd, decl, key, idx, ok
 }

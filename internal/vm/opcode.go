@@ -79,6 +79,7 @@ const (
 	OpAddFloatK // ADD_FLOAT_K
 	OpSubIntK   // SUB_INT_K
 	OpMulIntK   // MUL_INT_K
+	OpModIntK   // MOD_INT_K
 
 	// SPEC сравнения
 	OpLessInt           // LESS_INT
@@ -281,6 +282,7 @@ const (
 	OpAddIntImm          // ADD_INT_IMM
 	OpSubIntImm          // SUB_INT_IMM
 	OpMulIntImm          // MUL_INT_IMM
+	OpModIntImm          // MOD_INT_IMM
 	OpLessIntImm         // LESS_INT_IMM
 	OpLessOrEqualIntImm  // LESS_OR_EQUAL_INT_IMM
 	OpGreaterIntImm      // GREATER_INT_IMM

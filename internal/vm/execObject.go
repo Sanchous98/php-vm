@@ -347,9 +347,9 @@ func (vm *VM) incompleteReadGuard(recv Slot, dst *Slot, reg int) (execResult, bo
 
 // propGetDeclaredFast — быстрый путь чтения объявленного свойства из слота
 // (без map-lookup и боксинга Value). handled=true, если результат уже записан.
-func (vm *VM) propGetDeclaredFast(ci ClassInfo, recv Slot, pname string, dst *Slot, reg int, chunk *Chunk) (execResult, bool) {
+func (vm *VM) propGetDeclaredFast(ci ClassInfo, recv Slot, pname string, nameC int32, dst *Slot, reg int, chunk *Chunk) (execResult, bool) {
 	ic := vm.icAt(chunk)
-	pd, decl, key, idx, ok := vm.icProp(ci, pname, chunk)
+	pd, decl, key, idx, ok := vm.icProp(ci, pname, nameC, chunk)
 	if !ok || idx < 0 {
 		return execResult{}, false
 	}
@@ -466,6 +466,7 @@ func propertyOperandTypeName(s Slot) string {
 func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.B])
 	pname := consts[in.C].StringVal()
+	nameC := in.C
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		vm.propReadNonObjectWarn(recv, pname)
@@ -516,7 +517,7 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное объявленное свойство в слоте.
-	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == pname && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 		if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) {
 			if ob := vm.objectOf(recv); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 				if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -531,7 +532,7 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			}
 		}
 	}
-	if r, ok := vm.propGetDeclaredFast(ci, recv, pname, &regs[in.A], int(in.A), chunk); ok {
+	if r, ok := vm.propGetDeclaredFast(ci, recv, pname, nameC, &regs[in.A], int(in.A), chunk); ok {
 		return r
 	}
 	if gres, handled, mok, gerr := vm.magicGetInaccessible(ci, recv, pname); handled && mok {
@@ -647,6 +648,7 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		}
 		return execResult{next: true}
 	}
+	nameC := int32(-1)
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		if err := vm.propNulNameErr(pname); err != nil {
@@ -703,7 +705,7 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		}
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное объявленное свойство в слоте.
-	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == pname && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 		if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) {
 			if ob := vm.objectOf(recv); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 				if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -718,7 +720,7 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			}
 		}
 	}
-	if r, ok := vm.propGetDeclaredFast(ci, recv, pname, &regs[in.A], int(in.A), chunk); ok {
+	if r, ok := vm.propGetDeclaredFast(ci, recv, pname, nameC, &regs[in.A], int(in.A), chunk); ok {
 		return r
 	}
 	if gres, handled, mok, gerr := vm.magicGetInaccessible(ci, recv, pname); handled && mok {
@@ -905,8 +907,10 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	// неинициализированное типизированное свойство — ошибка доступа.
 	compound := in.Op == OpPropGetCompound || in.Op == OpPropGetCompoundDyn
 	var pname string
+	nameC := in.C
 	if in.Op == OpPropGetRWDyn || in.Op == OpPropGetRWArrDyn || in.Op == OpPropGetCompoundDyn {
 		pname = deref(regs[in.C]).ToString()
+		nameC = -1
 	} else {
 		pname = consts[in.C].StringVal()
 	}
@@ -937,7 +941,7 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	// Быстрый путь: инициализированное объявленное не-readonly свойство
 	// в слоте (для `+=` и промежуточных звеньев цепочек записи).
 	if !arrMode {
-		if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == pname && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+		if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 			if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) && !pd.readonly {
 				if ob := vm.objectOf(recv); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 					if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -952,7 +956,7 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 				}
 			}
 		}
-		if pd, _, key, idx, declared := vm.icProp(ci, pname, chunk); declared && !pd.readonly && idx >= 0 {
+		if pd, _, key, idx, declared := vm.icProp(ci, pname, nameC, chunk); declared && !pd.readonly && idx >= 0 {
 			if ob := vm.objectOf(recv); ob != nil && idx < len(ob.slots) && !ob.IsUnset(key) {
 				if pd.vis == Public || vm.icPropAccess(vm.icAt(chunk)) {
 					if s := ob.slots[idx]; s.typ != slotUninit {
@@ -1258,9 +1262,9 @@ func (vm *VM) propSetOverloadCommon(regs []Slot, consts []Slot, chunk *Chunk, in
 // propSetDeclaredFast — быстрый путь записи объявленного свойства в слот.
 // Обрабатывает только полностью «простые» случаи (доступно, не снято unset,
 // не readonly, ссылка — сквозь ячейку); остальное — общий путь.
-func (vm *VM) propSetDeclaredFast(ci ClassInfo, o Slot, pname string, valReg int, regs []Slot, chunk *Chunk) (execResult, bool) {
+func (vm *VM) propSetDeclaredFast(ci ClassInfo, o Slot, pname string, nameC int32, valReg int, regs []Slot, chunk *Chunk) (execResult, bool) {
 	ic := vm.icAt(chunk)
-	pd, decl, key, idx, ok := vm.icProp(ci, pname, chunk)
+	pd, decl, key, idx, ok := vm.icProp(ci, pname, nameC, chunk)
 	if !ok || idx < 0 || pd.readonly {
 		return execResult{}, false
 	}
@@ -1328,6 +1332,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		return execResult{next: true}
 	}
 	pname := consts[in.C].StringVal()
+	nameC := in.C
 	o := regs[in.A]
 	if d := deref(o); d.typ == ObjectType && (*Object)(d.ptr).incomplete {
 		if r, ok := vm.incompleteWriteGuard(o, chunk); ok {
@@ -1379,7 +1384,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное нетипизированное
 	// не-readonly свойство, лежащее в слоте; не снято unset, не ссылка.
-	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == pname && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 		if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) && !pd.readonly && !pd.hasType {
 			if ob := vm.objectOf(o); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 				cur := ob.slots[ic.propIdx]
@@ -1400,7 +1405,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	}
 	// Быстрый путь: объявленное свойство, доступное, не снятое unset,
 	// не readonly — прямая запись в слот.
-	if r, handled := vm.propSetDeclaredFast(ci, o, pname, int(in.B), regs, chunk); handled {
+	if r, handled := vm.propSetDeclaredFast(ci, o, pname, nameC, int(in.B), regs, chunk); handled {
 		return r
 	}
 	// Целевое свойство уже ссылка — писать сквозь неё (с guard типизированного
@@ -1568,6 +1573,7 @@ func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		return execResult{next: true}
 	}
 	o := regs[in.A]
+	nameC := int32(-1)
 	declKey := propKeyForScope(vm.ctx.self, ci, pname)
 	if d := deref(o); d.typ == ObjectType && (*Object)(d.ptr).incomplete {
 		if r, ok := vm.incompleteWriteGuard(o, chunk); ok {
@@ -1583,7 +1589,7 @@ func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	}
 	// Быстрый путь: объявленное свойство, доступное, не снятое unset,
 	// не readonly — прямая запись в слот.
-	if r, handled := vm.propSetDeclaredFast(ci, o, pname, int(in.B), regs, chunk); handled {
+	if r, handled := vm.propSetDeclaredFast(ci, o, pname, nameC, int(in.B), regs, chunk); handled {
 		return r
 	}
 	if existing, ok := vm.getProp(o, declKey); ok {
@@ -1920,7 +1926,7 @@ func (vm *VM) propSetRefCommon(regs []Slot, chunk *Chunk, in Instruction, ci Cla
 
 func (vm *VM) opPropGetSafe(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.B])
-	return vm.propGetSafeCommon(regs, chunk, in, recv, consts[in.C].StringVal())
+	return vm.propGetSafeCommon(regs, chunk, in, recv, consts[in.C].StringVal(), in.C)
 }
 
 func (vm *VM) opPropGetSafeDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
@@ -1931,20 +1937,20 @@ func (vm *VM) opPropGetSafeDyn(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 			pname = str
 		}
 	}
-	return vm.propGetSafeCommon(regs, chunk, in, recv, pname)
+	return vm.propGetSafeCommon(regs, chunk, in, recv, pname, -1)
 }
 
 // propGetSafeCommon — чтение свойства в IS-режиме (промежуточные звенья
 // цепочек isset/??): отсутствующее или неинициализированное свойство даёт
 // null без диагностик; для несуществующего/снятого/недоступного свойства
 // вызывается __isset, и при true — __get (Zend FETCH_OBJ_IS).
-func (vm *VM) propGetSafeCommon(regs []Slot, chunk *Chunk, in Instruction, recv Slot, pname string) execResult {
+func (vm *VM) propGetSafeCommon(regs []Slot, chunk *Chunk, in Instruction, recv Slot, pname string, nameC int32) execResult {
 	var res Slot = MakeNull()
 	ci := vm.classInfo(recv)
 	if ci != nil {
 		resolved := false
 		// Быстрый путь: инициализированное объявленное свойство в слоте.
-		if pd, _, key, idx, declared := vm.icProp(ci, pname, chunk); declared && idx >= 0 {
+		if pd, _, key, idx, declared := vm.icProp(ci, pname, nameC, chunk); declared && idx >= 0 {
 			if ob := vm.objectOf(recv); ob != nil && idx < len(ob.slots) && !ob.IsUnset(key) {
 				if pd.vis == Public || vm.icPropAccess(vm.icAt(chunk)) {
 					if s := ob.slots[idx]; s.typ != slotUninit {

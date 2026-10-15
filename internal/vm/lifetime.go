@@ -507,21 +507,22 @@ func (vm *VM) dropStmtTemps(chunk *Chunk) {
 		nwords = len(f.tracked)
 	}
 	lo := int(chunk.tempLo)
+	loWord := lo / 64
 	var seenA map[*Array]bool
 	var seenC map[*Closure]bool
-	for w := 0; w < nwords; w++ {
+	for w := loWord; w < nwords; w++ {
 		m := f.tracked[w]
 		if m == 0 {
 			continue
 		}
-		keep := chunk.varRegs[w]
-		if w >= lo/64 {
-			if w == lo/64 && lo%64 != 0 {
+		var keep uint64
+		if chunk.sweepSet {
+			keep = chunk.sweepKeep[w]
+		} else {
+			keep = chunk.varRegs[w]
+			if w == loWord && lo%64 != 0 {
 				keep |= (uint64(1) << uint(lo%64)) - 1
 			}
-		} else {
-			// Весь регистровый блок ниже tempLo — переменные.
-			continue
 		}
 		m &^= keep
 		if m == 0 {

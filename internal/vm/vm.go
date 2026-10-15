@@ -1640,21 +1640,17 @@ func (vm *VM) Run() (err error) {
 	// завершении запроса, станет «Next», а хвост достанется последнему
 	// (exception_008).
 	vm.deferUncaughtTail = true
-	if deref(vm.currentExcHandler()).typ != NullType {
-		// Обработчик непойманных исключений выполняется до сброса буферов
-		// (как в Zend): он может очистить буфер.
-		vm.reportUncaught(err)
-		vm.flushOutputBuffers()
-	} else {
-		// Zend пишет сообщение в текущий буфер вывода, и только затем буферы
-		// сбрасываются (callback-буферы при этом отбрасываются).
-		vm.reportUncaught(err)
-		vm.flushOutputBuffers()
-	}
+	// Zend пишет сообщение в текущий буфер вывода; буферы сбрасываются в
+	// самом конце завершения запроса — после shutdown-функций и деструкторов
+	// (ob_start_basic_003: callback-буфер поглощает и сообщение, и хвост).
+	// Обработчик непойманных исключений тоже выполняется при активном буфере.
+	vm.reportUncaught(err)
 	vm.deferUncaughtTail = false
 	vm.runShutdownFunctions()
 	vm.runShutdownDestructors()
 	vm.runRequestEnd()
+	// Страховка: если деструкторов/буферов не было, хвост печатается здесь.
+	vm.finishUncaughtTail()
 	// shutdown-функции/деструкторы могли открыть собственные буферы.
 	vm.flushOutputBuffers()
 	return err
@@ -2782,6 +2778,9 @@ func (vm *VM) writeUncaughtChain(chain []*Throwable) {
 			prefix = "\nNext "
 		}
 		if vm.htmlErrors() && i == 0 {
+			// HTML-ошибки Zend печатаются без ведущего перевода строки:
+			// каждая начинается с <br /> (bug35176: предупреждение уже
+			// заканчивается <br />, лишняя пустая строка недопустима).
 			prefix = "<br />\n<b>Fatal error</b>:  Uncaught "
 		}
 		if e.Message != "" {
@@ -2961,10 +2960,13 @@ func (vm *VM) reportUncaught(err error) {
 	if th.Message != "" {
 		if html {
 			msg := errHTML(th.Message)
+			// HTML-формат Zend не предваряется переводом строки: сообщение
+			// начинается с <br /> (предыдущая диагностика уже заканчивается
+			// <br /> — иначе появляется лишняя пустая строка).
 			if th.DefinedIn {
-				vm.Write("\n<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
+				vm.Write("<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
 			} else {
-				vm.Write("\n<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " in " + file + ":" + strconv.Itoa(line) + "\n")
+				vm.Write("<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " in " + file + ":" + strconv.Itoa(line) + "\n")
 			}
 			vm.Write("Stack trace:\n")
 			vm.Write(vm.traceString(th.Trace, file, line) + "\n")
@@ -3068,7 +3070,11 @@ func (vm *VM) finishUncaughtTail() {
 	}
 	vm.pendingUncaughtFile = ""
 	vm.pendingUncaughtLine = 0
-	vm.Write("  thrown in " + file + " on line " + strconv.Itoa(line) + "\n")
+	if vm.htmlErrors() {
+		vm.Write("  thrown in <b>" + file + "</b> on line <b>" + strconv.Itoa(line) + "</b><br />\n")
+	} else {
+		vm.Write("  thrown in " + file + " on line " + strconv.Itoa(line) + "\n")
+	}
 }
 
 // reportUncaughtChain печатает непойманное исключение вместе с цепочкой
@@ -5774,6 +5780,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 		case OpIndexIsset:
 			if hr := vm.opIndexIsset(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpIndexEmpty:
+			if hr := vm.opIndexEmpty(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
 				return nil

@@ -191,6 +191,7 @@ func init() {
 	s(OpIterCurrent, rDef, rUse, rNone)
 	s(OpIterNext, rNone, rUseDef, rNone)
 	s(OpIndexIsset, rDef, rUse, rUse)
+	s(OpIndexEmpty, rDef, rUse, rUse)
 	s(OpIndexSafe, rDef, rUse, rUse)
 	s(OpIndexSafeWarn, rDef, rUse, rUse)
 	s(OpIndexSetRes, rUseDef, rUse, rUseDef)

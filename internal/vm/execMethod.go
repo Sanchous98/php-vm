@@ -1018,6 +1018,11 @@ func (vm *VM) opStaticSet(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	// (проверка ещё и по всем источникам ссылки).
 	if s.typ == RefType {
 		if r := s.Ref(); r != nil {
+			// Запись-обратно той же ячейки (дим-запись в статическое свойство-
+			// ссылку) — no-op: иначе ячейка обернула бы саму себя (Ref→Ref).
+			if regs[in.A].typ == RefType && regs[in.A].Ref() == r {
+				return execResult{}
+			}
 			out, werr := vm.staticRefWrite(cls, name, r, regs[in.A])
 			if werr != nil {
 				if !vm.handleThrow(chunk, werr) {
@@ -1180,6 +1185,11 @@ func (vm *VM) opStaticSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 	}
 	if s.typ == RefType {
 		if r := s.Ref(); r != nil {
+			// Запись-обратно той же ячейки (дим-запись в статическое свойство-
+			// ссылку) — no-op: иначе ячейка обернула бы саму себя (Ref→Ref).
+			if regs[in.A].typ == RefType && regs[in.A].Ref() == r {
+				return execResult{}
+			}
 			out, werr := vm.staticRefWrite(cls, name, r, regs[in.A])
 			if werr != nil {
 				if !vm.handleThrow(chunk, werr) {

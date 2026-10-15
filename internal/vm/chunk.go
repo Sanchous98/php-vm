@@ -675,7 +675,7 @@ func buildArgRegs() [][]byte {
 		m[op] = []byte("AB")
 	}
 	// опкоды, где C — тоже регистр (ключ)
-	for _, op := range []Opcode{OpIndex, OpIndexSet, OpIndexSetOverload, OpIndexIsset, OpIndexRef, OpPropRefDyn, OpPropSetRefDyn,
+	for _, op := range []Opcode{OpIndex, OpIndexSet, OpIndexSetOverload, OpIndexIsset, OpIndexEmpty, OpIndexRef, OpPropRefDyn, OpPropSetRefDyn,
 		OpIndexRaw, OpIndexRawWrite, OpIndexSetRaw, OpIndexSetOverloadRaw, OpConcatApp, OpListFetchRef, OpIndexUnsetRaw, OpPropGetIncDecDyn, OpPropGetCompoundDyn} {
 		m[op] = []byte("ABC")
 	}

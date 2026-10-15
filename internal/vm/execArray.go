@@ -1761,6 +1761,93 @@ func (vm *VM) opIndexIsset(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	return execResult{}
 }
 
+// opIndexEmpty — A = empty(B[C]) (ISSET_ISEMPTY_DIM_OBJ с isempty=1).
+// Семантика: несуществующий элемент → true; для ArrayAccess — один вызов
+// offsetExists и, если он вернул true, один offsetGet с инверсией истинности
+// результата (Zend zend_user_has_dimension с check_empty).
+func (vm *VM) opIndexEmpty(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	setBool := func(b bool) {
+		old := regs[in.A]
+		wv := MakeBool(b)
+		regs[in.A] = wv
+		if trackedType(old.typ) || trackedType(wv.typ) {
+			vm.wRegSlow(int(in.A), old)
+		}
+	}
+	src := deref(regs[in.B])
+	switch src.typ {
+	case ObjectType:
+		if ci := vm.classInfo(src); ci != nil {
+			if m := ci.lookupMethod("offsetExists"); m != nil {
+				res, err := vm.invokeMethod(m, src, ci, []Slot{regs[in.C]})
+				if err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return execResult{err: err}
+					}
+					return execResult{next: true}
+				}
+				if !deref(res).ToBool() {
+					setBool(true)
+					break
+				}
+				if getM := ci.lookupMethod("offsetGet"); getM != nil {
+					val, err := vm.invokeMethod(getM, src, ci, []Slot{regs[in.C]})
+					if err != nil {
+						if !vm.handleThrow(chunk, err) {
+							return execResult{err: err}
+						}
+						return execResult{next: true}
+					}
+					setBool(!deref(val).ToBool())
+					break
+				}
+				setBool(true)
+				break
+			}
+		}
+		setBool(true)
+	case ArrayType:
+		if ks := deref(regs[in.C]); ks.typ == IntType {
+			v, ok := src.AsArray().GetInt(ks.Int())
+			setBool(!(ok && deref(v).typ != NullType) || !deref(v).ToBool())
+			break
+		}
+		k, ok := vm.KeyOfWarn(regs[in.C])
+		if !ok {
+			err := NewThrowable("TypeError", "Cannot access offset of type "+
+				operandTypeName(deref(regs[in.C]))+" in isset or empty")
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		v, ok := src.AsArray().Get(k)
+		setBool(!(ok && deref(v).typ != NullType) || !deref(v).ToBool())
+	case StringType:
+		if ks := deref(regs[in.C]); ks.typ == FloatType {
+			vm.floatToIntWarn(ks)
+		}
+		i, ok, illegal := vm.stringOffsetKey(regs[in.C])
+		if !ok || illegal {
+			setBool(true)
+			break
+		}
+		s := src.StringVal()
+		if i < 0 {
+			i += int64(len(s))
+		}
+		if i < 0 || i >= int64(len(s)) {
+			setBool(true)
+			break
+		}
+		setBool(s[i] == '0')
+	default:
+		setBool(true)
+	}
+
+	return execResult{}
+}
+
 func (vm *VM) opIsObject(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	{
 		old := regs[in.A]

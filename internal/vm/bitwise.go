@@ -178,31 +178,13 @@ func shiftToInt(s Slot) (int64, bool) {
 }
 
 // bitwiseTypeError строит PHP-сообщение "Unsupported operand types: X op Y".
+// Порядок операндов — как передал вызывающий: компилятор для коммутативных
+// опкодов (`*`, `&`, `|`, `^`) сам переставляет операнды так же, как Zend
+// (op1_type < op2_type → swap), так что сообщение печатается в порядке
+// фактических слотов инструкции.
 func bitwiseTypeError(a, b Slot, op string) error {
-	// Zend для `*`, `&`, `|`, `^` печатает операнды упорядоченными по «весу»:
-	// объект/замыкание раньше ресурса, ресурс раньше остальных. `[] * new
-	// stdClass` → "stdClass * array", `[] * STDOUT` → "resource * array",
-	// `[] * "foo"` → "array * string".
-	switch op {
-	case "*", "&", "|", "^":
-		if msgTypeRank(b) > msgTypeRank(a) {
-			a, b = b, a
-		}
-	}
 	return NewThrowable("TypeError", fmt.Sprintf(
 		"Unsupported operand types: %s %s %s", operandTypeName(a), op, operandTypeName(b)))
-}
-
-// msgTypeRank — порядок операндов в сообщении "Unsupported operand types"
-// для `*`/`&`/`|`/`^`: объект/замыкание (2) > ресурс (1) > прочие (0).
-func msgTypeRank(s Slot) int {
-	switch deref(s).typ {
-	case ObjectType, ClosureType:
-		return 2
-	case ResourceType:
-		return 1
-	}
-	return 0
 }
 
 // operandTypeName возвращает имя типа PHP (для объектов — имя класса).

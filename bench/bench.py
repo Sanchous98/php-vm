@@ -5,9 +5,11 @@ Usage: bench.py <testbinary> <workdir> [N]
 Генерирует 12 нагрузок *.php в workdir, гоняет N раз каждую (чередуя порядок
 наш/php), печатает min время и max RSS.
 """
-import os, sys, time, re, tempfile
+import os, sys, time, re, tempfile, shutil
 
 TESTBIN = sys.argv[1] if len(sys.argv) > 1 else '/home/dev/wavebench/bench/phpvm.test'
+# PHP для сравнения: PHP_BIN из окружения, иначе php из PATH, иначе /usr/bin/php.
+PHP_BIN = os.environ.get('PHP_BIN') or shutil.which('php') or '/usr/bin/php'
 WORK = sys.argv[2] if len(sys.argv) > 2 else '/home/dev/wavebench/bench/work'
 N = int(sys.argv[3]) if len(sys.argv) > 3 else 3
 
@@ -187,7 +189,7 @@ def main():
         php_cpu = None
         php_rss = 0.0
         for _ in range(N):
-            _, cpu, rss, _ = run_once(['/usr/bin/php', os.path.join(WORK, name + '.php')])
+            _, cpu, rss, _ = run_once([PHP_BIN, os.path.join(WORK, name + '.php')])
             php_cpu = cpu if php_cpu is None else min(php_cpu, cpu)
             php_rss = max(php_rss, rss)
         ratio = ours / php_cpu if php_cpu else 0.0

@@ -7056,6 +7056,63 @@ func (vm *VM) checkParamsCore(fn *Function, args []Slot, provided int, mask int6
 	return args, nil
 }
 
+// checkNativeStrictParams — strict-проверка аргументов встроенной функции
+// (Zend ZPP при strict_types=1): коэрции нет, кроме расширения int->float и
+// точного совпадения/подтипа. Работает по BuiltinParamTypes (reflection php
+// 8.3), поэтому применима к *NativeFunction, для которой checkParamsCore
+// выходит сразу. Текст ошибки — без «called in ...»: Zend не добавляет
+// локацию вызова к ошибкам типов internal-функций.
+//
+// provided/mask повторяют логику checkParamsCore: null-заглушка непереданного
+// необязательного аргумента не является нарушением типа.
+func (vm *VM) checkNativeStrictParams(fn *Function, args []Slot, provided int, mask int64, maskSet bool) error {
+	types := fn.BuiltinParamTypes
+	if len(types) == 0 {
+		return nil
+	}
+	variadic := strings.HasPrefix(types[len(types)-1], "...")
+	nFixed := len(types)
+	if variadic {
+		nFixed--
+	}
+	for i := 0; i < len(args); i++ {
+		raw := ""
+		name := ""
+		switch {
+		case variadic && i >= nFixed:
+			// Вариативный хвост: Zend не печатает имя параметра.
+			raw = strings.TrimPrefix(types[len(types)-1], "...")
+		case i < len(types):
+			raw = types[i]
+			if i < len(fn.ParamNames) {
+				name = fn.ParamNames[i]
+			}
+		default:
+			continue
+		}
+		if raw == "" {
+			continue
+		}
+		arg := deref(args[i])
+		omitted := false
+		if maskSet {
+			omitted = mask&(1<<uint(i)) == 0
+		} else if provided >= 0 {
+			omitted = i >= provided
+		}
+		if arg.typ == NullType && omitted {
+			continue
+		}
+		if ok, _ := vm.coerceReturnMode(raw, arg, true); ok {
+			continue
+		}
+		th := vm.argTypeError(funcDisplayName(fn), i+1, name, typeDisplay(raw), valueTypeName(vm, arg), "", 0)
+		th.Trace = vm.captureExceptionTrace()
+		return th
+	}
+	return nil
+}
+
 // wbSkipEntry — запись в стеке vm.wbSkip: свойство ob::$name было прочитано
 // через __get для записи (дим-запись/косвенная модификация). real — значение
 // пришло из by-ref __get (запись в свойство нужна), иначе запись-обратно

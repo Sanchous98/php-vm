@@ -6105,7 +6105,7 @@ func (vm *VM) exec(chunk *Chunk) error {
 			// Ультра-быстрый путь в самом диспетчере (IC прогрет): пропускает
 			// вызов обработчика и его ранние guard'ы. Медленный путь — ниже.
 			if recv := deref(regs[in.B]); recv.typ == ObjectType {
-				if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastGet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(recv.num) {
+				if ic := vm.icAt(chunk); ic.propFastGet && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(recv.num) {
 					ob := (*Object)(recv.ptr)
 					if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 						if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -6220,7 +6220,7 @@ func (vm *VM) exec(chunk *Chunk) error {
 			// Ультра-быстрый путь в диспетчере (IC прогрет): публичное
 			// нетипизированное не-readonly свойство в слоте.
 			if d := deref(regs[in.A]); d.typ == ObjectType {
-				if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastSet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(d.num) {
+				if ic := vm.icAt(chunk); ic.propFastSet && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(d.num) {
 					ob := (*Object)(d.ptr)
 					if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 						cur := ob.slots[ic.propIdx]
@@ -8861,6 +8861,8 @@ func (vm *VM) icProp(ci ClassInfo, name string, nameC int32, chunk *Chunk) (*pro
 				// ключу).
 				ic.propState = icDisabled
 				ic.propAccess = false
+				ic.propFastGet = false
+				ic.propFastSet = false
 				return pd, decl, key, idx, ok
 			}
 		case icDisabled:

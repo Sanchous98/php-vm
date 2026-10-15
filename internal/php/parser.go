@@ -1847,7 +1847,9 @@ func (p *Parser) statementInner() (Stmt, error) {
 			namePos := p.cur().Pos
 			// Имя константы верхнего уровня — идентификатор; ключевое слово
 			// здесь Parse error (в классе const-имена могут быть любыми).
-			if t := p.cur(); t.Kind == TKeyword {
+			// true/false/null PHP лексит как T_STRING — они допустимы как
+			// имена (ошибка «Cannot redeclare constant» выдаётся позже).
+			if t := p.cur(); t.Kind == TKeyword && t.Val != "true" && t.Val != "false" && t.Val != "null" {
 				return nil, p.syntaxErrExpect(t, "identifier")
 			}
 			name := tokName(p.next())

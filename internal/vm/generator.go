@@ -660,7 +660,7 @@ func (g *Generator) suspendedLine() int {
 // — текущая позиция (место resume) либо "[internal function]" для нативного
 // вызывающего. Строка вычисляется лениво.
 func (vm *VM) pushGenCall(g *Generator) {
-	if d := vm.genDelegPos; d != nil && d != g && d != nil {
+	if d := vm.genDelegPos; d != nil && d != g {
 		// Вложенный генератор вызван из кадра делегирующего: место вызова —
 		// его приостановленный yield from (backtrace_multi_yield_from).
 		vm.pushCallAt(g.fn, vm.curFile, nil, 0, d.suspendedLine(), g.args)

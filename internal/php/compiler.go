@@ -4504,7 +4504,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 					if cd.IsTrait {
 						return nil, base.newFatal("Cannot apply #[AllowDynamicProperties] to trait")
 					}
-					if cd.IsReadonly {
+					if cd.IsReadonly && !strings.HasPrefix(cd.Name, "\x00anon#") && !strings.HasPrefix(cd.Name, "\x00") {
 						return nil, base.newFatal("Cannot apply #[AllowDynamicProperties] to readonly class " + cd.Name)
 					}
 				}

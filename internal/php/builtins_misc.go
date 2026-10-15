@@ -1079,7 +1079,7 @@ func callUserFuncArrayFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	arr := requireArrayArg(ctx, 1, "call_user_func_array")
+	arr := requireArrayArgNamed(ctx, 1, "call_user_func_array", "args")
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
@@ -1158,7 +1158,7 @@ func forwardStaticCallArrayFn(ctx *vm.Context) vm.Value {
 			return *new(vm.Value)
 		}
 	}
-	arr := requireArrayArg(ctx, 1, "forward_static_call_array")
+	arr := requireArrayArgNamed(ctx, 1, "forward_static_call_array", "args")
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}

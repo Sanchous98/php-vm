@@ -2025,9 +2025,7 @@ func arrayChangeKeyCaseFn(ctx *vm.Context) vm.Value {
 // параметра ($array), у последующих (variadic) — только номер.
 func arrayArgError(ctx *vm.Context, i int, fn string) {
 	name := ""
-	if names := intrinsicArity[strings.ToLower(fn)].Names; i < len(names) {
-		name = names[i]
-	} else if i == 0 {
+	if i == 0 {
 		name = "array"
 	}
 	ctx.Throw(vm.NewThrowable("TypeError",
@@ -2035,6 +2033,19 @@ func arrayArgError(ctx *vm.Context, i int, fn string) {
 	if ctx.HasThrown() {
 		return
 	}
+}
+
+// requireArrayArgNamed — как requireArrayArg, но с явным именем параметра в
+// диагностике (Zend печатает имя из сигнатуры: call_user_func_array($args)).
+func requireArrayArgNamed(ctx *vm.Context, i int, fn, param string) *vm.Array {
+	if arg(ctx, i).Type() != vm.ArrayType {
+		ctx.Throw(vm.NewThrowable("TypeError",
+			vm.ArgTypeError(fn, i+1, param, "array", phpTypeName(ctx, i), "", 0)))
+		if ctx.HasThrown() {
+			return *new(*vm.Array)
+		}
+	}
+	return arg(ctx, i).AsArray()
 }
 
 // requireArrayArg проверяет, что аргумент #i (нумерация с 0) — массив.

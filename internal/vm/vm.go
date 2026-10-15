@@ -4458,21 +4458,11 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 
 		case OpConcatApp:
-			// `.=` : A = B . C с накоплением в буфере B. Быстрый путь
-			// `строка .= int`: цифры форматируются прямо в буфер (без
-			// промежуточной int-строки). Вход — по сырому типу C (int), так
-			// что обычное `строка .= строка` платит один сравнительный переход.
-			if regs[in.C].typ == IntType {
-				if lb := deref(regs[in.B]); lb.typ == StringType {
-					old := regs[in.A]
-					wv := appendStrBufInt(lb, lb.StringVal(), regs[in.C].Int())
-					regs[in.A] = wv
-					if trackedType(old.typ) || trackedType(wv.typ) {
-						vm.wRegSlow(int(in.A), old)
-					}
-					continue
-				}
-			}
+			// `.=` : A = B . C с накоплением в буфере B. Отдельного fused-пути
+			// для `строка .= int` здесь нет намеренно: обычное `строка .=
+			// строка` — самый горячий случай, и любая дополнительная проверка
+			// на каждом `.=` заметно била по 06_str_builder; выигрыш на редком
+			// `.= int` этого не стоит (аргументы — общий путь ниже).
 			ls, lerr := vm.stringify(regs[in.B])
 			if lerr != nil {
 				if !vm.handleThrow(chunk, lerr) {

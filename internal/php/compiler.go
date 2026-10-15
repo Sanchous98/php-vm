@@ -9130,6 +9130,10 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	// список зануляемых на входе регистров.
 	cc.chunk.SetNumParams(len(params) + len(captures))
 	cc.chunk.Optimize()
+	// Карта имя→регистр для eval/include, выполняемых внутри этой функции:
+	// RunLinked копирует локальные переменные вызывающего кадра в глобалы
+	// (Zend делит область видимости с eval).
+	cc.chunk.SetNamedRegs(cc.namedRegsMap())
 	cc.setVarRegs()
 	cc.chunk.AllocateRegisters(pinned, cc.allocEnv())
 	cf := vm.NewCompiledFunction(cc.chunk)

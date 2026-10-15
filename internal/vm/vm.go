@@ -1642,6 +1642,34 @@ func (vm *VM) RunLinked(chunk *Chunk, funcs []*Function, classes []ClassInfo, fn
 	vm.cur.this = callerThis
 	vm.ip = 0
 	vm.chunk = chunk
+	// eval/include внутри функции видят переменные вызывающего кадра (Zend
+	// делит область видимости): копируем локальные переменные вызывающей
+	// функции в таблицу глобалов, после выполнения — обратно (foreachLoop.012:
+	// eval('array_pop($a);') меняет локальный $a функции).
+	var aliasNames []string
+	var aliasRegs []int
+	var aliasSaved []Slot
+	var aliasHad []bool
+	if prevChunk != nil && vm.fp > 0 {
+		if caller := vm.frames[vm.fp-1].regs; caller != nil {
+			if named := prevChunk.NamedRegs(); len(named) > 0 {
+				for name, reg := range named {
+					if name == "" || name[0] == '\x00' || name == "this" {
+						continue
+					}
+					if reg < 0 || reg >= len(caller) {
+						continue
+					}
+					aliasNames = append(aliasNames, name)
+					aliasRegs = append(aliasRegs, reg)
+					old, had := vm.globals["$"+name]
+					aliasSaved = append(aliasSaved, old)
+					aliasHad = append(aliasHad, had)
+					vm.globals["$"+name] = caller[reg]
+				}
+			}
+		}
+	}
 	// eval/include компилируются как main-чанк: их именованные переменные
 	// живут в таблице глобалов, а не в регистрах вызывающей функции.
 	// Сбрасываем флаг функции, чтобы SymtabSet (extract и т.п.) писал туда же,
@@ -1650,6 +1678,45 @@ func (vm *VM) RunLinked(chunk *Chunk, funcs []*Function, classes []ClassInfo, fn
 	vm.inFunction = false
 	err = vm.exec(chunk)
 	vm.inFunction = prevInFunction
+	// Возврат изменённых переменных в кадр вызывающей функции (и восстановление
+	// прежних значений глобалов).
+	if len(aliasNames) > 0 {
+		if caller := vm.frames[vm.fp-1].regs; caller != nil {
+			for i, name := range aliasNames {
+				reg := aliasRegs[i]
+				newv, has := vm.globals["$"+name]
+				if !has {
+					newv = MakeNull()
+				}
+				if reg < len(caller) {
+					if r := caller[reg].Ref(); r != nil && caller[reg].typ == RefType {
+						// Переменная вызывающего кадра — ячейка ссылки:
+						// пишем через неё, чтобы aliases увидели изменение.
+						r.v = deref(newv)
+					} else {
+						old := caller[reg]
+						caller[reg] = deref(newv)
+						if trackedType(old.typ) || trackedType(caller[reg].typ) {
+							vm.wRegSlow(reg, old)
+						}
+					}
+				}
+				if aliasHad[i] {
+					vm.globals["$"+name] = aliasSaved[i]
+				} else {
+					delete(vm.globals, "$"+name)
+				}
+			}
+		} else {
+			for i, name := range aliasNames {
+				if aliasHad[i] {
+					vm.globals["$"+name] = aliasSaved[i]
+				} else {
+					delete(vm.globals, "$"+name)
+				}
+			}
+		}
+	}
 	if _, ok := err.(retSignal); ok {
 		res, returned, err = vm.retVal, true, nil
 	}

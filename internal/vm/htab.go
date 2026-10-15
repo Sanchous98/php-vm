@@ -146,10 +146,14 @@ func (a *Array) htNeedGrow() bool {
 }
 
 // htGrow — перестройка таблицы перед вставкой: при плотной загрузке живых —
-// удвоение, иначе та же ёмкость (заодно вычищаются tombstone).
+// удвоение, иначе та же ёмкость (заодно вычищаются tombstone). Пустая таблица
+// заводится минимальной ёмкости (htPutNew вызывается только после htEnsure,
+// guard — страховка от вырожденного случая).
 func (a *Array) htGrow() {
 	nb := len(a.buckets)
-	if int64(a.nLive)*8 >= int64(nb)*6 && nb < htMaxSize {
+	if nb == 0 {
+		nb = htMinSize
+	} else if int64(a.nLive)*8 >= int64(nb)*6 && nb < htMaxSize {
 		nb *= 2
 	}
 	a.htResize(nb)
@@ -159,6 +163,9 @@ func (a *Array) htGrow() {
 // Вызывать только когда загрузка после перестройки < 1 (иначе пробирование
 // зациклится); htSizeFor/htGrow это обеспечивают.
 func (a *Array) htResize(nb int) {
+	if nb < htMinSize {
+		nb = htMinSize
+	}
 	buckets := make([]hbucket, nb) // нули = свободные бакеты
 	mask := int32(nb - 1)
 	used := int32(0)

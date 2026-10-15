@@ -98,6 +98,23 @@ type Array struct {
 	// элементов (noteVal); при COW-копировании переносится.
 	objRefs bool
 
+	// tailDead — длина мёртвого суффикса entries: позиции
+	// [len(entries)-tailDead, len(entries)) — tombstone. Инвариант: если
+	// tailDead < len(entries), то entries[len(entries)-tailDead-1] жив.
+	// Новый ключ переиспользует дырку суффикса (она идёт после всех живых,
+	// поэтому порядок вставки не меняется); см. putEntry.
+	tailDead int32
+
+	// hasRefs — в массиве есть значение-ссылка (RefType). Монотонный флаг:
+	// ссылки появляются только из обходов по ссылке/явных ссылок. Пока он
+	// выставлен, компактизация entries запрещена: позиционные курсоры by-ref
+	// обхода адресуют физические позиции, а их ремап доступен только VM-слою.
+	hasRefs bool
+
+	// walkBusy — число активных позиционных обходов array_walk: их курсор
+	// адресует физические позиции entries, под ними компактизация запрещена.
+	walkBusy int
+
 	// iterState — этот массив — состояние позиционного by-ref обхода
 	// (ключи mode/cell/aid). Флаг позволяет при перестройке массивов быстро
 	// отсеивать регистры без обхода хеш-таблицы состояния; снимается, когда
@@ -106,6 +123,16 @@ type Array struct {
 	// горячий цикл обхода не платит за лишние обращения к хеш-таблице.
 	iterState bool
 	iterPz    int32
+
+	// valIter/valSnap/valPos — состояние позиционного обхода ПО ЗНАЧЕНИЮ
+	// (foreach by value, см. iterModeArrayVal): valIter помечает массив как
+	// состояние обхода (регистр компилятора), valSnap указывает на массив-
+	// снимок источника, valPos — позиция текущего элемента в его хранилище.
+	// Снимок во время цикла не меняется (источник помечен shared, записи в тело
+	// уходят в COW-копию), поэтому позиция — просто индекс в entries/values.
+	valIter bool
+	valSnap *Array
+	valPos  int32
 
 	// pos — внутренний указатель массива (как nInternalPointer в Zend):
 	// current/next/prev/reset/end/key. ГЛОБАЛЬНОЕ состояние массива: копируется
@@ -523,6 +550,11 @@ func appendPstr(s []pstr, x pstr) []pstr {
 // noteVal отмечает, что значение транзитивно может удерживать объекты
 // (для сборщика времени жизни, см. objRefs).
 func (a *Array) noteVal(v Slot) {
+	if v.typ == RefType {
+		// Ссылка в массиве: позиционные курсоры by-ref обхода адресуют
+		// физические позиции — компактизация запрещена (см. hasRefs).
+		a.hasRefs = true
+	}
 	if !a.objRefs {
 		switch v.typ {
 		case ObjectType, ClosureType, RefType, ArrayType:
@@ -585,6 +617,7 @@ func (a *Array) Set(k ArrayKey, v Slot) error {
 		if a.packed {
 			a.toMixed()
 		}
+		a.maybeCompact()
 		a.htEnsure()
 		h := hashKeyStr(k.s)
 		idx, b := a.htFindStr(k.s, h)
@@ -603,8 +636,10 @@ func (a *Array) Set(k ArrayKey, v Slot) error {
 }
 
 // htPutNew дописывает новый элемент (ключа в таблице ещё нет; b — бакет для
-// вставки, полученный из htFind*) и заводит его бакет. При необходимости
-// таблица растёт — тогда бакет пересчитывается. noteVal вызывается здесь.
+// вставки, полученный из htFind* ПОСЛЕ maybeCompact) и заводит его бакет.
+// Позиция берётся через putEntry: переиспользуется дырка мёртвого суффикса
+// (p1_free), иначе — конец entries. При необходимости таблица растёт —
+// тогда бакет пересчитывается. noteVal вызывается здесь.
 func (a *Array) htPutNew(k ArrayKey, h uint32, v Slot, b int32) {
 	if a.htNeedGrow() {
 		a.htGrow()
@@ -614,8 +649,8 @@ func (a *Array) htPutNew(k ArrayKey, h uint32, v Slot, b int32) {
 			_, b = a.htFindInt(k.i, h)
 		}
 	}
-	a.appendEntry(KV{key: k, hash: h, val: v, live: true})
-	a.buckets[b] = hbucket{fp: h, idx: int32(len(a.entries)-1) + 1}
+	pos := a.putEntry(KV{key: k, hash: h, val: v, live: true})
+	a.buckets[b] = hbucket{fp: h, idx: int32(pos) + 1}
 	a.used++
 	a.nLive++
 	a.noteVal(v)
@@ -635,6 +670,75 @@ func (a *Array) appendEntry(kv KV) {
 		a.entries = ne
 	}
 	a.entries = append(a.entries, kv)
+}
+
+// putEntry размещает новый элемент и возвращает его позицию в entries.
+// Если есть мёртвый суффикс (tailDead > 0), берётся его первая позиция: она
+// идёт после всех живых, поэтому наблюдаемый порядок вставки не меняется
+// (относительный порядок выживших сохраняется, новый ключ — в конце). Иначе
+// элемент дописывается в конец.
+func (a *Array) putEntry(kv KV) int {
+	if a.tailDead > 0 {
+		i := len(a.entries) - int(a.tailDead)
+		a.entries[i] = kv
+		a.tailDead--
+		return i
+	}
+	a.appendEntry(kv)
+	return len(a.entries) - 1
+}
+
+// liveCount — число живых элементов (nLive поддерживается на всех путях).
+func (a *Array) liveCount() int { return int(a.nLive) }
+
+// maybeCompact — компактизация entries при высоком проценте tombstone
+// (мусора больше половины живых). Порядок живых элементов сохраняется
+// (физический порядок после сжатия тот же), карты перестраиваются на новые
+// позиции, внутренний указатель pos переносится на тот же элемент. Дырки в
+// хвосте переиспользуются и так (putEntry), но дырки в середине без сжатия
+// не переиспользуемы: новый ключ обязан вставать в конец порядка.
+//
+// Запрещена при активных позиционных курсорах: by-ref обход (hasRefs — в
+// массиве есть Ref) и array_walk (walkBusy) адресуют физические позиции,
+// а ремап их курсоров доступен только VM-слою (iterremap.go).
+func (a *Array) maybeCompact() {
+	live := a.liveCount()
+	if len(a.entries) <= live+live/2+8 || a.hasRefs || a.walkBusy != 0 {
+		return
+	}
+	a.compact()
+}
+
+func (a *Array) compact() {
+	old := a.entries
+	ne := make([]KV, 0, a.liveCount()+a.liveCount()/8)
+	newPos := -1
+	for i := range old {
+		if old[i].live {
+			if i == a.pos {
+				newPos = len(ne)
+			}
+			ne = append(ne, old[i])
+		} else if i == a.pos {
+			// Курсор стоял на дырке: Zend при удалении элемента под
+			// указателем сдвигает его на следующего живого.
+			newPos = len(ne)
+		}
+	}
+	if newPos >= 0 {
+		a.pos = newPos
+	} else if a.pos >= len(old) {
+		a.pos = len(ne)
+	}
+	a.entries = ne
+	a.tailDead = 0
+	// Таблица перестраивается на новые позиции: nLive не изменился, а
+	// перестройка заодно вычищает накопившиеся tombstone-бакеты.
+	if len(ne) == 0 {
+		a.buckets, a.used = nil, 0
+	} else {
+		a.htResize(htSizeFor(len(ne)))
+	}
 }
 
 // SetInt — установка значения по int-ключу (горячий путь $a[$i] = v).
@@ -657,6 +761,7 @@ func (a *Array) SetInt(k int64, v Slot) error {
 		}
 		a.toMixed()
 	}
+	a.maybeCompact()
 	a.htEnsure()
 	h := hashKeyInt(k)
 	idx, b := a.htFindInt(k, h)
@@ -695,6 +800,7 @@ func (a *Array) SetIntOld(k int64, v Slot) (old Slot, found, set bool, err error
 		}
 		return old, found, true, nil
 	}
+	a.maybeCompact()
 	a.htEnsure()
 	h := hashKeyInt(k)
 	idx, b := a.htFindInt(k, h)
@@ -728,6 +834,7 @@ func (a *Array) SetOld(k ArrayKey, v Slot) (old Slot, found, set bool, err error
 		if a.packed {
 			a.toMixed()
 		}
+		a.maybeCompact()
 		a.htEnsure()
 		h := hashKeyStr(k.s)
 		idx, b := a.htFindStr(k.s, h)
@@ -759,8 +866,7 @@ func (a *Array) Unset(k ArrayKey) {
 		if idx, b := a.htFindStr(k.s, hashKeyStr(k.s)); idx >= 0 {
 			a.buckets[b].idx = bucketTomb
 			a.nLive--
-			a.entries[idx].live = false
-			a.entries[idx].val = Slot{}
+			a.noteDropAt(int(idx))
 			if a.pos == int(idx) {
 				a.pos = a.nextLive(int(idx)) // указатель под удалённым -> на следующий
 			}
@@ -784,11 +890,20 @@ func (a *Array) UnsetInt(k int64) {
 	if idx, b := a.htFindInt(k, hashKeyInt(k)); idx >= 0 {
 		a.buckets[b].idx = bucketTomb
 		a.nLive--
-		a.entries[idx].live = false
-		a.entries[idx].val = Slot{}
+		a.noteDropAt(int(idx))
 		if a.pos == int(idx) {
 			a.pos = a.nextLive(int(idx))
 		}
+	}
+}
+
+// noteDropAt помечает позицию i мёртвой (tombstone) и поддерживает tailDead:
+// если удалённый элемент был последним живым, мёртвый суффикс растёт на 1.
+func (a *Array) noteDropAt(i int) {
+	a.entries[i].live = false
+	a.entries[i].val = Slot{}
+	if i == len(a.entries)-int(a.tailDead)-1 {
+		a.tailDead++
 	}
 }
 
@@ -1213,6 +1328,17 @@ func (a *Array) Shared() bool { return a.shared }
 // 0..Len()-1 в порядке следования (быстрый путь итерации/ключей).
 func (a *Array) Packed() bool { return a != nil && a.packed }
 
+// MarkWalkBusy помечает активность позиционного обхода array_walk: пока
+// счётчик не ноль, компактизация entries запрещена (курсор обхода адресует
+// физические позиции, см. maybeCompact).
+func (a *Array) MarkWalkBusy(on bool) {
+	if on {
+		a.walkBusy++
+	} else if a.walkBusy > 0 {
+		a.walkBusy--
+	}
+}
+
 // Unshare возвращает массив, пригодный для записи: сам a, если он не разделён,
 // иначе поверхностную копию. Оригинал остаётся разделённым. Вложенные
 // массивы-значения помечаются разделёнными — иначе запись в них была бы видна
@@ -1221,7 +1347,7 @@ func (a *Array) Unshare() *Array {
 	if !a.shared {
 		return a
 	}
-	c := &Array{packed: a.packed, kind: a.kind, nextFree: a.nextFree, pos: a.pos, objRefs: a.objRefs, id: a.id}
+	c := &Array{packed: a.packed, kind: a.kind, nextFree: a.nextFree, pos: a.pos, objRefs: a.objRefs, id: a.id, hasRefs: a.hasRefs}
 	if a.packed {
 		switch a.kind {
 		case packedInt:
@@ -1238,10 +1364,25 @@ func (a *Array) Unshare() *Array {
 			copy(c.values, a.values)
 		}
 	} else {
-		if len(a.entries) > 0 {
+		// Мёртвый суффикс не копируется (p1_free): его отбрасывание не меняет
+		// позиции живых элементов (порядок и индексы сохраняются), а память
+		// копии меньше. С открытой таблицей это безопасно: бакеты ссылаются
+		// только на ЖИВЫЕ позиции, а они все лежат до мёртвого суффикса
+		// (инвариант tailDead: [len-tailDead, len) — tombstone). Дырки в
+		// середине остаются (их переиспользует putEntry/maybeCompact).
+		if a.tailDead > 0 {
+			c.entries = make([]KV, len(a.entries)-int(a.tailDead))
+			copy(c.entries, a.entries)
+			if c.pos > len(c.entries) {
+				c.pos = len(c.entries)
+			}
+		} else if len(a.entries) > 0 {
 			c.entries = make([]KV, len(a.entries))
 			copy(c.entries, a.entries)
 		}
+		// Таблица копируется как есть: индексы живых позиций не изменились
+		// (усечён только мёртвый хвост), tombstone-бакеты безвредны. COW =
+		// две memcpy (entries+buckets) вместо переобхода 150k строк map.
 		if len(a.buckets) > 0 {
 			c.buckets = make([]hbucket, len(a.buckets))
 			copy(c.buckets, a.buckets)

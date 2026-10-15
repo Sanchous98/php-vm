@@ -70,6 +70,7 @@ const (
 	iterModeProps    = 1
 	iterModeArrayRef = 2 // позиционный обход массива по ссылке
 	iterModeWeakMap  = 3 // обход пар WeakMap (снимок ключей)
+	iterModeArrayVal = 4 // позиционный обход снимка массива по значению (F3)
 )
 
 func stateGet(a *Array, key string) Slot {
@@ -306,6 +307,9 @@ func (vm *VM) iterCall(obj Slot, name string) (Slot, error) {
 // iterValid — valid()/есть ли ещё свойство.
 func (vm *VM) iterValid(state Slot) (bool, error) {
 	a := deref(state).AsArray()
+	if a != nil && a.valIter {
+		return iterValValid(a), nil
+	}
 	switch deref(stateGet(a, "mode")).Int() {
 	case iterModeArrayRef:
 		if iterArrayRefValid(state) {
@@ -338,6 +342,9 @@ func (vm *VM) iterValid(state Slot) (bool, error) {
 // iterKey — key()/имя свойства.
 func (vm *VM) iterKey(state Slot) (Slot, error) {
 	a := deref(state).AsArray()
+	if a != nil && a.valIter {
+		return iterValKey(a), nil
+	}
 	switch deref(stateGet(a, "mode")).Int() {
 	case iterModeArrayRef:
 		return iterArrayRefKey(state), nil
@@ -388,6 +395,9 @@ func (vm *VM) propKeyForSlot(o Slot, name string) string {
 // iterCurrent — current()/значение свойства.
 func (vm *VM) iterCurrent(state Slot) (Slot, error) {
 	a := deref(state).AsArray()
+	if a != nil && a.valIter {
+		return iterValCurrent(a), nil
+	}
 	switch deref(stateGet(a, "mode")).Int() {
 	case iterModeWeakMap:
 		return vm.iterWeakMapCurrent(state, false)
@@ -594,6 +604,10 @@ func (vm *VM) iterWeakMapCurrent(state Slot, asRef bool) (Slot, error) {
 // iterNext — next()/переход к следующему свойству.
 func (vm *VM) iterNext(state Slot) error {
 	a := deref(state).AsArray()
+	if a != nil && a.valIter {
+		a.valPos++
+		return nil
+	}
 	switch deref(stateGet(a, "mode")).Int() {
 	case iterModeArrayRef:
 		a, _, arr := iterArrayRefParts(state)
@@ -786,6 +800,70 @@ func (vm *VM) iterArrayRefCurrentRef(state Slot) (Slot, error) {
 	ref := MakeRef(&Ref{v: cur})
 	arr.storeRefAt(pos, ref)
 	return ref, nil
+}
+
+// --- Позиционный обход снимка массива по значению (F3) ---
+//
+// В отличие от by-ref обхода позиция ведётся по НЕИЗМЕНЯЕМОМУ снимку
+// (источник помечен shared в OpMove, все записи в теле уходят в COW-копию),
+// поэтому tombstones не появляются в теле, и позиция — просто индекс в
+// хранилище снимка (entries для mixed, values/ints/... для packed). Состояние
+// живёт в Go-полях массива-состояния (valIter/valSnap/valPos) — горячий цикл не
+// платит за map-lookup'ы состояния и не копирует ключи через array_keys.
+
+// iterInitArrayVal готовит состояние обхода по значению. Для не-массива
+// состояние пустое: обход ничего не сделает (в массивную ветку компилятора
+// попадают только массивы — __php_foreach_check).
+func (vm *VM) iterInitArrayVal(src Slot) Slot {
+	state := newArray()
+	state.valIter = true
+	if v := deref(src); v.typ == ArrayType {
+		state.valSnap = v.AsArray()
+	}
+	return MakeArray(state)
+}
+
+// iterValValid — есть ли живой элемент на текущей (или следующей живой)
+// позиции снимка; tombstone-ы (unset до цикла) пропускаются.
+func iterValValid(a *Array) bool {
+	snap := a.valSnap
+	if snap == nil {
+		return false
+	}
+	pos := int(a.valPos)
+	n := snap.storeLen()
+	for pos < n && !snap.liveAt(pos) {
+		pos++
+	}
+	a.valPos = int32(pos)
+	return pos < n
+}
+
+// iterValKey — ключ текущего элемента снимка (null, если позиция пуста).
+func iterValKey(a *Array) Slot {
+	snap := a.valSnap
+	if snap == nil {
+		return MakeNull()
+	}
+	k, ok := snap.keyAt(int(a.valPos))
+	if !ok {
+		return MakeNull()
+	}
+	return arrayKeyToSlot(k)
+}
+
+// iterValCurrent — значение текущего элемента снимка: элементы-ссылки
+// разыменовываются, значение фиксируется в момент чтения (как FETCH_DIM_R).
+func iterValCurrent(a *Array) Slot {
+	snap := a.valSnap
+	if snap == nil {
+		return MakeNull()
+	}
+	v, ok := snap.elementAt(int(a.valPos))
+	if !ok {
+		return MakeNull()
+	}
+	return deref(v)
 }
 
 // arrayKeyToSlot упаковывает ключ массива в слот (ключ foreach/current).

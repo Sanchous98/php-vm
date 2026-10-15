@@ -631,8 +631,12 @@ type Thunk struct {
 	self ClassInfo
 	done bool
 	busy bool
-	val  Value
-	err  error
+	// busyGen — vm.classGen на момент входа; повторный вход разрешён, если
+	// между входами был объявлен класс (см. evalThunk, gh10709).
+	busyGen   int64
+	busyRetry bool
+	val       Value
+	err       error
 	// TypeConstr/Label — для типизированных констант класса: проверка типа
 	// вычисленного значения при доступе.
 	TypeConstr string

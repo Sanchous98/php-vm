@@ -126,6 +126,10 @@ func (l *Lexer) emit(tok Token) {
 // исходнике текущего файла); -1 — конструкция не встречалась.
 var HaltOffset int64 = -1
 
+// pendingHaltErr — __halt_compiler() внутри блока: ошибка сообщается после
+// успешного разбора (при синтаксической ошибке приоритет у неё, bug60099).
+var pendingHaltErr *fatalError
+
 // Lex разбирает исходник на токены (PHP-режим).
 func Lex(src string) ([]Token, error) { return lexMode(src, true) }
 
@@ -348,40 +352,44 @@ func (l *Lexer) runPHP() error {
 			// __halt_compiler(): всё после него — данные, не разбираем.
 			if strings.EqualFold(w, "__halt_compiler") {
 				// Zend допускает конструкцию только на верхнем уровне
-				// скрипта (bug75218, halt03).
+				// скрипта (bug75218, halt03). Внутри блока ошибку запоминаем
+				// и разбираем как обычный идентификатор: синтаксическая
+				// ошибка (например, незакрытая `{`, bug60099) сообщается
+				// раньше.
 				if l.braceDepth > 0 {
-					return &fatalError{msg: "__HALT_COMPILER() can only be used from the outermost scope", line: 1 + strings.Count(l.src[:start], "\n")}
-				}
-				j := l.pos
-				for j < len(l.src) && isSpaceByte(l.src[j]) {
-					j++
-				}
-				if j < len(l.src) && l.src[j] == '(' {
-					depth := 0
-					for j < len(l.src) {
-						if l.src[j] == '(' {
-							depth++
-						} else if l.src[j] == ')' {
-							depth--
-							if depth == 0 {
-								j++
-								break
-							}
-						}
+					pendingHaltErr = &fatalError{msg: "__HALT_COMPILER() can only be used from the outermost scope", line: 1 + strings.Count(l.src[:start], "\n")}
+				} else {
+					j := l.pos
+					for j < len(l.src) && isSpaceByte(l.src[j]) {
 						j++
 					}
-					// Смещение данных — сразу после `;` (как
-					// zend_get_scanned_file_offset после редукции).
-					off := j
-					for off < len(l.src) && isSpaceByte(l.src[off]) {
-						off++
+					if j < len(l.src) && l.src[j] == '(' {
+						depth := 0
+						for j < len(l.src) {
+							if l.src[j] == '(' {
+								depth++
+							} else if l.src[j] == ')' {
+								depth--
+								if depth == 0 {
+									j++
+									break
+								}
+							}
+							j++
+						}
+						// Смещение данных — сразу после `;` (как
+						// zend_get_scanned_file_offset после редукции).
+						off := j
+						for off < len(l.src) && isSpaceByte(l.src[off]) {
+							off++
+						}
+						if off < len(l.src) && l.src[off] == ';' {
+							off++
+						}
+						HaltOffset = int64(off)
+						l.pos = len(l.src)
+						return nil
 					}
-					if off < len(l.src) && l.src[off] == ';' {
-						off++
-					}
-					HaltOffset = int64(off)
-					l.pos = len(l.src)
-					return nil
 				}
 			}
 			k := TIdent

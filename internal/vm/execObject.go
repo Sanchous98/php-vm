@@ -726,7 +726,13 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		// Чтение-для-записи в не-объект: Zend бросает Error (не Warning).
-		err := NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", pname, valueTypeName(vm, recv)))
+		// Для базы составного присваивания сообщение — «assign»
+		// (bug78531: `$u->a += 5`), для базы косвенной записи — «modify».
+		msg := "Attempt to modify property %q on %s"
+		if readMode {
+			msg = "Attempt to assign property %q on %s"
+		}
+		err := NewThrowable("Error", fmt.Sprintf(msg, pname, valueTypeName(vm, recv)))
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}
@@ -1414,6 +1420,16 @@ func (vm *VM) propNulNameErr(name string) *Throwable {
 // (Zend: «Attempt to modify property», в отличие от «assign» у значения).
 func (vm *VM) propModifyNonObjectErr(recv Slot, name string) *Throwable {
 	return NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", name, valueTypeName(vm, deref(recv))))
+}
+
+// PropWriteCheck проверяет приёмник записи свойства (FETCH_OBJ_W): не-объект
+// даёт Error «Attempt to modify property ...» ещё до вычисления правой части
+// (bug75241). Возвращает приёмник.
+func (vm *VM) PropWriteCheck(o Slot, name string) (Slot, error) {
+	if vm.classInfo(o) != nil {
+		return o, nil
+	}
+	return Slot{}, vm.propModifyNonObjectErr(o, name)
 }
 
 // propWriteNonObjectErr — Error при записи свойства в не-объект.

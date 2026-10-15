@@ -2924,6 +2924,8 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_call_cb_named", callCbNamedBuiltin),
 		vm.Register("__php_forward_cb_named", forwardCbNamedBuiltin),
 		vm.Register("__php_incdec_prop", incDecPropBuiltin),
+		vm.Register("__php_incdec_prop_check", incDecPropCheckBuiltin),
+		vm.Register("__php_prop_write_check", propWriteCheckBuiltin),
 		vm.Register("__php_incdec_ref", incDecRefBuiltin),
 		vm.Register("__php_incdec_val", incDecValBuiltin),
 		vm.Register("__php_incdec_global", incDecGlobalBuiltin),
@@ -14245,6 +14247,22 @@ func (c *compiler) propGetRW(x *PropExpr) (uint8, error) {
 // записи (`$o->p->q = ...`, `$o->p[] = ...`): свойство читается в режиме
 // OpPropGetRWInterm (инициализированное readonly допустимо), остальные
 // приёмники — как база записи.
+// chainBaseVar находит базовую простую переменную цепочки записи
+// (`$u4->a->b[...]` -> $u4), для диагностики «Undefined variable».
+func chainBaseVar(e Expr) *VarExpr {
+	switch x := e.(type) {
+	case *PropExpr:
+		return chainBaseVar(x.Recv)
+	case *IndexExpr:
+		return chainBaseVar(x.Arr)
+	case *VarExpr:
+		if x.NameExpr == nil {
+			return x
+		}
+	}
+	return nil
+}
+
 func (c *compiler) exprChainRecv(e Expr) (uint8, error) {
 	if pe, ok := e.(*PropExpr); ok {
 		recv, err := c.exprChainRecv(pe.Recv)
@@ -15691,11 +15709,18 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			// промежуточное звено (инициализированное readonly-свойство
 			// допустимо, variation_nested).
 			obj, err = c.exprChainRecv(t.Recv)
+		} else if ve, ok := t.Recv.(*VarExpr); ok && ve.NameExpr == nil {
+			// Составное присваивание читает приёмник с диагностикой
+			// «Undefined variable» (bug78531: `$u->a += 5`).
+			obj = c.loadVarChecked(ve.Name, c.exprLine(ve))
 		} else {
-			// Составное присваивание сначала читает приёмник (обычное
-			// чтение): неинициализированное типизированное свойство даёт
-			// ошибку доступа (variation_nested).
-			obj, err = c.exprChainRead(t.Recv)
+			// Цепочка записи: базовая переменная читается с диагностикой
+			// «Undefined variable», промежуточные свойства — в RW-режиме
+			// («Attempt to modify property ... on null», bug78531).
+			if b := chainBaseVar(t.Recv); b != nil {
+				c.emitUndefReadWarn(b.Name, c.exprLine(b))
+			}
+			obj, err = c.exprChainRecv(t.Recv)
 		}
 		if err != nil {
 			return 0, err
@@ -17005,16 +17030,33 @@ func (c *compiler) assignPropRef(t *PropExpr, value Expr) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
+	var nameReg uint8
+	if t.NameExpr != nil {
+		nameReg, err = c.expr(t.NameExpr)
+		if err != nil {
+			return 0, err
+		}
+	}
+	// Zend выполняет FETCH_OBJ_W левой части до вычисления RHS: запись в
+	// свойство null — «Attempt to modify property ... on null» ещё до правой
+	// части (bug75241).
+	{
+		var nr uint8
+		if t.NameExpr != nil {
+			nr = nameReg
+		} else {
+			nr = c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nr,
+				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
+		}
+		obj = c.emitCall("__php_prop_write_check", []uint8{obj, nr})
+	}
 	srcCell, err := c.refCellForExpr(value)
 	if err != nil {
 		return 0, err
 	}
 	srcCell = c.decoupleCallRef(value, srcCell)
 	if t.NameExpr != nil {
-		nameReg, err := c.expr(t.NameExpr)
-		if err != nil {
-			return 0, err
-		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpPropSetRefDyn, A: obj, B: srcCell, C: int32(nameReg)})
 	} else {
 		name := int32(c.chunk.AddConst(vm.StrConst(t.Name)))
@@ -17278,6 +17320,11 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nameReg,
 				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
 		}
+		decReg := c.incDecFlagReg(x.Op)
+		// Не-объект-приёмник: Zend бросает «Attempt to increment/decrement
+		// property» до чтения значения (bug78531), объект-приёмник читается
+		// как обычно (Warning «Undefined property», bug60536_001).
+		obj = c.emitCall("__php_incdec_prop_check", []uint8{obj, nameReg, decReg})
 		cur := c.alloc()
 		if t.NameExpr != nil {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetDyn, A: cur, B: obj, C: int32(nameReg)})
@@ -17286,14 +17333,12 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
 		}
 		if x.Pre {
-			dec := c.incDecFlagReg(x.Op)
-			newv := c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, dec})
+			newv := c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, decReg})
 			return newv, nil
 		}
 		oldv := c.alloc()
 		c.chunk.Emit(vm.Instruction{Op: vm.OpRefGet, A: oldv, B: cur})
-		dec := c.incDecFlagReg(x.Op)
-		c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, dec})
+		c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, decReg})
 		return oldv, nil
 	case *StaticPropExpr:
 		if t.ClassExpr != nil || c.classRefUnresolved(t.Class) {

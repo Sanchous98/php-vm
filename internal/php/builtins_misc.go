@@ -2102,6 +2102,42 @@ func incDecPropBuiltin(ctx *vm.Context) vm.Value {
 	return res
 }
 
+// propWriteCheckBuiltin — проверка приёмника записи свойства по ссылке
+// (`$o->p =& ...`): не-объект даёт «Attempt to modify property» до RHS
+// (bug75241).
+func propWriteCheckBuiltin(ctx *vm.Context) vm.Value {
+	obj := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	res, err := ctx.VM().PropWriteCheck(obj, name)
+	if err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return res
+}
+
+// incDecPropCheckBuiltin — проверка приёмника ++/-- над свойством: не-объект
+// даёт Error «Attempt to increment/decrement property ... on null» (bug78531).
+func incDecPropCheckBuiltin(ctx *vm.Context) vm.Value {
+	obj := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	dec := arg(ctx, 2).ToBool()
+	res, err := ctx.VM().IncDecPropCheck(obj, name, dec)
+	if err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return res
+}
+
 // incDecRefBuiltin — помощник для ++/-- над ссылкой (возможно, guarded).
 func incDecRefBuiltin(ctx *vm.Context) vm.Value {
 	cur := arg(ctx, 0)

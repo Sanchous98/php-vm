@@ -724,6 +724,7 @@ func (p *Parser) leave() { p.depth-- }
 
 func Parse(src string) (*Program, error) {
 	HaltOffset = -1
+	pendingHaltErr = nil
 	toks, err := Lex(src)
 	if err != nil {
 		return nil, err
@@ -741,6 +742,11 @@ func Parse(src string) (*Program, error) {
 			return nil, be
 		}
 		return nil, perr
+	}
+	if pendingHaltErr != nil {
+		err := pendingHaltErr
+		pendingHaltErr = nil
+		return nil, err
 	}
 	prog.HaltOffset = HaltOffset
 	return prog, nil
@@ -812,6 +818,7 @@ func checkBracketBalance(toks []Token, src string) error {
 // Открывающие теги `<?php`, `<?=` и `<?` распознаются.
 func ParseMixed(src string) (*Program, error) {
 	HaltOffset = -1
+	pendingHaltErr = nil
 	var shShift int64
 	src, shShift = stripShebangKeepLines(src)
 	toks, err := lexMode(src, false)
@@ -831,6 +838,11 @@ func ParseMixed(src string) (*Program, error) {
 			return nil, be
 		}
 		return nil, perr
+	}
+	if pendingHaltErr != nil {
+		err := pendingHaltErr
+		pendingHaltErr = nil
+		return nil, err
 	}
 	prog.HaltOffset = HaltOffset
 	if prog.HaltOffset >= 0 && shShift != 0 {

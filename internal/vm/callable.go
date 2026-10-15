@@ -180,6 +180,31 @@ func NewClosureClass() ClassInfo {
 	return ci
 }
 
+// ClosureUndefBuiltin — регистрация флагов «неявный захват не определён» для
+// стрелочной функции: __php_closure_undef($closure, $idx, $undef, ...).
+func ClosureUndefBuiltin(ctx *Context) Slot {
+	a := ctx.Args()
+	if len(a) < 3 {
+		return MakeNull()
+	}
+	cl := deref(a[0]).AsClosure()
+	if cl == nil {
+		return MakeNull()
+	}
+	for i := 1; i+1 < len(a); i += 2 {
+		idx := int(deref(a[i]).ToInt())
+		undef := deref(a[i+1]).ToBool()
+		if !undef || idx < 0 {
+			continue
+		}
+		for len(cl.capUndef) <= idx {
+			cl.capUndef = append(cl.capUndef, false)
+		}
+		cl.capUndef[idx] = true
+	}
+	return MakeNull()
+}
+
 // closureBind — общая реализация Closure::bind/bindTo
 // (Zend do_closure_bind/zend_valid_closure_binding).
 func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope bool) (Slot, error) {

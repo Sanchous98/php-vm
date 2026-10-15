@@ -6922,6 +6922,19 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	if aerr := vm.checkArityN(fn, args, provided); aerr != nil {
 		return Slot{}, aerr
 	}
+	// Неявные захваты стрелочной функции, не определённые в точке создания:
+	// Zend печатает "Undefined variable $x" при чтении в теле (bug81076,
+	// arrow_functions/002) — у нас при входе в замыкание.
+	for i, undef := range cl.capUndef {
+		if !undef || i >= len(fn.CaptureNames) {
+			continue
+		}
+		n := strings.TrimPrefix(fn.CaptureNames[i], "$")
+		if n == "" {
+			continue
+		}
+		vm.Warning("Undefined variable $" + n)
+	}
 	if len(fn.ByRefArgs) > 0 {
 		vm.warnByRefArgs(fn, args)
 	}

@@ -424,6 +424,10 @@ type Closure struct {
 	MagicName string
 	// objID — PHP-хендл объекта замыкания (#N в var_dump), как у zend_object.
 	objID int
+	// capUndef — неявные захваты стрелочной функции, не определённые в точке
+	// создания: Zend печатает "Undefined variable" при чтении в теле (у нас —
+	// при первом вызове), bug81076.
+	capUndef []bool
 }
 
 // ID возвращает PHP-хендл замыкания (#N) или 0, если он ещё не присвоен.

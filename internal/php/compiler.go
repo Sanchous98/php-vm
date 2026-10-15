@@ -2777,6 +2777,13 @@ func inlineEval(x *CallExpr, file string, inc map[string]bool) (Expr, []Stmt, er
 		return nil, nil, err
 	}
 	val, pre := splitTopReturn(stmts, &NullLit{})
+	// Регион вклеенного eval(): кадры и диагностики относятся к
+	// "<file>(<line>) : eval()'d code" (bug_debug_backtrace), плюс
+	// синтетический кадр eval() в трейсе.
+	pre = append([]Stmt{&StrictStmt{Push: true, Strict: sub.StrictTypes, File: file,
+		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: "eval", CallNode: x,
+		EvalRegion: true}}, pre...)
+	pre = append(pre, &StrictStmt{Push: false})
 	// Предупреждения компиляции eval-фрагмента (напр. use некомпаундного
 	// имени) печатаются в момент выполнения eval, а не как startup-диагностика
 	// охватывающего файла (Zend компилирует eval в рантайме).
@@ -2894,6 +2901,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_is_countable", vm.IsCountableBuiltin),
 		vm.Register("__php_error_reporting", vm.ErrorReportingBuiltin),
 		vm.Register("__php_verify_return", vm.VerifyReturnAtPointBuiltin),
+		vm.Register("__php_closure_undef", vm.ClosureUndefBuiltin),
 		vm.Register("iterator_to_array", vm.IteratorToArrayBuiltin),
 		vm.Register("__php_yield_from_ret", vm.YieldFromRetBuiltin),
 		vm.Register("__php_yield_from_begin", vm.YieldFromBeginBuiltin),
@@ -11188,13 +11196,18 @@ func (c *compiler) stmt(st Stmt) error {
 				}
 			}
 			c.pushStrict(s.Strict)
-			c.pushFile(s.File)
-			if s.File != "" {
+			fileName := s.File
+			if s.EvalRegion {
+				// Zend: код eval() относится к "<file>(<line>) : eval()'d code".
+				fileName = fmt.Sprintf("%s(%d) : eval()'d code", callFile, callLine)
+			}
+			c.pushFile(fileName)
+			if fileName != "" {
 				parent := int32(-1)
 				if n := len(c.inlineStack); n > 0 {
 					parent = c.inlineStack[n-1].region
 				}
-				region := c.chunk.AddInlineRegion(s.File, callFile, callLine, s.CallName, parent)
+				region := c.chunk.AddInlineRegion(fileName, callFile, callLine, s.CallName, parent)
 				c.inlineStack = append(c.inlineStack, inlineCtx{lines: s.Lines, exprs: s.ExprLines, region: region})
 			}
 		} else {
@@ -14571,12 +14584,31 @@ func (c *compiler) closureExpr(e Expr) (uint8, error) {
 	for range specs {
 		c.alloc()
 	}
+	// Для неявных захватов стрелочных функций: неопределённые переменные не
+	// диагностируются в точке создания (Zend печатает "Undefined variable"
+	// при чтении в теле — bug81076/arrow_functions). Флаги «не определена»
+	// передаются в замыкание и проверяются при вызове.
+	var flagArgs []uint8
 	for i, sp := range specs {
 		var r uint8
 		if sp.byref {
 			r = c.refCell(sp.name)
 		} else {
+			if ci.isArrow && simpleVarName(sp.name) {
+				u := c.undefFlagFor(sp.name)
+				if u == 0 {
+					u = c.alloc()
+					c.chunk.Emit(vm.Instruction{Op: vm.OpFalse, A: u})
+				}
+				idx := c.alloc()
+				c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: idx, C: int32(c.chunk.AddConst(vm.IntConst(int64(i))))})
+				flagArgs = append(flagArgs, idx, u)
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+			}
 			r = c.loadVar(sp.name)
+			if ci.isArrow {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+			}
 		}
 		if dst := base + uint8(i); dst != r {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: dst, B: r})
@@ -14584,8 +14616,60 @@ func (c *compiler) closureExpr(e Expr) (uint8, error) {
 	}
 	d := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpClosure, A: d, B: base, C: int32(ci.idx)})
+	if len(flagArgs) > 0 {
+		c.emitCall("__php_closure_undef", append([]uint8{d}, flagArgs...))
+	}
 	c.tmp = d + 1
 	return d, nil
+}
+
+// simpleVarName сообщает, что имя — простая переменная `$ident` (не
+// переменная-переменная вида `$$x`, для которых флаг определённости не имеет
+// смысла).
+func simpleVarName(name string) bool {
+	if !strings.HasPrefix(name, "$") || len(name) < 2 {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		ch := name[i]
+		if ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= 0x80 || (i > 1 && ch >= '0' && ch <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// undefFlagFor возвращает регистр-флаг «переменная была снята/не определена»
+// для захвата стрелочной функции (0 — переменная определена всегда). В main
+// переменные живут в таблице глобалов — проверяем OpGlobalIsset.
+func (c *compiler) undefFlagFor(name string) uint8 {
+	if c.isMain {
+		// Промотированные main-переменные живут в регистрах и статически
+		// определены; остальные — в VM.globals, где OpGlobalIsset проверяет
+		// именно наличие (null-значение тоже «определено»).
+		if c.promote[name] {
+			return 0
+		}
+		key := c.globalKey(name)
+		isset := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: isset, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+		u := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpNot, A: u, B: isset})
+		return u
+	}
+	// В функции флаг defRegs: TRUE — переменная снята/не определена. Флаг
+	// существует только для переменных из undefInit (остальные определены).
+	if def, ok := c.defRegs[name]; ok {
+		for _, r := range c.undefInit {
+			if r == def {
+				u := c.alloc()
+				c.chunk.Emit(vm.Instruction{Op: vm.OpNot, A: u, B: def})
+				return u
+			}
+		}
+	}
+	return 0
 }
 
 // dynCall компилирует `$f(args)`: имя функции — динамическое (строка из

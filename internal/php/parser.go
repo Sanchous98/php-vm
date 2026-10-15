@@ -115,8 +115,11 @@ type StrictStmt struct {
 	// диагностики внутри вклеенного кода должны указывать строки своего файла.
 	Lines     map[Stmt]int
 	ExprLines map[Expr]int
-	// CallName — имя конструкции (include/require[_once]) для кадра трейса.
+	// CallName — имя конструкции (include/require[_once]/eval) для кадра трейса.
 	CallName string
+	// EvalRegion — регион вклеенного eval(): имя файла для диагностик и кадра
+	// строится как "<callFile>(<callLine>) : eval()'d code".
+	EvalRegion bool
 	// CallNode — узел IncludeExpr: строка конструкции берётся из карт строк
 	// файла на этапе компиляции (нужна для кадра require в трейсе).
 	CallNode Expr

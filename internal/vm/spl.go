@@ -2324,11 +2324,11 @@ func registerWrapIterMembers(ci *runtimeClass, mode uint8) {
 			}
 			ci := ctx.vm.classInfo(d.inner)
 			if ci == nil {
-				return Slot{}, NewThrowable("Error", "Call to undefined method " + name + "()")
+				return Slot{}, NewThrowable("Error", "Call to undefined method "+name+"()")
 			}
 			m := ci.lookupMethod(name)
 			if m == nil {
-				return Slot{}, NewThrowable("Error", "Call to undefined method " + classDisplayName(ci) + "::" + name + "()")
+				return Slot{}, NewThrowable("Error", "Call to undefined method "+classDisplayName(ci)+"::"+name+"()")
 			}
 			return ctx.vm.invokeMethod(m, d.inner, ci, cargs)
 		},

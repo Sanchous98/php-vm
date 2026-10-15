@@ -3772,6 +3772,15 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	}
 	require := flags&2 != 0
 	once := flags&1 != 0
+	// Имя конструкции для диагностик пользовательских фильтров
+	// ("include(): Unprocessed filter buckets remaining...").
+	readCallerName = "include"
+	if require {
+		readCallerName = "require"
+	}
+	if once {
+		readCallerName += "_once"
+	}
 	path := resolveIncludePath(p, file)
 	// Поиск по include_path (в т.ч. записи-пользовательские обёртки): для
 	// относительного имени пробуем include_path/скрипт/cwd по «сырому» пути,
@@ -3869,7 +3878,9 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 				return *new(vm.Slot)
 			}
 		} else {
-			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
+			if !lastFilterReadFailed {
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
+			}
 			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", kw, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)

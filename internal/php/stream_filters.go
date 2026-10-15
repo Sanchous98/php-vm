@@ -627,6 +627,13 @@ func (f *streamFilter) applyUser(data []byte, closing bool) []byte {
 	return out
 }
 
+// hasUserFilterMethod сообщает, что класс фильтра определяет filter()
+// (в php_user_filter метода нет — Zend не подставляет реализацию).
+func (f *streamFilter) hasUserFilterMethod(v *vm.VM) bool {
+	ci := v.FindClass(f.userCls)
+	return v.HasConcreteMethod(ci, "filter")
+}
+
 // applyUserCode — applyUser с кодом возврата filter() (PSFS_*): читающий
 // php://filter путь различает PASS_ON (0x1) и FEED_ME (0) — при FEED_ME
 // выходная бригада не отдаётся потребителю (oss_fuzz_385993744: "").
@@ -635,6 +642,22 @@ func (f *streamFilter) applyUserCode(data []byte, closing bool) ([]byte, int64) 
 		return data, 1
 	}
 	v := f.userVM
+	if !f.hasUserFilterMethod(v) {
+		// Класс без filter(): Zend не зовёт метод, входная бригада остаётся
+		// необработанной и чтение завершается ошибкой (include_fail_during_read:
+		// Warning "Unprocessed filter buckets remaining on input brigade",
+		// затем "Failed opening ... for inclusion").
+		fn := v.NativeCallerName()
+		if fn == "" {
+			fn = FilterReadCaller()
+		}
+		if fn == "" {
+			fn = "stream"
+		}
+		f.userCtx.VM().Warning(fn + "(): Unprocessed filter buckets remaining on input brigade")
+		f.fatal = true
+		return nil, 2
+	}
 	if f.streamPropErr != nil {
 		// Zend: ошибка установки $this->stream прерывает фильтр до вызова
 		// filter(); входная бригада остаётся необработанной (gh20370).

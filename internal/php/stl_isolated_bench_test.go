@@ -347,3 +347,35 @@ func BenchmarkIso_Strtolower_Go(b *testing.B) {
 	}
 	_ = s
 }
+
+// ---------- диагностика материализации строкового слота ----------
+
+func BenchmarkIso_SlotToString4K(b *testing.B) {
+	s := vm.MakeString(strings.Repeat("The quick brown fox ", 200))
+	b.ReportAllocs()
+	var out string
+	for i := 0; i < b.N; i++ {
+		out = s.ToString()
+	}
+	_ = out
+}
+
+func BenchmarkIso_CRC32_GoConv(b *testing.B) {
+	in := strings.Repeat("The quick brown fox ", 200)
+	b.ReportAllocs()
+	var n uint32
+	for i := 0; i < b.N; i++ {
+		n = crc32.ChecksumIEEE([]byte(in))
+	}
+	_ = n
+}
+
+func BenchmarkIso_CRC32_NativeNoCtx(b *testing.B) {
+	in := []byte(strings.Repeat("The quick brown fox ", 200))
+	b.ReportAllocs()
+	var n uint32
+	for i := 0; i < b.N; i++ {
+		n = crc32.ChecksumIEEE(in)
+	}
+	_ = n
+}

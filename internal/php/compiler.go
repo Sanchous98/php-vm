@@ -18263,9 +18263,20 @@ func staticDeclLine(c *compiler, body []Stmt, name string) int {
 }
 
 // hasTopLevelReturn сообщает, что среди операторов есть `return` на верхнем
-// уровне области включения (в т.ч. внутри if/циклов/try/блоков, но не в телах
-// функций/методов/замыканий). Для инлайна include такой файл не раскрывается.
+// уровне области включения, который splitTopReturn не умеет вынести (вложен в
+// if/цикл/try/блок, но не в тело функции/метода/замыкания). Возврат последним
+// оператором обрабатывается splitTopReturn, поэтому его не считаем.
 func hasTopLevelReturn(stmts []Stmt) bool {
+	// Последний top-level return отделяется splitTopReturn — он безопасен.
+	if n := len(stmts); n > 0 {
+		if _, ok := stmts[n-1].(*ReturnStmt); ok {
+			stmts = stmts[:n-1]
+		}
+	}
+	return hasNestedReturn(stmts)
+}
+
+func hasNestedReturn(stmts []Stmt) bool {
 	for _, st := range stmts {
 		switch s := st.(type) {
 		case *ReturnStmt:
@@ -18275,41 +18286,41 @@ func hasTopLevelReturn(stmts []Stmt) bool {
 		case *ClassDecl:
 			continue
 		case *BlockStmt:
-			if hasTopLevelReturn(s.Body) {
+			if hasNestedReturn(s.Body) {
 				return true
 			}
 		case *IfStmt:
-			if hasTopLevelReturn(s.Then) || hasTopLevelReturn(s.Else) {
+			if hasNestedReturn(s.Then) || hasNestedReturn(s.Else) {
 				return true
 			}
 		case *WhileStmt:
-			if hasTopLevelReturn(s.Body) {
+			if hasNestedReturn(s.Body) {
 				return true
 			}
 		case *DoWhileStmt:
-			if hasTopLevelReturn(s.Body) {
+			if hasNestedReturn(s.Body) {
 				return true
 			}
 		case *ForStmt:
-			if hasTopLevelReturn(s.Body) {
+			if hasNestedReturn(s.Body) {
 				return true
 			}
 		case *ForeachStmt:
-			if hasTopLevelReturn(s.Body) {
+			if hasNestedReturn(s.Body) {
 				return true
 			}
 		case *TryStmt:
-			if hasTopLevelReturn(s.Body) || hasTopLevelReturn(s.Finally) {
+			if hasNestedReturn(s.Body) || hasNestedReturn(s.Finally) {
 				return true
 			}
 			for _, cc := range s.Catches {
-				if hasTopLevelReturn(cc.Body) {
+				if hasNestedReturn(cc.Body) {
 					return true
 				}
 			}
 		case *SwitchStmt:
 			for _, cs := range s.Cases {
-				if hasTopLevelReturn(cs.Body) {
+				if hasNestedReturn(cs.Body) {
 					return true
 				}
 			}

@@ -7840,6 +7840,46 @@ func (vm *VM) RequestHalt() {
 	}
 }
 
+// CurrentThis возвращает текущий $this кадра (для встроенных функций,
+// привязывающих получателя, — register_shutdown_function).
+func (vm *VM) CurrentThis() Slot { return vm.ctx.this }
+
+// BindThisToMethodCallable привязывает текущий $this к callable-строке
+// "Class::method" (нестатический метод): Zend сохраняет объект регистрации
+// для register_shutdown_function/set_error_handler
+// (register_shutdown_function_refcount). Если метод статический, класса нет
+// или объект не совместим — возвращает callable как есть.
+func (vm *VM) BindThisToMethodCallable(c Slot, this Slot) Slot {
+	d := deref(c)
+	if d.typ != StringType {
+		return c
+	}
+	raw := d.StringVal()
+	i := strings.Index(raw, "::")
+	if i < 0 {
+		return c
+	}
+	clsName := strings.TrimLeft(raw[:i], "\\")
+	mname := raw[i+2:]
+	ci := vm.FindClass(clsName)
+	if ci == nil {
+		return c
+	}
+	m, decl, _ := ci.methodInfo(mname)
+	if m == nil || m.IsStatic || decl == nil {
+		return c
+	}
+	recv := deref(this)
+	if recv.typ != ObjectType {
+		return c
+	}
+	oc := vm.classInfo(recv)
+	if oc == nil || !oc.IsA(decl) {
+		return c
+	}
+	return MakeClosure(&Closure{Fn: m, BoundThis: this, Scope: decl, Called: ci, Fake: true})
+}
+
 // runShutdownFunctions вызывает зарегистрированные shutdown-обработчики в
 // порядке регистрации (PHP вызывает их после завершения скрипта).
 func (vm *VM) runShutdownFunctions() {

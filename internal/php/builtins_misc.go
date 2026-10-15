@@ -1022,6 +1022,10 @@ func registerShutdownFunctionFn(ctx *vm.Context) vm.Value {
 		return *new(vm.Value)
 	}
 	cb := ctx.VMInstance().NormalizeCallableSlot(derefSlot(args[0]))
+	// Нестатический метод в строковой форме ('Test::method'), зарегистрированный
+	// из метода объекта: Zend сохраняет текущий $this и вызывает обработчик с
+	// ним (register_shutdown_function_refcount).
+	cb = ctx.VMInstance().BindThisToMethodCallable(cb, ctx.VMInstance().CurrentThis())
 	var extra []vm.Slot
 	if len(args) > 1 {
 		extra = append(extra, args[1:]...)

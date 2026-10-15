@@ -622,11 +622,15 @@ func (c *runtimeClass) InterfaceNames() []string {
 	// (до транзитивных) — так Zend строит список при наличии __toString.
 	// У интерфейсов абстрактный __toString лежит в подписях (sigs), а не в
 	// methods, поэтому проверяем оба источника (findMethodOrSig).
-	if _, _, _, ok := findMethodOrSig(c, "__toString"); ok {
-		stringable := NewInterface("Stringable")
-		if !seen[stringable] {
-			seen[stringable] = true
-			out = append(out, "Stringable")
+	// Трейты Stringable не получают: трейт не может реализовать интерфейс,
+	// даже если объявляет __toString (stringable_trait).
+	if !c.IsTrait() {
+		if _, _, _, ok := findMethodOrSig(c, "__toString"); ok {
+			stringable := NewInterface("Stringable")
+			if !seen[stringable] {
+				seen[stringable] = true
+				out = append(out, "Stringable")
+			}
 		}
 	}
 	// 3. Транзитивные интерфейсы прямых.

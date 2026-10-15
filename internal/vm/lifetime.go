@@ -2103,11 +2103,9 @@ func (vm *VM) CollectCycles() (int, error) {
 	if vm.sweepBusy {
 		return 0, nil
 	}
-	// Пустой буфер возможных корней: Zend не запускает проход
-	// (gc_037: второй gc_collect_cycles не увеличивает runs).
-	if vm.gcRoots == 0 && !vm.lifeCandidate && !vm.lifeUrgent {
-		return 0, nil
-	}
+	// hadRoots — «буфер непуст»: только тогда Zend увеличивает runs
+	// (gc_037: второй gc_collect_cycles с пустым буфером runs не меняет).
+	hadRoots := vm.gcRoots > 0 || vm.lifeCandidate || vm.lifeUrgent
 	vm.lifeCandidate = false
 	vm.lifeUrgent = false
 	// Деструкторы, вызванные сборщиком циклов, в трейсе не имеют позиции в
@@ -2116,8 +2114,10 @@ func (vm *VM) CollectCycles() (int, error) {
 	vm.dtorInternal = true
 	out := vm.sweepLifetime(true, vm.chunk, vm.ip-1)
 	vm.dtorInternal = savedInternal
-	vm.gcRuns++
-	vm.gcCollected += int64(out.count)
+	if hadRoots || out.count > 0 {
+		vm.gcRuns++
+		vm.gcCollected += int64(out.count)
+	}
 	vm.gcRoots = 0
 	return out.count, out.err
 }

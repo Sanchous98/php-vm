@@ -451,6 +451,9 @@ type compiler struct {
 	stmtLines map[Stmt]int
 	exprLines map[Expr]int
 	curLine   int
+	// inlineStack — вложенные регионы вклеенных include/require: строки их
+	// файлов и открытые inline-регионы чанка (для файла/трейса инструкций).
+	inlineStack []inlineCtx
 
 	// nullsafeBase — регистр базового значения активной цепочки `?->`
 	// (для NullsafeBase). hasBase — признак активности подстановки.
@@ -1725,6 +1728,35 @@ func (c *compiler) prescan(stmts []Stmt) {
 
 func (c *compiler) emit(in vm.Instruction) int { return c.chunk.Emit(in) }
 
+// inlineCtx — открытый регион вклеенного include: карты строк его файла и
+// индекс региона в чанке (для атрибуции инструкций файлу).
+type inlineCtx struct {
+	lines  map[Stmt]int
+	exprs  map[Expr]int
+	region int32
+}
+
+// inlineLine ищет строку узла в открытых inline-регионах (самый внутренний
+// первым): узлы вклеенного файла не попадают в stmtLines главного файла.
+func (c *compiler) inlineLine(st Stmt) int {
+	for i := len(c.inlineStack) - 1; i >= 0; i-- {
+		if ln, ok := c.inlineStack[i].lines[st]; ok && ln > 0 {
+			return ln
+		}
+	}
+	return 0
+}
+
+// inlineExprLine как inlineLine, но для выражений.
+func (c *compiler) inlineExprLine(e Expr) int {
+	for i := len(c.inlineStack) - 1; i >= 0; i-- {
+		if ln, ok := c.inlineStack[i].exprs[e]; ok && ln > 0 {
+			return ln
+		}
+	}
+	return 0
+}
+
 // emitLine задаёт строку для последующих инструкций (если известна).
 func (c *compiler) emitLine(line int) {
 	if line > 0 {
@@ -1736,6 +1768,11 @@ func (c *compiler) emitLine(line int) {
 func (c *compiler) exprLine(e Expr) int {
 	if c.exprLines != nil && e != nil {
 		if ln, ok := c.exprLines[e]; ok && ln > 0 {
+			return ln
+		}
+	}
+	if e != nil {
+		if ln := c.inlineExprLine(e); ln > 0 {
 			return ln
 		}
 	}
@@ -2369,7 +2406,15 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 	// Первым делом регистрируем файл в get_included_files() (как рантайм
 	// include; inline-подстановка не проходит через includeBuiltin).
 	record := &ExprStmt{X: &CallExpr{Name: "__php_record_included", Args: []Expr{&StrLit{V: abs}}}}
-	pre = append([]Stmt{record, &StrictStmt{Push: true, Strict: sub.StrictTypes, File: abs}}, pre...)
+	callName := "include"
+	if x.Require {
+		callName = "require"
+	}
+	if x.Once {
+		callName += "_once"
+	}
+	pre = append([]Stmt{record, &StrictStmt{Push: true, Strict: sub.StrictTypes, File: abs,
+		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: callName, CallNode: x}}, pre...)
 	pre = append(pre, &StrictStmt{Push: false})
 	return val, pre, nil
 }
@@ -5077,6 +5122,15 @@ classLoop:
 	// унаследованными методами родителя, методами интерфейсов и абстрактными
 	// сигнатурами других трейтов, а также собственных методов класса с
 	// абстрактными сигнатурами используемых трейтов.
+	//
+	// Позиции объявлений и база классов нужны уже здесь: недостающие в
+	// сигнатурах классы откладываются до объявления класса (variance
+	// obligations, bug79179).
+	base.deferClassBase = classBase
+	declPos := make(map[*ClassDecl]int, len(classDecls))
+	for i, dc := range classDecls {
+		declPos[dc] = i
+	}
 compatLoop:
 	for classPos, cd := range classDecls {
 		if cd.IsInterface {
@@ -5196,13 +5250,32 @@ compatLoop:
 			}
 			sgm := *sg.mem
 			resolveSelfTypes(&sgm, cd.Name, cd.Parent)
-			err := base.checkOverrideCompatible(pd, pm, sg.decl, &sgm)
+			status, unavail, cerr := base.overrideCompat(pd, pm, sg.decl, &sgm)
 			base.errFile = ""
-			if err != nil {
-				if deferClassFatal(cd, err) {
+			if cerr != nil {
+				if deferClassFatal(cd, cerr) {
 					continue compatLoop
 				}
-				return nil, err
+				return nil, cerr
+			}
+			switch status {
+			case subYes:
+			case subUnknown:
+				if d := declByName[strings.ToLower(strings.TrimLeft(unavail, "\\"))]; d != nil && !nestedSet[d] && declPos[d] >= classPos {
+					// Класс объявлен в этом же файле позже: при связывании
+					// Zend его ещё не видит — прежняя диагностика.
+					msg := "Could not check compatibility between " + methodSigStringSub(pd.Name, pm, pd.Name, pd.Parent) +
+						" and " + methodSigStringSub(sg.decl.Name, &sgm, sg.decl.Name, sg.decl.Parent) + ", because class " + unavail + " is not available"
+					return nil, base.newFatal(msg)
+				}
+				// Проверка не завершилась: Zend откладывает её до выполнения
+				// объявления класса (variance obligations) — там недостающий
+				// класс можно автозагрузить и повторить проверку (bug79179).
+				base.deferVarianceCheck(cd, classPos, rtVarCheck{cd: pd, m: pm, pd: sg.decl, pm: &sgm})
+			default:
+				msg := "Declaration of " + methodSigStringSub(pd.Name, pm, pd.Name, pd.Parent) +
+					" must be compatible with " + methodSigStringSub(sg.decl.Name, &sgm, sg.decl.Name, sg.decl.Parent)
+				return nil, base.newFatal(msg)
 			}
 		}
 	}
@@ -5273,11 +5346,6 @@ compatLoop:
 	// рантайме (OpDeclareClass): Zend проверяет сигнатуры в момент выполнения
 	// объявления, когда предки разрешены (в т.ч. автозагрузкой), а недостающие
 	// классы можно подгрузить и повторить проверку (variance obligations).
-	base.deferClassBase = classBase
-	declPos := make(map[*ClassDecl]int, len(classDecls))
-	for i, dc := range classDecls {
-		declPos[dc] = i
-	}
 	for classPos, cd := range classDecls {
 		if !nestedSet[cd] || cd.IsTrait {
 			continue
@@ -7154,6 +7222,13 @@ func (c *compiler) checkNativeOverrideCompat(cd *ClassDecl, m *ClassMember, np v
 // если проверка не завершилась). План прикрепляется к дескриптору класса, а на
 // позиции объявления компилятор эмитит __php_variance_check.
 func (c *compiler) deferTopVariance(cd *ClassDecl, classPos int, m *ClassMember, pd *ClassDecl, pm *ClassMember) {
+	c.deferVarianceCheck(cd, classPos, rtVarCheck{cd: cd, m: m, pd: pd, pm: pm})
+}
+
+// deferVarianceCheck добавляет одну отложенную проверку владельцу плана
+// (cd — класс, объявление которого выполняет проверку; сама проверка может
+// относиться к методу предка, как в bug79179).
+func (c *compiler) deferVarianceCheck(cd *ClassDecl, classPos int, chk rtVarCheck) {
 	if c.topVariance == nil {
 		c.topVariance = map[*ClassDecl]*rtVarPlan{}
 	}
@@ -7170,7 +7245,7 @@ func (c *compiler) deferTopVariance(cd *ClassDecl, classPos int, m *ClassMember,
 			}
 		}
 	}
-	plan.checks = append(plan.checks, rtVarCheck{cd: cd, m: m, pd: pd, pm: pm})
+	plan.checks = append(plan.checks, chk)
 }
 
 // checkOverrideCompatible проверяет совместимость переопределения метода.
@@ -10217,6 +10292,12 @@ func (c *compiler) stmt(st Stmt) error {
 	if st != nil && c.stmtLines != nil {
 		if ln, ok := c.stmtLines[st]; ok && ln > 0 {
 			c.curLine = ln
+		} else if ln := c.inlineLine(st); ln > 0 {
+			c.curLine = ln
+		}
+	} else if st != nil {
+		if ln := c.inlineLine(st); ln > 0 {
+			c.curLine = ln
 		}
 	}
 	switch s := st.(type) {
@@ -10250,7 +10331,11 @@ func (c *compiler) stmt(st Stmt) error {
 		if c.stmtLines != nil {
 			if ln, ok := c.stmtLines[s]; ok {
 				c.emitLine(ln)
+			} else if ln := c.inlineLine(s); ln > 0 {
+				c.emitLine(ln)
 			}
+		} else if ln := c.inlineLine(s); ln > 0 {
+			c.emitLine(ln)
 		}
 		// `$x;` — Zend не выполняет чтение вовсе (недиагностируемый no-op).
 		if v, ok := s.X.(*VarExpr); ok && v.NameExpr == nil {
@@ -10568,11 +10653,29 @@ func (c *compiler) stmt(st Stmt) error {
 		return c.gotoStmt(s.Label)
 	case *StrictStmt:
 		if s.Push {
+			callFile, callLine := c.file, c.curLine
+			if s.CallNode != nil {
+				if ln := c.exprLine(s.CallNode); ln > 0 {
+					callLine = ln
+				}
+			}
 			c.pushStrict(s.Strict)
 			c.pushFile(s.File)
+			if s.File != "" {
+				parent := int32(-1)
+				if n := len(c.inlineStack); n > 0 {
+					parent = c.inlineStack[n-1].region
+				}
+				region := c.chunk.AddInlineRegion(s.File, callFile, callLine, s.CallName, parent)
+				c.inlineStack = append(c.inlineStack, inlineCtx{lines: s.Lines, exprs: s.ExprLines, region: region})
+			}
 		} else {
 			c.popStrict()
 			c.popFile()
+			if n := len(c.inlineStack); n > 0 {
+				c.chunk.CloseInlineRegion(c.inlineStack[n-1].region)
+				c.inlineStack = c.inlineStack[:n-1]
+			}
 		}
 	case *FuncDecl:
 		// декларация уже учтена при hoisting
@@ -15879,7 +15982,43 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 func (c *compiler) assignIndexRef(t *IndexExpr, value Expr) (uint8, error) {
 	if t.Key == nil {
 		// Zend выполняет FETCH_DIM_W первым: ошибка занятого авто-ключа
-		// имеет приоритет над диагностиками RHS.
+		// имеет приоритет над диагностиками RHS. Но ref-режим цели/ячейки
+		// включается на компиляции (refCellForExpr); если базу загрузить
+		// раньше этой пометки, она уйдёт по не-ref пути и ссылка не будет
+		// писаться насквозь (array_map_variation2, array_splice_variation1).
+		// Для «простых ячеек» RHS (переменная; элемент массива от
+		// переменной) диагностик нет — безопасен порядок «ячейка, затем
+		// база+проверка».
+		simpleCell := false
+		switch v := value.(type) {
+		case *VarExpr:
+			simpleCell = v.NameExpr == nil && v.Name != "$this" && v.Name != "this" &&
+				v.Name != "$GLOBALS" && v.Name != "GLOBALS"
+		case *IndexExpr:
+			if v.Key != nil {
+				if b, ok := v.Arr.(*VarExpr); ok {
+					simpleCell = b.NameExpr == nil && b.Name != "$this" && b.Name != "this" &&
+						b.Name != "$GLOBALS" && b.Name != "GLOBALS"
+				}
+			}
+		}
+		if simpleCell {
+			srcCell, err := c.refCellForExpr(value)
+			if err != nil {
+				return 0, err
+			}
+			arr, wb, err := c.indexBase(t, true)
+			if err != nil {
+				return 0, err
+			}
+			c.emitCall("__php_append_ref_check", []uint8{arr})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpAppend, A: arr, B: srcCell})
+			if wb != nil {
+				wb(arr)
+			}
+			c.emitRefSweep()
+			return srcCell, nil
+		}
 		arr, wb, err := c.indexBase(t, true)
 		if err != nil {
 			return 0, err
@@ -16172,7 +16311,9 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 			return 0, err
 		}
 		cur := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndex, A: cur, B: arr, C: int32(k)})
+		// RAW-чтение: inc/dec обязан видеть элемент-ссылку именно ссылкой,
+		// иначе теряются границы типизированных свойств (typed_properties_064).
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRaw, A: cur, B: arr, C: int32(k)})
 		var old uint8
 		if !x.Pre {
 			old = c.alloc()

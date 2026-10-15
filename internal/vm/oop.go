@@ -1544,6 +1544,31 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 				vm.setProp(recv, key, cell)
 				return cell, nil
 			}
+			// Свойство снято через unset(): по ссылке Zend уходит в &__get()
+			// (по значению — тоже, но там результат копируется). Если геттер
+			// возвращает ссылку, её значение приводится к типу свойства «на
+			// месте» (Zend: &$obj->val меняет сам источник ссылки), сама
+			// ячейка свойства остаётся unset.
+			if ob := vm.objectOf(recv); ob != nil && ob.IsUnset(key) {
+				res, ok, merr := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)})
+				if merr != nil {
+					return Slot{}, merr
+				}
+				if ok {
+					res, gerr := vm.checkMagicGet(ci, pname, res)
+					if gerr != nil {
+						return Slot{}, gerr
+					}
+					if res.IsRef() {
+						return res, nil
+					}
+					// Геттер вернул значение (не ссылку): запись через цель
+					// цикла ни на что не влияет (Zend: notice), но значение
+					// доступно по ссылке.
+					vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+					return MakeRef(&Ref{v: res}), nil
+				}
+			}
 			return Slot{}, NewThrowable("Error", "Cannot access uninitialized non-nullable property "+classDisplayName(decl)+"::$"+pname+" by reference")
 		}
 	}

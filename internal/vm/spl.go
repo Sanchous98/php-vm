@@ -28,6 +28,10 @@ type splArrayData struct {
 	arr   *Array
 	flags int64
 	pos   int
+	// srcObj — объект-источник, если итератор создан от объекта
+	// (`new ArrayIterator($obj)`): обход по ссылке идёт по его живым
+	// свойствам, а не по снятой копии (Zend spl_array_it).
+	srcObj Slot
 }
 
 // SplDoublyLinkedList — двусвязный список. Нативные наследники (SplStack,
@@ -557,8 +561,10 @@ func registerSplArrayMembers(ci *runtimeClass, isIterator bool) {
 			}
 			if len(args) > 0 {
 				d.arr = ctx.vm.splArrayFromArg(args[0])
+				d.setSrcObj(args[0])
 			} else {
 				d.arr = newArray()
+				d.srcObj = Slot{}
 			}
 			d.pos = 0
 			return MakeNull(), nil
@@ -682,8 +688,10 @@ func registerSplArrayMembers(ci *runtimeClass, isIterator bool) {
 			}
 			if len(args) > 0 {
 				d.arr = ctx.vm.splArrayFromArg(args[0])
+				d.setSrcObj(args[0])
 			} else {
 				d.arr = newArray()
+				d.srcObj = Slot{}
 			}
 			d.pos = 0
 			return MakeArray(old), nil
@@ -814,7 +822,7 @@ func registerSplArrayMembers(ci *runtimeClass, isIterator bool) {
 				if d == nil || itClass == nil {
 					return MakeNull(), nil
 				}
-				return nativeObject(ctx.vm, itClass, &splArrayData{arr: d.arr, flags: d.flags}), nil
+				return nativeObject(ctx.vm, itClass, &splArrayData{arr: d.arr, flags: d.flags, srcObj: d.srcObj}), nil
 			},
 		}})
 		ci.Method("getIteratorClass", &Function{Name: "getIteratorClass", NumArgs: 0, Executable: &NativeFunction{
@@ -828,6 +836,17 @@ func registerSplArrayMembers(ci *runtimeClass, isIterator bool) {
 			},
 		}})
 	}
+}
+
+// setSrcObj запоминает объект-источник итератора (nil-подобный слот для
+// массивов/скаляров), чтобы by-ref обход шёл по живым свойствам объекта.
+func (d *splArrayData) setSrcObj(s Slot) {
+	v := deref(s)
+	if v.typ == ObjectType {
+		d.srcObj = v
+		return
+	}
+	d.srcObj = Slot{}
 }
 
 // splArrayFromArg строит хранимый массив из аргумента конструктора/обмена:

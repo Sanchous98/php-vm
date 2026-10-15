@@ -526,7 +526,7 @@ func onlyFatalErrors(mask int64) bool { return mask&^eFatalErrors == 0 }
 // reportDiag печатает диагностику (Warning/Notice/Deprecated) в формате PHP,
 // если её уровень разрешён error_reporting и она не подавлена через `@`.
 func (vm *VM) reportDiag(kind string, level int64, msg string) {
-	file := vm.curFile
+	file := vm.curFileAt()
 	if file == "" {
 		file = "php"
 	}

@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unsafe"
 )
 
 // Fiber (PHP 8.1) — кооперативные файберы.
@@ -293,9 +294,57 @@ func (vm *VM) resolveStack() []callFrameInfo {
 	if n == 0 {
 		return nil
 	}
-	out := make([]callFrameInfo, n)
+	out := make([]callFrameInfo, 0, n)
 	for i := range vm.callStack {
-		out[i] = vm.info(&vm.callStack[i])
+		e := &vm.callStack[i]
+		if e.callerChunk != 0 && len((*Chunk)(unsafe.Pointer(e.callerChunk)).inlineRegions) > 0 {
+			out = vm.appendInlineFrames(out, e)
+		}
+		out = append(out, vm.info(e))
+	}
+	return out
+}
+
+// includeFrameFn — дескриптор кадра include/require для синтетических кадров
+// вклеенных include (Zend исполняет подключаемый файл отдельным кадром).
+var includeFrameFns = map[string]*Function{}
+
+func includeFrameFn(name string) *Function {
+	if fn, ok := includeFrameFns[name]; ok {
+		return fn
+	}
+	if name == "" {
+		name = "include"
+	}
+	fn := &Function{Name: name}
+	includeFrameFns[name] = fn
+	return fn
+}
+
+// appendInlineFrames добавляет синтетические кадры include/require, вклеенных
+// на этапе компиляции: у кадра вызова из подключаемого файла позиция вызова
+// лежит внутри inline-региона чанка, и Zend показал бы между этим кадром и
+// вызывающим кадром конструкции require. Кадры добавляются от внешнего
+// региона к внутреннему (порядок out — «от main к самым глубоким»).
+func (vm *VM) appendInlineFrames(out []callFrameInfo, e *callEntry) []callFrameInfo {
+	c := (*Chunk)(unsafe.Pointer(e.callerChunk))
+	idx := c.inlineRegionAt(int(e.callerPC &^ objMethodBit))
+	if idx < 0 {
+		return out
+	}
+	var chain []int32
+	for i := idx; i >= 0; i = c.inlineRegions[i].parent {
+		chain = append(chain, i)
+	}
+	for i := len(chain) - 1; i >= 0; i-- {
+		r := &c.inlineRegions[chain[i]]
+		out = append(out, callFrameInfo{
+			callee:       includeFrameFn(r.callName),
+			callerFile:   r.callFile,
+			callerLine:   r.callLine,
+			args:         []Slot{MakeString(r.file)},
+			includeFrame: true,
+		})
 	}
 	return out
 }

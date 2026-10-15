@@ -1541,6 +1541,15 @@ func (vm *VM) opIterInit(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		vm.addIterHint(vm.fp, int(in.A))
 	case 1:
 		st, err = vm.iterInitByRef(regs[in.B])
+		// ArrayIterator по ссылке использует позиционное состояние обхода
+		// (iterModeArrayRef) — регистрируем его для пересчёта курсоров при
+		// перестройке массива (iterremap.go).
+		if err == nil {
+			if a := deref(st).AsArray(); a != nil && a.iterState {
+				vm.anyArrayRefIter = true
+				vm.addIterHint(vm.fp, int(in.A))
+			}
+		}
 	default:
 		st, err = vm.iterInit(regs[in.B])
 	}

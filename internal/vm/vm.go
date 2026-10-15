@@ -1592,6 +1592,10 @@ type callFrameInfo struct {
 	// this — получатель вызова метода ($this), если он был. Нужен
 	// debug_backtrace() для ключа "object".
 	this Slot
+	// includeFrame — синтетический кадр конструкции include/require
+	// (вклеенный на компиляции include): debug_backtrace/print_backtrace
+	// печатают его без аргументов (Zend).
+	includeFrame bool
 }
 
 // objMethodBit — старший бит callEntry.callerPC, помечающий вызов метода
@@ -1720,6 +1724,12 @@ func (vm *VM) pushCall(fn *Function, args []Slot) {
 		if vm.ip > 0 {
 			pc = uint32(vm.ip - 1)
 		}
+		// Вклеенный include/require: инструкция принадлежит файлу include,
+		// а не файлу чанка (Zend: код подключаемого файла исполняется в своей
+		// позиции исходника).
+		if f := vm.chunk.InlineFileAt(int(pc)); f != "" {
+			fileID = vm.internFile(f)
+		}
 	}
 	entry := callEntry{
 		callee: fn, callerChunk: chunk,
@@ -1824,6 +1834,18 @@ func (vm *VM) line() int {
 		}
 	}
 	return vm.curLine
+}
+
+// curFileAt — файл текущей инструкции с учётом вклеенных include/require:
+// инструкции инлайн-региона принадлежат подключаемому файлу, а не чанку
+// (Zend печатает в диагностиках файл подключаемого файла).
+func (vm *VM) curFileAt() string {
+	if vm.chunk != nil && len(vm.chunk.inlineRegions) > 0 {
+		if f := vm.chunk.InlineFileAt(vm.ip - 1); f != "" {
+			return f
+		}
+	}
+	return vm.curFile
 }
 
 // CurrentFuncArgs возвращает аргументы текущей userland-функции (для
@@ -1988,6 +2010,13 @@ func (vm *VM) DebugBacktraceArray(options int64, limit int) Slot {
 			all = all[:n-1]
 		}
 	}
+	// Zend не показывает аргументы конструкций include/require в
+	// debug_backtrace (getTrace исключения их сохраняет).
+	for i := range all {
+		if all[i].includeFrame && len(all[i].args) > 0 {
+			all[i].args = nil
+		}
+	}
 	return vm.FramesArray(all, options, limit)
 }
 
@@ -2068,6 +2097,12 @@ func (vm *VM) DebugBacktraceString() string {
 	for j, i := 0, len(frames)-1; i >= 0; i, j = i-1, j+1 {
 		fr := frames[i]
 		name := frameCalleeName(fr)
+		if fr.includeFrame {
+			// require()/include() в debug_print_backtrace печатается без
+			// аргументов (Zend).
+			fmt.Fprintf(&b, "#%d %s(%d): %s()\n", j, fr.callerFile, fr.callerLine, name)
+			continue
+		}
 		if fr.callerFile == "[internal function]" || fr.callerFile == "" {
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
 			fmt.Fprintf(&b, "#%d [internal function]: %s(%s)\n", j, name, vm.traceArgsNamed(sargs, snamed))
@@ -2153,6 +2188,12 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 			fmt.Fprintf(&b, "#%d [internal function]: %s(%s)\n", len(frames)-1-i, name, vm.traceArgsNamed(sargs, snamed))
 			continue
 		}
+		if fr.includeFrame {
+			// Zend печатает аргумент конструкции include как усечённый
+			// маркер: `require('...')`.
+			fmt.Fprintf(&b, "#%d %s(%d): %s('...')\n", len(frames)-1-i, cf, fr.callerLine, name)
+			continue
+		}
 		cl := fr.callerLine
 		if cl <= 0 {
 			cl = defLine
@@ -2188,7 +2229,7 @@ func (vm *VM) reportUncaught(err error) {
 			}
 		}
 	}
-	file := vm.curFile
+	file := vm.curFileAt()
 	if vm.noActiveFile {
 		file = "[no active file]"
 	}
@@ -2982,7 +3023,7 @@ func (vm *VM) exec(chunk *Chunk) error {
 
 		case OpFatal:
 			msg := consts[in.C].StringVal()
-			file := vm.curFile
+			file := vm.curFileAt()
 			if file == "" {
 				file = "php"
 			}
@@ -2994,7 +3035,7 @@ func (vm *VM) exec(chunk *Chunk) error {
 			return exitSignal{}
 
 		case OpParseFatal:
-			file := vm.curFile
+			file := vm.curFileAt()
 			if file == "" {
 				file = "php"
 			}
@@ -5708,7 +5749,7 @@ func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
 		if i < len(fn.ParamNames) {
 			name = fn.ParamNames[i]
 		}
-		file := vm.curFile
+		file := vm.curFileAt()
 		line := vm.line()
 		if vm.attrCallFile != "" {
 			file, line = vm.attrCallFile, vm.attrCallLine
@@ -5749,7 +5790,7 @@ func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
 					} else {
 						// Zend не печатает имя параметра для variadic-хвоста.
 						name := ""
-						file := vm.curFile
+						file := vm.curFileAt()
 						if file == "" {
 							file = "php"
 						}

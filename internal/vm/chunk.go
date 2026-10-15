@@ -67,8 +67,13 @@ type Chunk struct {
 	strictFlags []bool
 	// emitStrict — текущий режим для последующих Emit.
 	emitStrict bool
-	constants  []Const
-	consts     []Slot // материализованные константы (строки — в heap)
+	// inlineRegions — участки кода, вклеенного из include/require на этапе
+	// компиляции (см. inlineRegion). Пусто почти всегда: аллокация и обход —
+	// только в файлах с литеральными include. Нужны для атрибуции файла
+	// инструкциям (трейсы, диагностики) — строки уже есть в lines.
+	inlineRegions []inlineRegion
+	constants     []Const
+	consts        []Slot // материализованные константы (строки — в heap)
 	// constInts/constFloats — «сырые» по типам значения констант, параллельные
 	// consts (индексируются тем же C). Позволяют hot K-опкодам читать int64/
 	// float64 напрямую, без загрузки 24-байтового Slot и проверки тега. Запись
@@ -444,6 +449,61 @@ func (c *Chunk) LineAt(pc int) int {
 		return 0
 	}
 	return int(c.lines[pc])
+}
+
+// inlineRegion — участок кода, вклеенного из include/require с литеральным
+// путём на этапе компиляции. Инструкции региона принадлежат файлу file, а
+// сама конструкция include находилась в callFile:callLine; callName —
+// include/require[_once] для синтетического кадра трейса. Регионы вложены
+// (include внутри include) — parent указывает на внешний регион (-1 — нет).
+type inlineRegion struct {
+	startPC, endPC int32
+	file           string
+	callFile       string
+	callLine       int
+	callName       string
+	parent         int32
+}
+
+// AddInlineRegion открывает регион в текущем конце чанка и возвращает его
+// индекс (для CloseInlineRegion).
+func (c *Chunk) AddInlineRegion(file, callFile string, callLine int, callName string, parent int32) int32 {
+	c.inlineRegions = append(c.inlineRegions, inlineRegion{
+		startPC: int32(len(c.code)), endPC: int32(len(c.code)),
+		file: file, callFile: callFile, callLine: callLine, callName: callName, parent: parent,
+	})
+	return int32(len(c.inlineRegions) - 1)
+}
+
+// CloseInlineRegion закрывает регион на текущем конце чанка.
+func (c *Chunk) CloseInlineRegion(idx int32) {
+	if idx >= 0 && int(idx) < len(c.inlineRegions) {
+		c.inlineRegions[idx].endPC = int32(len(c.code))
+	}
+}
+
+// inlineRegionAt возвращает индекс самого внутреннего региона, содержащего
+// инструкцию pc (-1, если pc вне вклеенного кода).
+func (c *Chunk) inlineRegionAt(pc int) int32 {
+	if c == nil || len(c.inlineRegions) == 0 || pc < 0 {
+		return -1
+	}
+	p := int32(pc)
+	for i := len(c.inlineRegions) - 1; i >= 0; i-- {
+		r := &c.inlineRegions[i]
+		if p >= r.startPC && p < r.endPC {
+			return int32(i)
+		}
+	}
+	return -1
+}
+
+// InlineFileAt — файл, которому принадлежит инструкция pc ("" — файл чанка).
+func (c *Chunk) InlineFileAt(pc int) string {
+	if idx := c.inlineRegionAt(pc); idx >= 0 {
+		return c.inlineRegions[idx].file
+	}
+	return ""
 }
 
 // noteReg отслеживает максимальный использованный регистр, чтобы знать

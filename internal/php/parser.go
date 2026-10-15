@@ -111,6 +111,15 @@ type StrictStmt struct {
 	Strict bool
 	// File — путь исходного файла региона (для FuncDecl.DefFile/ClassDecl).
 	File string
+	// Lines/ExprLines — карты строк подключаемого файла (inline include):
+	// диагностики внутри вклеенного кода должны указывать строки своего файла.
+	Lines     map[Stmt]int
+	ExprLines map[Expr]int
+	// CallName — имя конструкции (include/require[_once]) для кадра трейса.
+	CallName string
+	// CallNode — узел IncludeExpr: строка конструкции берётся из карт строк
+	// файла на этапе компиляции (нужна для кадра require в трейсе).
+	CallNode Expr
 }
 type Param struct {
 	Name             string

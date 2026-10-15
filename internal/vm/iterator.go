@@ -158,6 +158,8 @@ func (vm *VM) iterInitMode(src Slot, byref bool) (Slot, error) {
 				if g.fn == nil || !g.fn.ByRefReturn {
 					return Slot{}, NewThrowable("Exception", errGenByRef)
 				}
+			} else if st, ok := vm.iterInitArrayIterRef(inner); ok {
+				return st, nil
 			} else {
 				return Slot{}, NewThrowable("Error", errIterByRefGeneric)
 			}
@@ -171,10 +173,14 @@ func (vm *VM) iterInitMode(src Slot, byref bool) (Slot, error) {
 	// Iterator: rewind/valid/current (key опционален).
 	if ci.lookupMethod("rewind") != nil && ci.lookupMethod("valid") != nil &&
 		ci.lookupMethod("current") != nil {
-		// Генератор по ссылке уже отфильтрован выше; прочие Iterator нельзя
-		// обходить по ссылке.
+		// Генератор по ссылке уже отфильтрован выше; ArrayIterator хранит
+		// собственное хранилище/объект-источник и допускает обход по ссылке
+		// (Zend spl_array_it), прочие Iterator — нет.
 		if byref {
 			if vm.genOfSlot(src) == nil {
+				if st, ok := vm.iterInitArrayIterRef(src); ok {
+					return st, nil
+				}
 				return Slot{}, NewThrowable("Error", errIterByRefGeneric)
 			}
 		}
@@ -184,19 +190,55 @@ func (vm *VM) iterInitMode(src Slot, byref bool) (Slot, error) {
 		}
 		return MakeArray(state), nil
 	}
-	// Обычный объект: обходим публичные свойства.
+	return vm.iterInitPropsMode(src), nil
+}
+
+// iterInitPropsMode готовит состояние обхода публичных свойств объекта.
+func (vm *VM) iterInitPropsMode(o Slot) Slot {
+	state := newArray()
 	state.SetStr("mode", MakeInt(iterModeProps))
-	state.SetStr("o", src)
+	state.SetStr("o", o)
 	keys := newArray()
-	for _, n := range vm.objectPropNames(src) {
+	for _, n := range vm.objectPropNames(o) {
 		_, _ = keys.Append(MakeString(n))
 	}
 	state.SetStr("keys", MakeArray(keys))
 	state.SetStr("idx", MakeInt(0))
-	if ob := vm.objectOf(src); ob != nil {
+	if ob := vm.objectOf(o); ob != nil {
 		state.SetStr("n", MakeInt(int64(len(ob.props))))
 	}
-	return MakeArray(state), nil
+	return MakeArray(state)
+}
+
+// iterInitArrayIterRef — состояние foreach по ссылке для ArrayIterator.
+// Если итератор построен от объекта, обход идёт по ЖИВЫМ свойствам этого
+// объекта (как foreach по самому объекту; Zend spl_array_it хранит объект-
+// источник), поэтому запись через ссылку видна в объекте и подчиняется типам
+// свойств. Иначе обход позиционный по ссылке по собственному массиву
+// итератора: запись видна через сам ArrayIterator.
+func (vm *VM) iterInitArrayIterRef(it Slot) (Slot, bool) {
+	ci := vm.classInfo(it)
+	if ci == nil {
+		return Slot{}, false
+	}
+	ai := vm.findClass("ArrayIterator")
+	if ai == nil || !ci.isA(ai) {
+		return Slot{}, false
+	}
+	d := objectAs[splArrayData](vm.objectOf(it), ci)
+	if d == nil {
+		return Slot{}, false
+	}
+	if s := deref(d.srcObj); s.typ == ObjectType {
+		return vm.iterInitPropsMode(s), true
+	}
+	if d.arr == nil {
+		d.arr = newArray()
+	}
+	// Ячейки-ссылки создаются прямо в хранилище итератора: до начала обхода
+	// снимаем COW-копию, чтобы записи не ушли в разделённую копию.
+	d.arr = d.arr.Unshare()
+	return vm.iterInitArrayRef(MakeArray(d.arr)), true
 }
 
 // CheckForeachByRef отклоняет foreach по ссылке по Iterator/IteratorAggregate

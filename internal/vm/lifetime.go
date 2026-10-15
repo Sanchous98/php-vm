@@ -1435,6 +1435,17 @@ func (vm *VM) markRoots(m *lifeVisit, chunk *Chunk, pc int) {
 	if t := vm.ctx.thrown; t != nil {
 		m.slotBare(t.Value)
 	}
+	// Отложенные finally-исключения и раскручиваемое сейчас исключение:
+	// Zend держит их в fast_call-слотах/EG(exception) — это корни, пока
+	// исключение не поймано/не перевозбуждено.
+	for i := range vm.tries {
+		if e := vm.tries[i].savedErr; e != nil {
+			m.slotBare(e.Value)
+		}
+	}
+	if vm.inFlightTh != nil {
+		m.slotBare(vm.inFlightTh.Value)
+	}
 	// Статические свойства всех классов.
 	for _, rc := range vm.staticRootClasses() {
 		for k := rc; k != nil; k = k.parent {
@@ -1807,7 +1818,10 @@ func (vm *VM) runObjectDestructor(o *Object, ci ClassInfo) error {
 	}
 	if vm.genClass != nil {
 		if g := objectAs[Generator](o, vm.genClass); g != nil {
-			return vm.closeGenerator(g, true)
+			// atShutdown влияет на кадр трассировки закрытия: при
+			// уничтожении в ходе работы скрипта место resume — вызывающий
+			// код, а не "[internal function]" (bug71604_3).
+			return vm.closeGenerator(g, vm.inShutdown)
 		}
 	}
 	if vm.fiberClass != nil {

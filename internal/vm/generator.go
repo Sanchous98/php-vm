@@ -121,6 +121,16 @@ func (vm *VM) SetCurrentYieldFromInner(s Slot) {
 // разворачивает finally-блоки, не будучи пойманным catch.
 var errForceClose = &Throwable{close: true}
 
+// closeDispatchErr возвращает эффективную ошибку после неуспешной раскрутки
+// сигнала закрытия генератора: реальное исключение, поднятое из отложенных
+// finally-слотов внешних try (bug71604), либо nil при штатном закрытии.
+func (vm *VM) closeDispatchErr() error {
+	if v := vm.dispTh; v != nil && !v.close {
+		return v
+	}
+	return nil
+}
+
 // closeGenerator принудительно завершает генератор, исполняя его finally-
 // блоки (Zend: zend_generator_close). atShutdown влияет лишь на кадр трассировки.
 func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
@@ -197,6 +207,22 @@ func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
 	}
 	g.tries = g.tries[:0]
 
+	// Zend zend_generator_dtor_storage: записи, чей finally выполняется прямо
+	// в точке yield (приостановка внутри finally), снимаются вместе с их
+	// отложенным исключением — оно сбрасывается, а не перевозбуждается
+	// (Zend/tests/generators/yield_in_finally_cleanup). Останавливаемся на
+	// первой записи, приостановленной в ТЕЛЕ try: её finally дожигается
+	// возобновлением, а внешние finally-слоты разбирает диспетчер VM
+	// (bug71604: отложенные исключения перевозбуждаются с previous).
+	for len(vm.tries) > 0 {
+		h := &vm.tries[len(vm.tries)-1]
+		if h.fp != genFP || !h.inFinally {
+			break
+		}
+		h.savedErr = nil
+		vm.tries = vm.tries[:len(vm.tries)-1]
+	}
+
 	traced := g.fn != nil
 	if traced {
 		vm.pushCallAt(g.fn, callerFile, callerChunk, callerLoc, callerFallback, g.args)
@@ -217,7 +243,7 @@ func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
 
 	var err error
 	if !vm.handleThrow(g.chunk, errForceClose) {
-		err = nil
+		err = vm.closeDispatchErr()
 	} else {
 		for {
 			e := vm.exec(g.chunk)
@@ -227,7 +253,7 @@ func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
 			}
 			if ts, ok := e.(*Throwable); ok && ts.close {
 				if !vm.handleThrow(g.chunk, ts) {
-					err = nil
+					err = vm.closeDispatchErr()
 					break
 				}
 				continue

@@ -371,6 +371,9 @@ type VM struct {
 	liveObjs     []*Object
 	destructed   map[*Object]bool
 	shutdownDone bool
+	// inShutdown — сейчас выполняются shutdown-деструкторы: закрытие
+	// генератора/файбера рисует кадр "[internal function]" (bug71604_3).
+	inShutdown bool
 	// weakRefs — существующие WeakReference по объекту-цели: Zend
 	// WeakReference::create на тот же объект возвращает уже созданную
 	// ссылку (zend_weakref_find), а не создаёт новую.
@@ -425,6 +428,17 @@ type VM struct {
 	// вернуть error через noteDropped, поэтому она поднимается из внешнего
 	// destroyObject (сборщик вернёт её в точку OpSweep).
 	pendingDestroyErr error
+	// inFlightTh — исключение, раскручиваемое прямо сейчас (handleThrow):
+	// его объект — корень для сборщика. Zend держит объект в EG(exception),
+	// поэтому раскрутка сама по себе не запускает __destruct; у нас регистр
+	// THROW-операнда уже мёртв, и без этого корня деструктор сработал бы в
+	// момент throw, а не в обработчике (catch_novar_2).
+	inFlightTh *Throwable
+	// dispTh — «эффективное» исключение последней неуспешной раскрутки:
+	// при закрытии генератора сигнал errForceClose заменяется реальным
+	// исключением, отложенным во внешних finally (bug71604), и вызывающий
+	// (FINALLY_END/closeGenerator) несёт наружу именно его.
+	dispTh *Throwable
 	// staticRootsCache/staticRootsLen — кэш классов со статиками для сборщика.
 	staticRootsCache []*runtimeClass
 	staticRootsLen   int
@@ -1970,7 +1984,21 @@ func (vm *VM) CaptureExceptionTrace() []callFrameInfo { return vm.captureExcepti
 // zend.exception_ignore_args=0 (args показываются в трейсах), поэтому глубокая
 // копия нужна — args в callStack ссылаются на переиспользуемые регистры.
 func (vm *VM) captureExceptionTrace() []callFrameInfo {
-	return deepCopyFrames(vm.traceFrames())
+	return deepCopyExceptionFrames(vm.traceFrames())
+}
+
+// deepCopyExceptionFrames — копия кадров для трейса исключения: объект-
+// получатель (this) не переносится, чтобы трейс не удерживал его живым.
+// Zend не addref-ит получателя в трейсе; иначе цикл «генератор → отложенное
+// исключение в finally → трейс → генератор» мешает закрытию генератора при
+// потере последней настоящей ссылки (bug71604: деструктор генератора обязан
+// сработать сразу, а не на shutdown).
+func deepCopyExceptionFrames(frames []callFrameInfo) []callFrameInfo {
+	out := deepCopyFrames(frames)
+	for i := range out {
+		out[i].this = Slot{}
+	}
+	return out
 }
 
 // deepCopyFrames глубоко копирует трейс (аргументы кадров — отдельные срезы).
@@ -4567,6 +4595,13 @@ func (vm *VM) exec(chunk *Chunk) error {
 					saved := h.savedErr
 					vm.tries = vm.tries[:n-1]
 					if saved != nil && !vm.handleThrow(chunk, saved) {
+						// Сигнал закрытия генератора мог быть заменён
+						// реальным отложенным исключением (bug71604).
+						if saved.close {
+							if v := vm.dispTh; v != nil && !v.close {
+								return v
+							}
+						}
 						return saved
 					}
 				}
@@ -5411,7 +5446,7 @@ func (vm *VM) tooFewArgs(fn *Function, passed int) *Throwable {
 		frames = append(frames, frame)
 		frames = append(frames, stack...)
 	}
-	th.Trace = deepCopyFrames(frames)
+	th.Trace = deepCopyExceptionFrames(frames)
 	return th
 }
 
@@ -7568,6 +7603,8 @@ func (vm *VM) runShutdownDestructors() {
 		return
 	}
 	vm.shutdownDone = true
+	vm.inShutdown = true
+	defer func() { vm.inShutdown = false }()
 	vm.flushResourceDrops()
 	// Ошибки деструкторов/незавершённых файберов собираются и печатаются одной
 	// цепочкой (Zend: каждый следующий бросок связывает предыдущий как

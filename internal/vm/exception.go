@@ -429,7 +429,7 @@ func (vm *VM) throwableObject(th *Throwable, ci ClassInfo) Slot {
 	o.SetProp("message", MakeString(th.Message))
 	o.SetProp("code", MakeInt(th.Code))
 	if !o.excSet {
-		o.excTrace = deepCopyFrames(th.Trace)
+		o.excTrace = deepCopyExceptionFrames(th.Trace)
 		o.excFile = th.LocFile
 		o.excLine = th.LocLine
 		o.excDefined = th.DefinedIn
@@ -513,6 +513,20 @@ func asThrowable(err error) (*Throwable, bool) {
 // finally) — тогда exec продолжает цикл. Иначе возвращает false, и ошибку
 // нужно вернуть наружу.
 func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
+	// dispTh — «эффективное» исключение этой раскрутки (см. закрытие
+	// генератора): сбрасывается в начале, заполняется на неуспешном выходе.
+	vm.dispTh = nil
+	// Пока исключение раскручивается, его объект — корень сборщика (Zend
+	// держит его в EG(exception)): промежуточные точки времени жизни в
+	// диспетчере не должны запускать __destruct объекта (catch_novar_2 — там
+	// деструктор обязан сработать на входе catch). Корень ставится ДО
+	// списания мёртвых операндов упавшей инструкции: сам брошенный объект
+	// уже потерял регистр и иначе уничтожился бы прямо в раскрутке.
+	prevTh := vm.inFlightTh
+	if th0, ok := asThrowable(err); ok {
+		vm.inFlightTh = th0
+	}
+	defer func() { vm.inFlightTh = prevTh }()
 	// Аварийное завершение опкода: временные значения, мёртвые по SSA,
 	// уничтожаются немедленно (Zend освобождает операнды до раскрутки) —
 	// деструктор может выбросить исключение, которое заменяет текущее
@@ -534,6 +548,7 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 				if out.err != nil {
 					if nth, ok := asThrowable(out.err); ok {
 						err = nth
+						vm.inFlightTh = nth
 					}
 				}
 			}
@@ -582,9 +597,19 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 		ti := chunk.TryAt(h.tiIdx)
 		if h.inFinally {
 			// finally сам выбросил исключение: сцепляем previous с
-			// отложенным и уходим наружу.
+			// отложенным и уходим наружу. Сигнал закрытия генератора сам
+			// исключением не является: отложенное реальное исключение
+			// продолжает раскрутку вместо него (bug71604: «закрываемый»
+			// генератор дожигает finally, а наружу выходит ранее брошенное).
 			if h.savedErr != nil {
-				vm.chainPrevious(th, h.savedErr)
+				if th.close && !h.savedErr.close {
+					th = h.savedErr
+					if vm.inFlightTh != nil {
+						vm.inFlightTh = th
+					}
+				} else if !th.close {
+					vm.chainPrevious(th, h.savedErr)
+				}
 			}
 			vm.tries = vm.tries[:i]
 			continue
@@ -594,6 +619,17 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 				if vm.catchMatches(ci, ce.Classes) {
 					vm.tries = vm.tries[:i+1]
 					obj := vm.throwableObject(th, ci)
+					vm.tries[i].inCatch = true
+					// Отложенные записи-обратно прерванного оператора
+					// отменяются вместе с ним.
+					vm.wbSkip = vm.wbSkip[:0]
+					// Прерванный оператор уже потерял своё временное значение:
+					// Zend освобождает его при раскручивании (FREE) до тела
+					// catch. Объект выдаётся ДО списания (порядок #N как в
+					// Zend: хендл исключения занят раньше освобождения мёртвых
+					// операндов), а запись в ce.Var — ПОСЛЕ (иначе списание
+					// снимает только что выставленный учёт).
+					vm.dropDeadRegs(chunk, int(ce.PC))
 					if ce.Var != 0xFF {
 						{
 							old := vm.cur.regs[ce.Var]
@@ -605,15 +641,6 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 						}
 						shareSlot(obj)
 					}
-					vm.tries[i].inCatch = true
-					// Прерванный оператор уже потерял своё временное значение:
-					// Zend освобождает его при раскручивании (FREE), до тела
-					// catch. От этого зависит порядок возврата #N в free-list
-					// (typed_properties_class_loading и т.п.).
-					// Отложенные записи-обратно прерванного оператора
-					// отменяются вместе с ним.
-					vm.wbSkip = vm.wbSkip[:0]
-					vm.dropDeadRegs(chunk, int(ce.PC))
 					if vm.lifeCandidate || vm.zeroObjs > 0 {
 						if res := vm.sweepLifetime(false, chunk, int(ce.PC)); res.err != nil && vm.pendingDestroyErr == nil {
 							vm.pendingDestroyErr = res.err
@@ -634,6 +661,7 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 		}
 		vm.tries = vm.tries[:i]
 	}
+	vm.dispTh = th
 	return false
 }
 

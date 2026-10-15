@@ -276,14 +276,33 @@ func isThisVar(e Expr) bool {
 type loopCtx struct {
 	continueJumps []int
 	breakJumps    []int
-	tryDepth      int // глубина c.tryStack на входе в цикл
+	regDepth      int     // глубина c.regions (включая сам цикл) на входе
+	freeRegs      []uint8 // временные регистры foreach: освобождаются при выходе
 }
 
 // pendingGoto — прямой goto на ещё не определённую метку.
 type pendingGoto struct {
-	at    int
-	depth int // c.loopDepth в точке goto
-	line  int
+	at      int
+	depth   int // c.loopDepth в точке goto
+	line    int
+	regions []regionRef  // активные регионы в точке goto
+	parts   []unwindPart // цепочка раскрутки: невышедшие части гасятся в NOP
+}
+
+// regionRef — элемент стека вложенности компилятора: try-регион либо цикл.
+// Раскрутка (return/break/continue/goto и диспетчер исключений) идёт от
+// внутренних регионов к внешним; цикл с freeRegs перед снятием освобождает
+// свои временные регистры (аналог Zend FE_FREE/cleanup_live_vars).
+type regionRef struct {
+	try  *tryScope
+	loop *loopCtx
+}
+
+// unwindPart — диапазон инструкций [start, end), эмитированный для одного
+// региона при раскрутке forward-goto (Zend: zend_resolve_goto_label гасит
+// FAST_CALL/FREE регионов, которые переход НЕ покидает).
+type unwindPart struct {
+	start, end int
 }
 
 // tryScope — активный try-регион, нужный для прогона finally на
@@ -427,8 +446,12 @@ type compiler struct {
 	// при вызовах $obj->m() / C::m() / new C()).
 	methodRefs map[string][]bool
 
-	// Исключения: стек активных try (для finally на return/break/continue).
-	tryStack []*tryScope
+	// Исключения: стек активных регионов (try и foreach-циклы) для прогона
+	// finally/освобождения темпов на return/break/continue/goto.
+	regions []regionRef
+	// loopLog — все foreach-циклы в порядке компиляции (для блоков
+	// освобождения на входе catch/finally: исключение покидает циклы тела).
+	loopLog []*loopCtx
 
 	// closureIdx — соответствие AST-узла замыкания/стрелочной функции её
 	// скомпилированной функции в общем пуле funcs. Таблица общая для всех
@@ -438,6 +461,7 @@ type compiler struct {
 	// goto/метки: адреса меток и неразрешённые переходы (forward goto).
 	labels       map[string]int
 	labelDepth   map[string]int
+	labelRegions map[string][]regionRef
 	pendingGotos map[string][]pendingGoto
 	// loopDepth — глубина вложенности циклов/switch (правила goto: прыжок
 	// внутрь цикла запрещён).
@@ -506,8 +530,9 @@ func newCompiler(funcs []*vm.Function, idx map[string]int) *compiler {
 		globals: map[string]bool{}, staticKeys: map[string]string{},
 		refs: map[string]uint8{}, methodRefs: map[string][]bool{},
 		defRegs: map[string]uint8{},
-		labels:  map[string]int{}, labelDepth: map[string]int{}, pendingGotos: map[string][]pendingGoto{},
-		availLimit: -1, haltOffset: -1}
+		labels:  map[string]int{}, labelDepth: map[string]int{}, labelRegions: map[string][]regionRef{},
+		pendingGotos: map[string][]pendingGoto{},
+		availLimit:   -1, haltOffset: -1}
 }
 
 // isRef сообщает, что переменная участвует в ссылках (alias/by-ref параметр).
@@ -10473,7 +10498,7 @@ func (c *compiler) stmt(st Stmt) error {
 			}
 		}
 		r = c.saveAcrossUnwind(r)
-		if err := c.unwindTo(0); err != nil {
+		if err := c.unwindToRegions(0); err != nil {
 			return err
 		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpRet, A: r})
@@ -10760,6 +10785,16 @@ func cloneIntMap(m map[string]int) map[string]int {
 	return out
 }
 
+// cloneRegionMap копирует снимки стеков регионов для меток (тело foreach
+// компилируется дважды, метки второго прохода восстанавливаются).
+func cloneRegionMap(m map[string][]regionRef) map[string][]regionRef {
+	out := make(map[string][]regionRef, len(m))
+	for k, v := range m {
+		out[k] = append([]regionRef(nil), v...)
+	}
+	return out
+}
+
 // gotoStmt компилирует `goto label;`: безусловный переход. Прямые метки
 // патчатся сразу, forward-метки — при определении.
 // checkFinallyJumps запрещает goto через границы finally-блоков (Zend:
@@ -10946,19 +10981,76 @@ func containsLabelGoto(st Stmt) bool {
 	return false
 }
 
+// commonRegionPrefix возвращает длину общего префикса двух стеков регионов
+// (сравнение по идентичности try-регионов и циклов).
+func commonRegionPrefix(a, b []regionRef) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i].try == b[i].try && a[i].loop == b[i].loop {
+		i++
+	}
+	return i
+}
+
 func (c *compiler) gotoStmt(label string) error {
 	line := c.curLine
 	if pc, ok := c.labels[label]; ok {
 		if c.labelDepth[label] > c.loopDepth {
 			return &fatalError{msg: "'goto' into loop or switch statement is disallowed", line: line}
 		}
+		// Обратный goto: метка уже определена — раскручиваем регионы,
+		// которые покидает переход (Zend: zend_handle_loops_and_finally).
+		keep := commonRegionPrefix(c.labelRegions[label], c.regions)
+		if err := c.unwindToRegions(keep); err != nil {
+			return err
+		}
 		at := c.chunk.Emit(vm.Instruction{Op: vm.OpJump, C: -1})
 		c.setJump(at, pc)
 		return nil
 	}
+	// Прямой goto: цель ещё не известна. Эмитим полную цепочку раскрутки
+	// (как Zend) и запоминаем её части; defineLabel погасит в NOP те из них,
+	// чьи регионы переход не покидает.
+	regions := append([]regionRef(nil), c.regions...)
+	parts, err := c.emitUnwindChain()
+	if err != nil {
+		return err
+	}
 	at := c.chunk.Emit(vm.Instruction{Op: vm.OpJump, C: -1})
-	c.pendingGotos[label] = append(c.pendingGotos[label], pendingGoto{at: at, depth: c.loopDepth, line: line})
+	c.pendingGotos[label] = append(c.pendingGotos[label], pendingGoto{
+		at: at, depth: c.loopDepth, line: line, regions: regions, parts: parts})
 	return nil
+}
+
+// emitUnwindChain эмитит раскрутку всех активных регионов (от внутренних к
+// внешним) и возвращает диапазон инструкций каждой части в порядке эмиссии
+// (parts[len-1] — самый внешний регион). Стек регионов восстанавливается.
+func (c *compiler) emitUnwindChain() ([]unwindPart, error) {
+	saved := c.regions
+	var parts []unwindPart
+	for len(c.regions) > 0 {
+		r := c.regions[len(c.regions)-1]
+		c.regions = c.regions[:len(c.regions)-1]
+		start := c.chunk.Len()
+		if r.try != nil {
+			if r.try.hasFinally {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpEnterFinally, C: int32(r.try.tiIdx)})
+				if err := c.stmts(r.try.finally); err != nil {
+					c.regions = saved
+					return parts, err
+				}
+			}
+			c.chunk.Emit(vm.Instruction{Op: vm.OpPopTry})
+		} else if r.loop != nil {
+			c.emitLoopReleases([]*loopCtx{r.loop})
+		}
+		parts = append(parts, unwindPart{start: start, end: c.chunk.Len()})
+	}
+	c.regions = saved
+	return parts, nil
 }
 
 // defineLabel фиксирует метку `label:` на текущей позиции и патчит ожидающие
@@ -10970,9 +11062,21 @@ func (c *compiler) defineLabel(name string, line int) error {
 	pc := c.chunk.Len()
 	c.labels[name] = pc
 	c.labelDepth[name] = c.loopDepth
+	c.labelRegions[name] = append([]regionRef(nil), c.regions...)
 	for _, g := range c.pendingGotos[name] {
 		if c.loopDepth > g.depth {
 			return &fatalError{msg: "'goto' into loop or switch statement is disallowed", line: g.line}
+		}
+		if n := len(g.parts); n > 0 {
+			keep := commonRegionPrefix(g.regions, c.regions)
+			if keep > 0 {
+				// Невышедшие регионы — самые внешние, их части эмитированы
+				// последними; гасим их (Zend: MAKE_NOP в
+				// zend_resolve_goto_label).
+				for _, p := range g.parts[n-keep:] {
+					c.chunk.NopRange(p.start, p.end)
+				}
+			}
 		}
 		c.setJump(g.at, pc)
 	}
@@ -11033,12 +11137,17 @@ func (c *compiler) tryStmt(s *TryStmt) error {
 
 	c.chunk.Emit(vm.Instruction{Op: vm.OpPushTry, C: int32(tiIdx)})
 
-	depth := len(c.tryStack)
-	c.tryStack = append(c.tryStack, sc)
+	// Циклы, созданные при компиляции тела: исключение из тела покидает их,
+	// поэтому на входе catch/finally их темпы освобождаются (Zend:
+	// cleanup_live_vars до перехода в обработчик).
+	logMark := len(c.loopLog)
+	depth := len(c.regions)
+	c.regions = append(c.regions, regionRef{try: sc})
 	if err := c.stmts(s.Body); err != nil {
 		return err
 	}
-	c.tryStack = c.tryStack[:depth]
+	c.regions = c.regions[:depth]
+	bodyLoops := c.collectLoops(logMark)
 
 	// нормальное завершение try-тела
 	if sc.hasFinally {
@@ -11086,28 +11195,46 @@ func (c *compiler) tryStmt(s *TryStmt) error {
 			// в free-list при переприсваивании переменной — Zend перемещает
 			// исключение, а не копирует).
 			c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: excReg})
+		} else {
+			// catch без переменной: Zend освобождает неиспользуемый объект
+			// исключения сразу на входе (ZEND_CATCH: OBJ_RELEASE), поэтому
+			// его деструктор срабатывает до тела catch и может выбросить
+			// новое исключение. Чтение is_object нужно, чтобы диспетчер не
+			// списал объект раньше этой точки (живость на входе catch), не
+			// удерживая лишней ссылки; OpNull снимает его владение, а
+			// ближайший OpSweep выполняет деструктор (исключение — из этой
+			// инструкции, error-протокол).
+			keep := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIsObject, A: keep, B: excReg})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: excReg})
+			c.emitStmtSweep()
 		}
-		depth = len(c.tryStack)
-		c.tryStack = append(c.tryStack, sc)
+		// Освобождение темпов циклов тела (Zend: cleanup_live_vars перед
+		// переходом в обработчик) — ПОСЛЕ привязки catch-переменной: диспетчер
+		// кладёт объект исключения в регистр до перехода, и запись блоком
+		// раньше затёрла бы его (переменная catch оказалась бы null).
+		c.emitLoopReleases(bodyLoops)
+		depth = len(c.regions)
+		c.regions = append(c.regions, regionRef{try: sc})
 		if err := c.stmts(cc.Body); err != nil {
 			return err
 		}
-		c.tryStack = c.tryStack[:depth]
+		c.regions = c.regions[:depth]
 		if !sc.hasFinally {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpPopTry})
 		}
 		jumps = append(jumps, c.chunk.Emit(vm.Instruction{Op: vm.OpJump}))
-		varReg := uint8(0xFF)
-		if cc.Var != "" {
-			varReg = excReg
-		}
-		catches = append(catches, vm.TryCatch{Classes: cc.Classes, Var: varReg, PC: int32(pc)})
+		catches = append(catches, vm.TryCatch{Classes: cc.Classes, Var: excReg, PC: int32(pc)})
 	}
 
 	lf := c.chunk.Len()
 	finPC := int32(-1)
 	if sc.hasFinally {
 		finPC = int32(lf)
+		// Нормальный вход в finally: темпы циклов тела уже освобождены
+		// обычным выходом, поэтому блок — no-op; при входе по исключению он
+		// освобождает покинутые циклы до тела finally.
+		c.emitLoopReleases(bodyLoops)
 		c.chunk.Emit(vm.Instruction{Op: vm.OpEnterFinally, C: int32(tiIdx)})
 		if err := c.stmts(s.Finally); err != nil {
 			return err
@@ -11145,7 +11272,7 @@ func (c *compiler) breakStmt(level, opKind int) error {
 		return c.newFatal(fmt.Sprintf("Cannot 'break' %d level%s", level, plural))
 	}
 	idx := len(c.loops) - level
-	if err := c.unwindTo(c.loops[idx].tryDepth); err != nil {
+	if err := c.unwindToRegions(c.loops[idx].regDepth); err != nil {
 		return err
 	}
 	j := c.chunk.Emit(vm.Instruction{Op: vm.OpJump})
@@ -11175,7 +11302,7 @@ func (c *compiler) continueStmt(level, opKind int) error {
 		return c.newFatal(fmt.Sprintf("Cannot 'continue' %d level%s", level, plural))
 	}
 	idx := len(c.loops) - level
-	if err := c.unwindTo(c.loops[idx].tryDepth); err != nil {
+	if err := c.unwindToRegions(c.loops[idx].regDepth); err != nil {
 		return err
 	}
 	j := c.chunk.Emit(vm.Instruction{Op: vm.OpJump})
@@ -11183,35 +11310,86 @@ func (c *compiler) continueStmt(level, opKind int) error {
 	return nil
 }
 
-// unwindTo прогоняет finally-тела активных try-регионов (от внутренних к
-// внешним) до глубины depth и снимает их обработчики. Используется при
-// return/break/continue, покидающих try.
-func (c *compiler) unwindTo(depth int) error {
-	// tryStack восстанавливается: код после return/break/continue в том же
-	// теле всё ещё компилируется (пусть и недостижимый), и он должен видеть
-	// те же активные try-регионы. Без восстановления, например, массивная
-	// ветка foreach, скомпилированная после return в объектной ветке,
-	// потеряла бы свой finally.
-	saved := c.tryStack
-	for len(c.tryStack) > depth {
-		sc := c.tryStack[len(c.tryStack)-1]
-		c.tryStack = c.tryStack[:len(c.tryStack)-1]
-		if sc.hasFinally {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpEnterFinally, C: int32(sc.tiIdx)})
-			if err := c.stmts(sc.finally); err != nil {
-				return err
+// collectLoops возвращает (без дублей) foreach-циклы, зарегистрированные в
+// c.loopLog начиная с отметки mark.
+func (c *compiler) collectLoops(mark int) []*loopCtx {
+	if mark >= len(c.loopLog) {
+		return nil
+	}
+	var out []*loopCtx
+	for _, lc := range c.loopLog[mark:] {
+		if len(lc.freeRegs) == 0 {
+			continue
+		}
+		dup := false
+		for _, prev := range out {
+			if prev == lc {
+				dup = true
+				break
 			}
 		}
-		c.chunk.Emit(vm.Instruction{Op: vm.OpPopTry})
+		if !dup {
+			out = append(out, lc)
+		}
 	}
-	c.tryStack = saved
+	return out
+}
+
+// emitLoopReleases освобождает временные регистры покинутых foreach-циклов:
+// OpNull снимает удерживаемые значения, ближайший OpSweep выполняет
+// деструкторы (исключение деструктора — из этой точки, error-протокол).
+func (c *compiler) emitLoopReleases(loops []*loopCtx) {
+	if len(loops) == 0 {
+		return
+	}
+	n := 0
+	for _, lc := range loops {
+		for _, reg := range lc.freeRegs {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: reg})
+			n++
+		}
+	}
+	if n > 0 {
+		c.emitStmtSweep()
+	}
+}
+
+// unwindToRegions прогоняет раскрутку активных регионов (foreach-циклов и
+// try-регионов) от внутренних к внешним, пока не останется keep регионов:
+// у try с finally выполняется копия finally-тела (и снимается обработчик), у
+// цикла освобождаются временные регистры (Zend: zend_handle_loops_and_finally
+// эмитит FAST_CALL/DISCARD_EXCEPTION/FREE в этом же порядке).
+func (c *compiler) unwindToRegions(keep int) error {
+	// Стек восстанавливается: код после return/break/continue в том же теле
+	// всё ещё компилируется (пусть и недостижимый), и он должен видеть те же
+	// активные регионы. Без восстановления, например, массивная ветка
+	// foreach, скомпилированная после return в объектной ветке, потеряла бы
+	// свой finally.
+	saved := c.regions
+	for len(c.regions) > keep {
+		r := c.regions[len(c.regions)-1]
+		c.regions = c.regions[:len(c.regions)-1]
+		if r.try != nil {
+			if r.try.hasFinally {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpEnterFinally, C: int32(r.try.tiIdx)})
+				if err := c.stmts(r.try.finally); err != nil {
+					c.regions = saved
+					return err
+				}
+			}
+			c.chunk.Emit(vm.Instruction{Op: vm.OpPopTry})
+		} else if r.loop != nil {
+			c.emitLoopReleases([]*loopCtx{r.loop})
+		}
+	}
+	c.regions = saved
 	return nil
 }
 
 // saveAcrossUnwind сохраняет значение r в стабильный регистр, если предстоит
 // прогон finally-тела (чтобы временные регистры finally не затёрли его).
 func (c *compiler) saveAcrossUnwind(r uint8) uint8 {
-	if len(c.tryStack) == 0 {
+	if len(c.regions) == 0 {
 		return r
 	}
 	v := c.varReg(c.internalName("save"))
@@ -11220,13 +11398,19 @@ func (c *compiler) saveAcrossUnwind(r uint8) uint8 {
 }
 
 func (c *compiler) pushLoop() *loopCtx {
-	lc := &loopCtx{tryDepth: len(c.tryStack)}
+	lc := &loopCtx{}
 	c.loops = append(c.loops, lc)
 	c.loopDepth++
+	c.regions = append(c.regions, regionRef{loop: lc})
+	lc.regDepth = len(c.regions)
+	c.loopLog = append(c.loopLog, lc)
 	return lc
 }
 
 func (c *compiler) popLoop(lc *loopCtx) {
+	if n := len(c.regions); n > 0 && c.regions[n-1].loop == lc {
+		c.regions = c.regions[:n-1]
+	}
 	c.loopDepth--
 	c.loops = c.loops[:len(c.loops)-1]
 	for _, j := range lc.breakJumps {
@@ -11571,12 +11755,29 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 	// Снимок пространства меток до тела восстанавливается перед массивным путём.
 	var savedLabels map[string]int
 	var savedLabelDepth map[string]int
+	var savedLabelRegions map[string][]regionRef
 	if containsLabelGotos(s.Body) {
 		savedLabels = cloneIntMap(c.labels)
 		savedLabelDepth = cloneIntMap(c.labelDepth)
+		savedLabelRegions = cloneRegionMap(c.labelRegions)
+	}
+
+	// Регистры цикла известны до компиляции тела: goto/return/break внутри
+	// тела должны уметь их освободить (Zend знает FE_FREE на входе в цикл).
+	// Только долгоживущие регистры итератора (varReg): временные регистры
+	// текущего элемента массивного пути переиспользуются операторами тела и
+	// в точке выхода могут держать живые значения — их не трогаем.
+	freeObj := []uint8{src, iterState, keys, i, limit}
+	if !srcFreeable {
+		// src — регистр самой переменной-источника (ячейка): не сбрасываем.
+		freeObj = freeObj[1:]
+	}
+	if rwIter {
+		freeObj = append(freeObj, cell, lim1, objPrevKey, objHavePrev)
 	}
 
 	objLC := c.pushLoop()
+	objLC.freeRegs = freeObj
 	if err := c.stmts(s.Body); err != nil {
 		return err
 	}
@@ -11594,6 +11795,7 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 	if savedLabels != nil {
 		c.labels = savedLabels
 		c.labelDepth = savedLabelDepth
+		c.labelRegions = savedLabelRegions
 	}
 	c.setJump(jfObj, c.chunk.Len())
 
@@ -11601,6 +11803,7 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 	arrOK := c.emitCall("__php_foreach_check", []uint8{src})
 	jfNotArr := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfFalse, A: arrOK})
 
+	var arrLC *loopCtx
 	if rwIter {
 		// --- массив, RW-обход (foreach по ссылке или ссылочная
 		// деструктуризация значения): позиционный обход живого массива ---
@@ -11628,6 +11831,12 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 			return err
 		}
 		lc := c.pushLoop()
+		arrLC = lc
+		if rwIter {
+			lc.freeRegs = append(append([]uint8{}, freeObj...), keyR, valR)
+		} else {
+			lc.freeRegs = append([]uint8{}, freeObj...)
+		}
 		if err := c.stmts(s.Body); err != nil {
 			return err
 		}
@@ -11668,6 +11877,12 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 		}
 
 		lc := c.pushLoop()
+		arrLC = lc
+		if rwIter {
+			lc.freeRegs = append(append([]uint8{}, freeObj...), keyR, valR)
+		} else {
+			lc.freeRegs = append([]uint8{}, freeObj...)
+		}
 		if err := c.stmts(s.Body); err != nil {
 			return err
 		}
@@ -11698,6 +11913,7 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 	for _, reg := range free {
 		c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: reg})
 	}
+	_ = arrLC
 	return nil
 }
 

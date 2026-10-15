@@ -609,6 +609,21 @@ func (c *Chunk) AddConst(v Const) int {
 // SetJump патчит адрес перехода инструкции по индексу (для бэктрекинга).
 func (c *Chunk) SetJump(at int, target int32) { c.code[at].C = target }
 
+// NopRange гасит инструкции [from, to): используется для forward-goto, чей
+// переход не покидает часть регионов (Zend: zend_resolve_goto_label заменяет
+// неисполняемые FAST_CALL/FREE на NOP).
+func (c *Chunk) NopRange(from, to int) {
+	if from < 0 {
+		from = 0
+	}
+	if to > len(c.code) {
+		to = len(c.code)
+	}
+	for i := from; i < to; i++ {
+		c.code[i] = Instruction{Op: OpNop}
+	}
+}
+
 // At возвращает инструкцию по индексу (для патчинга fused-переходов).
 func (c *Chunk) At(i int) Instruction { return c.code[i] }
 

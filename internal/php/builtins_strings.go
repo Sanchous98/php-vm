@@ -850,6 +850,21 @@ func explodeFn(ctx *vm.Context) vm.Value {
 	return vm.MakeArray(out)
 }
 
+// stringCoerce — приведение аргумента к строке как Zend для string-параметра:
+// объекты со __toString конвертируются (при исключении оно пробрасывается),
+// не-строковые скаляры — обычным ToString (bug39445: strtoupper($obj)).
+func stringCoerce(ctx *vm.Context, s vm.Slot) string {
+	if derefSlot(s).Type() == vm.ObjectType {
+		str, err := ctx.VM().ToStringValue(s)
+		if err != nil {
+			throwCallable(ctx, err)
+			return ""
+		}
+		return str
+	}
+	return s.ToString()
+}
+
 func strlenFn(ctx *vm.Context) vm.Value {
 	a := arg(ctx, 0)
 	t := a.Type()

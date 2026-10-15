@@ -185,8 +185,12 @@ func builtins() []*vm.Function {
 			}
 			return vm.Str(strings.Repeat(s, n))
 		}),
-		vm.Register("strtoupper", func(ctx *vm.Context) vm.Value { return vm.Str(asciiUpper(arg0(ctx).ToString())) }),
-		vm.Register("strtolower", func(ctx *vm.Context) vm.Value { return vm.Str(asciiLower(arg0(ctx).ToString())) }),
+		vm.Register("strtoupper", func(ctx *vm.Context) vm.Value {
+			return vm.Str(asciiUpper(stringCoerce(ctx, arg0(ctx))))
+		}),
+		vm.Register("strtolower", func(ctx *vm.Context) vm.Value {
+			return vm.Str(asciiLower(stringCoerce(ctx, arg0(ctx))))
+		}),
 		vm.Register("ucfirst", func(ctx *vm.Context) vm.Value {
 			s := arg0(ctx).ToString()
 			if s == "" {

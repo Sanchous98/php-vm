@@ -7055,6 +7055,26 @@ func (vm *VM) DynClassByName(s Slot) (ClassInfo, error) {
 	if name == "" {
 		return nil, NewThrowable("Error", "Class \"\" not found")
 	}
+	// self/parent/static (в любом регистре) в динамическом резолве указывают
+	// на класс области/вызываемый класс (bug60833: `PARENT::testit()`).
+	switch strings.ToLower(name) {
+	case "self", "static":
+		if vm.ctx.called != nil {
+			return vm.ctx.called, nil
+		}
+		if vm.ctx.self != nil {
+			return vm.ctx.self, nil
+		}
+		return nil, NewThrowable("Error", "Cannot access \""+strings.ToLower(name)+"\" when no class scope is active")
+	case "parent":
+		if vm.ctx.self != nil && vm.ctx.self.Parent() != nil {
+			return vm.ctx.self.Parent(), nil
+		}
+		if vm.ctx.self != nil {
+			return nil, NewThrowable("Error", "Cannot access \"parent\" when current class scope has no parent")
+		}
+		return nil, NewThrowable("Error", "Cannot access \"parent\" when no class scope is active")
+	}
 	if ci := vm.FindClass(name); ci != nil {
 		return ci, nil
 	}

@@ -14087,7 +14087,9 @@ func ciLookup(m map[string]int, name string) (int, bool) {
 // classIndex возвращает индекс класса в vm.classes для new/instanceof.
 func (c *compiler) classIndex(name string) (int, error) {
 	name = strings.TrimLeft(name, "\\")
-	switch name {
+	// self/parent/static в позиции имени класса резолвятся без учёта регистра
+	// (bug60833: `new sELF`, `new PARENT`, `STATIC::$x`).
+	switch strings.ToLower(name) {
 	case "self", "static":
 		if c.curClass != nil {
 			if i, ok := c.classIdx[c.curClass.Name()]; ok {

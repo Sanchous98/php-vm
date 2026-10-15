@@ -196,6 +196,9 @@ type ClassDecl struct {
 	TraitAdapt []*TraitAdapt
 	// Line — 1-based строка объявления класса (для диагностик компилятора).
 	Line int
+	// EndLine — 1-based строка закрывающей `}` тела класса (ReflectionClass::
+	// getEndLine/`@@ start-end`); 0 если неизвестна.
+	EndLine int
 	// Doc — doc-комментарий `/** ... */` перед объявлением (рефлексия).
 	Doc string
 	// MissingParent/MissingInterface — имя родителя/интерфейса, неизвестного
@@ -298,6 +301,9 @@ type ClassMember struct {
 
 	// Line — 1-based строка объявления члена (для диагностик компилятора).
 	Line int
+	// EndLine — 1-based строка закрывающей `}` тела метода (для
+	// ReflectionMethod::getEndLine/`@@ start - end`); 0 для сигнатур.
+	EndLine int
 	// Doc — doc-комментарий `/** ... */` перед объявлением члена.
 	Doc string
 	// Attrs — атрибуты `#[...]` перед объявлением члена.
@@ -680,6 +686,9 @@ type Parser struct {
 	pos           int
 	src           string
 	depth         int
+	// lastBraceLine — 1-based строка закрывающей `}` последнего разобранного
+	// блока (для ReflectionMethod::getEndLine/`@@ start - end`).
+	lastBraceLine int
 
 	// lineStarts — позиции начала строк (для pos→line). Строится лениво.
 	lineStarts []int
@@ -1667,6 +1676,7 @@ func (p *Parser) stmtsUntil(end string) ([]Stmt, error) {
 			out = append(out, st)
 		}
 	}
+	p.lastBraceLine = p.lineAt(p.cur().Pos)
 	p.next()
 	return out, nil
 }
@@ -2706,6 +2716,7 @@ modsDone:
 		}
 		cd.Members = append(cd.Members, ms...)
 	}
+	cd.EndLine = p.lineAt(p.cur().Pos)
 	p.next() // }
 	return cd, nil
 }
@@ -2813,6 +2824,7 @@ modsDone:
 			if err != nil {
 				return nil, err
 			}
+			m.EndLine = p.lastBraceLine
 			if !strings.EqualFold(m.MName, "__construct") {
 				for _, pr := range m.Params {
 					if pr.Promoted {

@@ -9,6 +9,7 @@ package vm
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"unsafe"
 )
@@ -1000,8 +1001,368 @@ func registerReflectionClassMembers(ci ClassInfo) {
 		if reflIsInternal(d.class) {
 			return MakeString(ctx.vm.reflInternalClassString(d.class)), nil
 		}
-		return MakeString("Class [ <user> class " + d.class.Name() + " ] {\n}\n"), nil
+		return MakeString(ctx.vm.reflUserClassString(d.class)), nil
 	})
+}
+
+// reflUserClassString повторяет формат ReflectionClass::__toString для
+// userland-классов (PHP 8.3): заголовок с наследованием, строка объявления
+// `@@ file start-end`, разделы констант/статических свойств/статических
+// методов/свойств/методов и блоки методов с параметрами и возвратом.
+func (vm *VM) reflUserClassString(ci ClassInfo) string {
+	rc, _ := asRuntimeClass(ci)
+	if rc == nil {
+		return "Class [ <user> class " + ci.Name() + " ] {\n}\n"
+	}
+	kind, kw := "Class", "class"
+	switch {
+	case rc.iface:
+		kind, kw = "Interface", "interface"
+	case rc.declTrait:
+		kind, kw = "Trait", "trait"
+	case rc.isEnum:
+		kind, kw = "Enum", "enum"
+	}
+	var b strings.Builder
+	b.WriteString(kind + " [ <user> " + kw + " " + rc.Name())
+	if rc.parent != nil {
+		b.WriteString(" extends " + rc.parent.Name())
+	}
+	var impl []string
+	seenIface := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, i := range k.ifaces {
+			if i == nil || !i.IsInterface() || seenIface[i.Name()] {
+				continue
+			}
+			seenIface[i.Name()] = true
+			impl = append(impl, i.Name())
+		}
+	}
+	if len(impl) > 0 {
+		if rc.iface {
+			b.WriteString(" extends ")
+		} else {
+			b.WriteString(" implements ")
+		}
+		b.WriteString(strings.Join(impl, ", "))
+	}
+	b.WriteString(" ] {\n")
+	if rc.defFile != "" && rc.defStart > 0 {
+		b.WriteString("  @@ " + rc.defFile + " " + itoa(rc.defStart) + "-" + itoa(rc.defEnd) + "\n")
+	}
+	// Константы.
+	var consts []string
+	seenC := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.constOrder {
+			if seenC[n] {
+				continue
+			}
+			seenC[n] = true
+			consts = append(consts, n)
+		}
+	}
+	b.WriteString("\n  - Constants [" + itoa(len(consts)) + "] {\n")
+	for _, n := range consts {
+		vis := Public
+		for k := rc; k != nil; k = k.parent {
+			if kv, ok := k.constVis[n]; ok {
+				vis = kv
+				break
+			}
+		}
+		b.WriteString("    Constant [ " + visWord(vis) + " " + n + " ] { }\n")
+	}
+	b.WriteString("  }\n")
+	// Статические свойства.
+	var statics []userStaticProp
+	seenS := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.staticOrder {
+			if seenS[n] {
+				continue
+			}
+			seenS[n] = true
+			statics = append(statics, userStaticProp{name: n, owner: k})
+		}
+	}
+	b.WriteString("\n  - Static properties [" + itoa(len(statics)) + "] {\n")
+	for _, s := range statics {
+		b.WriteString("    Property [ " + visWord(propVis(s.owner, s.name)) + " static $" + s.name + " ]\n")
+	}
+	b.WriteString("  }\n")
+	// Методы: собираем own+inherited в порядке метода.
+	var methods []string
+	seenM := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.methodOrder {
+			if seenM[n] {
+				continue
+			}
+			seenM[n] = true
+			methods = append(methods, n)
+		}
+	}
+	var staticMethods, instMethods []string
+	for _, n := range methods {
+		if fn := lookupMethodFn(rc, n); fn != nil && fn.IsStatic {
+			staticMethods = append(staticMethods, n)
+		} else {
+			instMethods = append(instMethods, n)
+		}
+	}
+	b.WriteString("\n  - Static methods [" + itoa(len(staticMethods)) + "] {\n")
+	for i, n := range staticMethods {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(vm.reflUserMethodString(rc, n))
+	}
+	b.WriteString("  }\n")
+	// Свойства.
+	var props []userProp
+	seenP := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.propOrder {
+			if seenP[n] {
+				continue
+			}
+			seenP[n] = true
+			props = append(props, userProp{name: n, pd: k.ownProps[n], owner: k})
+		}
+	}
+	b.WriteString("\n  - Properties [" + itoa(len(props)) + "] {\n")
+	for _, p := range props {
+		vis := Public
+		readonly := false
+		typ := ""
+		hasType := false
+		if p.pd != nil {
+			vis = peekVis(p.pd.vis)
+			readonly = p.pd.readonly
+			typ, hasType = p.pd.typ, p.pd.hasType
+		}
+		b.WriteString("    Property [ " + visWord(vis) + " ")
+		if readonly {
+			b.WriteString("readonly ")
+		}
+		if hasType && typ != "" {
+			b.WriteString(typ + " ")
+		}
+		b.WriteString("$" + p.name)
+		if v, ok := p.owner.defaults[p.name]; ok {
+			if s := renderDefaultValue(v); s != "" {
+				b.WriteString(" = " + s)
+			}
+		}
+		b.WriteString(" ]\n")
+	}
+	b.WriteString("  }\n")
+	// Методы экземпляра.
+	b.WriteString("\n  - Methods [" + itoa(len(instMethods)) + "] {\n")
+	for i, n := range instMethods {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(vm.reflUserMethodString(rc, n))
+	}
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// userProp / userStaticProp — собранные свойства/статические свойства userland
+// класса с классом-объявителем (для видимости и дефолтов).
+type userProp struct {
+	name  string
+	pd    *propDecl
+	owner *runtimeClass
+}
+
+type userStaticProp struct {
+	name  string
+	owner *runtimeClass
+}
+
+// propVis возвращает видимость объявленного свойства.
+func propVis(owner *runtimeClass, name string) Visibility {
+	if owner != nil {
+		if pd := owner.ownProps[name]; pd != nil {
+			return peekVis(pd.vis)
+		}
+	}
+	return Public
+}
+
+// renderDefaultValue рендерит значение по умолчанию свойства в формате Zend
+// (для `Property [ ... = value ]`). Неподдерживаемые значения дают "".
+func renderDefaultValue(v Value) string {
+	s := valueSlot(v)
+	switch s.typ {
+	case IntType:
+		return itoa(int(s.num))
+	case StringType:
+		str := s.ToString()
+		str = strings.ReplaceAll(str, `\`, `\\`)
+		str = strings.ReplaceAll(str, `'`, `\'`)
+		return "'" + str + "'"
+	case BoolType:
+		if s.num != 0 {
+			return "true"
+		}
+		return "false"
+	case NullType:
+		return "NULL"
+	case FloatType:
+		return strconv.FormatFloat(s.Float(), 'g', -1, 64)
+	}
+	return ""
+}
+
+// interfaceDeclares сообщает, что интерфейс (включая унаследованные) объявляет
+// метод name (в таблице методов или в сигнатурах интерфейса).
+func interfaceDeclares(irc *runtimeClass, name string) bool {
+	for k := irc; k != nil; k = k.parent {
+		if k.methods != nil {
+			if _, ok := k.methods[name]; ok {
+				return true
+			}
+		}
+		if k.sigFns != nil {
+			if _, ok := k.sigFns[name]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// lookupMethodFn возвращает функцию метода (own или унаследованную).
+func lookupMethodFn(rc *runtimeClass, name string) *Function {
+	if strings.EqualFold(name, "__construct") {
+		for k := rc; k != nil; k = k.parent {
+			if k.ctor != nil {
+				return k.ctor
+			}
+		}
+	}
+	for k := rc; k != nil; k = k.parent {
+		if fn, ok := k.methods[name]; ok {
+			return fn
+		}
+	}
+	return nil
+}
+
+// reflUserMethodString — блок метода в дампе userland-класса.
+func (vm *VM) reflUserMethodString(rc *runtimeClass, name string) string {
+	fn := lookupMethodFn(rc, name)
+	vis := Public
+	var declarer *runtimeClass
+	for k := rc; k != nil; k = k.parent {
+		if _, ok := k.methods[name]; ok {
+			declarer = k
+			if k.methVis != nil {
+				if v, ok := k.methVis[name]; ok {
+					vis = v
+				}
+			}
+			break
+		}
+	}
+	if strings.EqualFold(name, "__construct") {
+		for k := rc; k != nil; k = k.parent {
+			if k.ctor != nil {
+				declarer = k
+				vis = k.ctorVis
+				break
+			}
+		}
+	}
+	flags := "<user"
+	if strings.EqualFold(name, "__construct") {
+		flags += ", ctor"
+	}
+	if declarer != nil && declarer != rc {
+		flags += ", inherits " + declarer.Name()
+	}
+	// prototype: интерфейс (последний в порядке implements), объявляющий метод.
+	var protoName string
+	for k := rc; k != nil; k = k.parent {
+		for _, iface := range k.ifaces {
+			irc, _ := asRuntimeClass(iface)
+			if irc == nil {
+				continue
+			}
+			if interfaceDeclares(irc, name) {
+				protoName = iface.Name()
+			}
+		}
+	}
+	if protoName != "" {
+		flags += ", prototype " + protoName
+	}
+	flags += ">"
+	var b strings.Builder
+	b.WriteString("    Method [ " + flags + " ")
+	if fn != nil && fn.IsStatic {
+		b.WriteString("static ")
+	}
+	b.WriteString(visWord(vis) + " method " + name + " ] {\n")
+	start := 0
+	end := 0
+	file := ""
+	if fn != nil {
+		start, end, file = fn.DefLine, fn.DefEnd, fn.DefFile
+	}
+	if end == 0 {
+		end = start
+	}
+	if file != "" && start > 0 {
+		b.WriteString("      @@ " + file + " " + itoa(start) + " - " + itoa(end) + "\n")
+	}
+	if fn != nil && paramCount(fn) > 0 {
+		n := paramCount(fn)
+		b.WriteString("\n      - Parameters [" + itoa(n) + "] {\n")
+		for i := 0; i < n; i++ {
+			b.WriteString("        Parameter #" + itoa(i) + " [ " + reflParamFirstLine(fn, i) + " ]\n")
+		}
+		b.WriteString("      }\n")
+	}
+	if fn != nil && TypeString(fn.RetType) != "" {
+		b.WriteString("      - Return [ " + fn.RetType + " ]\n")
+	}
+	b.WriteString("    }\n")
+	return b.String()
+}
+
+// reflParamFirstLine рендерит тело строки Parameter #i [...] в дампе класса.
+func reflParamFirstLine(fn *Function, i int) string {
+	var b strings.Builder
+	if i < fn.NumRequired {
+		b.WriteString("<required> ")
+	} else {
+		b.WriteString("<optional> ")
+	}
+	if i < len(fn.ParamTypes) && fn.ParamTypes[i] != "" {
+		b.WriteString(fn.ParamTypes[i] + " ")
+	}
+	if i < len(fn.ByRefArgs) && fn.ByRefArgs[i] {
+		b.WriteString("&")
+	}
+	if fn.Variadic && i == len(fn.ParamNames)-1 {
+		b.WriteString("...")
+	}
+	name := ""
+	if i < len(fn.ParamNames) {
+		name = fn.ParamNames[i]
+	}
+	b.WriteString("$" + name)
+	if i < len(fn.ParamDefaults) && fn.ParamDefaults[i] != "" {
+		b.WriteString(" = " + fn.ParamDefaults[i])
+	}
+	return b.String()
 }
 
 // internalMethodSig — сигнатура встроенного метода для дампа ReflectionClass.
@@ -1767,6 +2128,9 @@ func registerFunctionAbstractMembers(ci ClassInfo, isMethod bool) {
 	reflMethodReg(ci, "getEndLine", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		if d.fn == nil || d.fn.DefLine == 0 {
 			return MakeBool(false), nil
+		}
+		if d.fn.DefEnd != 0 {
+			return MakeInt(int64(d.fn.DefEnd)), nil
 		}
 		return MakeInt(int64(d.fn.DefLine)), nil
 	})

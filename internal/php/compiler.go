@@ -790,8 +790,55 @@ func paramTypes(params []Param) []string {
 	return out
 }
 
-// normalizedType приводит запись типа из парсера к виду для рантайма
-// (в частности, `integer` -> `int` не требуется; тип сохраняется как в PHP для
+// classEndLine возвращает строку закрывающей `}` тела класса (fallback — строка
+// объявления, если диапазон не разобран).
+func classEndLine(cd *ClassDecl) int {
+	if cd.EndLine > 0 {
+		return cd.EndLine
+	}
+	return cd.Line
+}
+
+// paramDefaultsText возвращает исходный текст значений по умолчанию// параметров (для ReflectionClass::__toString / `Parameter #i [...]`).
+// nil, если ни у одного параметра нет значения по умолчанию.
+func paramDefaultsText(params []Param) []string {
+	any := false
+	out := make([]string, len(params))
+	for i, p := range params {
+		if p.Default == nil {
+			continue
+		}
+		any = true
+		out[i] = renderDefaultExpr(p.Default)
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
+// renderDefaultExpr рендерит константное значение по умолчанию в формате Zend
+// (одинарные кавычки для строк). Неподдерживаемые выражения дают "".
+func renderDefaultExpr(e Expr) string {
+	switch x := e.(type) {
+	case *StrLit:
+		s := strings.ReplaceAll(x.V, `\`, `\\`)
+		s = strings.ReplaceAll(s, `'`, `\'`)
+		return "'" + s + "'"
+	case *IntLit:
+		return strconv.FormatInt(x.V, 10)
+	case *BoolLit:
+		if x.V {
+			return "true"
+		}
+		return "false"
+	case *NullLit:
+		return "NULL"
+	}
+	return ""
+}
+
+// normalizedType приводит запись типа из парсера к виду для рантайма// (в частности, `integer` -> `int` не требуется; тип сохраняется как в PHP для
 // сообщений об ошибках).
 func normalizedType(t string) string { return t }
 
@@ -4721,7 +4768,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		}
 		// Файл объявления нужен уже при компиляции константных выражений
 		// класса (диагностики указывают на исходник объявления, gh7771).
-		vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, file), cd.Line, cd.Line)
+		vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, file), cd.Line, classEndLine(cd))
 		// Анонимные классы: видимое имя get_class()/::class —
 		// `class@anonymous\0<file>:<line>$<n>` (Zend zend_ast_create_class_decl +
 		// zend_do_link_class/anonymous naming).
@@ -5218,7 +5265,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			if cd.IsFinal || cd.IsEnum {
 				vm.MarkFinal(ci)
 			}
-			vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, base.file), cd.Line, cd.Line)
+			vm.SetClassDefinition(ci, attrFileOf(cd.DefFile, base.file), cd.Line, classEndLine(cd))
 			if strings.HasPrefix(ci.Name(), "\x00anon#") {
 				// PHP 8.3: анонимные классы запрещены к (де)сериализации.
 				ci.SetNotSerializable()
@@ -5519,6 +5566,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						RetType:         normalizedType(m.RetType),
 						SensitiveParams: sensS, SensitiveVariadic: sensVarS,
 						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
+						ParamDefaults: paramDefaultsText(m.Params),
 					})
 				case "method":
 					if m.Readonly {
@@ -5569,7 +5617,8 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						RetType:     normalizedType(m.RetType), Executable: cf,
 						SensitiveParams: sens, SensitiveVariadic: sensVar,
 						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
-						ParamAttrs: paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
+						ParamDefaults: paramDefaultsText(m.Params),
+						ParamAttrs:    paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
 					// __toString неявно возвращает string (проверка как в Zend).
 					if m.MName == "__toString" && fn.RetType == "" {
 						fn.RetType = "string"
@@ -5601,6 +5650,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						fn.DefFile = base.file
 					}
 					fn.DefLine = m.Line
+					fn.DefEnd = m.EndLine
 					// Пустое тело без параметров: вызов можно пропустить,
 					// вернув null (skip-call).
 					if len(m.Body) == 0 && len(m.Params) == 0 && !m.ByRefReturn {

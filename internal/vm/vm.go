@@ -469,9 +469,14 @@ type VM struct {
 	// constFetchPath — исходные написания ссылок на константы внутри
 	// вычисляемых отложенных константных выражений (диагностика
 	// self-referencing constant); thunkEvalDepth — глубина вычисления
+	// (classGen — счётчик объявленных рантайм-классов для повторного входа).
 	// отложенных выражений (0 вне них).
 	constFetchPath []string
 	thunkEvalDepth int
+	// classGen увеличивается при публикации рантайм-объявленного класса: по
+	// нему evalThunk отличает автозагрузку внутри вычисления константы от
+	// циклической самомссылки (gh10709).
+	classGen int64
 	// lifeUrgent — среди кандидатов есть объект, требующий немедленного
 	// уничтожения (__destruct, незавершённый генератор/файбер).
 	lifeUrgent bool
@@ -8650,6 +8655,22 @@ func (vm *VM) evalThunk(th *Thunk) (Slot, error) {
 		return valueSlot(th.val), th.err
 	}
 	if th.busy {
+		// Повторный вход в вычисляемое константное выражение. PHP разрешает
+		// его, когда вычисление было прервано автозагрузкой и после её
+		// завершения нужный класс уже объявлен (gh10709: внутри автозагрузчика
+		// повторно читается та же константа). Если же новых классов не
+		// появилось — это цикл (self-referencing constant).
+		if !th.busyRetry && vm.thunkEvalDepth < 64 && vm.classGen != th.busyGen {
+			th.busyRetry = true
+			val, err := vm.evalThunkBody(th)
+			th.busyRetry = false
+			if err != nil {
+				return Slot{}, err
+			}
+			th.val = val
+			th.done = true
+			return val, nil
+		}
 		// Диагностика Zend называет первую ссылку из внешнего константного
 		// выражения (`self::B`, `D::B`) — исходное написание ссылки, а не
 		// разрезолвленное имя.
@@ -8659,8 +8680,20 @@ func (vm *VM) evalThunk(th *Thunk) (Slot, error) {
 		}
 		return Slot{}, NewThrowable("Error", "Cannot declare self-referencing constant "+name)
 	}
+	val, err := vm.evalThunkBody(th)
+	if err != nil {
+		return Slot{}, err
+	}
+	th.val = val
+	th.done = true
+	return val, nil
+}
+
+// evalThunkBody однократно вычисляет тело отложенного константного выражения.
+func (vm *VM) evalThunkBody(th *Thunk) (Slot, error) {
 	th.materialize()
 	th.busy = true
+	th.busyGen = vm.classGen
 	vm.thunkEvalDepth++
 	// Константа перечисления вычисляется без отдельного кадра в трейсе
 	// (Zend вычисляет их на объявлении: enum/update-class-constant-failure),
@@ -8678,8 +8711,6 @@ func (vm *VM) evalThunk(th *Thunk) (Slot, error) {
 	if err != nil {
 		return Slot{}, err
 	}
-	th.val = res
-	th.done = true
 	return res, nil
 }
 

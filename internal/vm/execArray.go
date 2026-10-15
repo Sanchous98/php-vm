@@ -623,6 +623,31 @@ func (vm *VM) listFetchRefRead(container Slot, key Slot, chunk *Chunk) (Slot, er
 }
 
 func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	// База — ячейка-ссылка (например, результат функции, вернувшей значение
+	// по ссылке): создание/вивификация элемента меняет массив в самой ячейке,
+	// поэтому результат пишется обратно в неё (gh12102_2).
+	baseRef := refContainerOf(regs[in.B])
+	var before Slot
+	if baseRef != nil {
+		before = deref(regs[in.B])
+		regs[in.B] = before
+	}
+	res := vm.opIndexRefInner(regs, consts, chunk, in)
+	if baseRef != nil {
+		after := deref(regs[in.B])
+		if res.err == nil && !res.halt && !res.next && after != before {
+			if err := vm.writeRef(baseRef, after, vm.chunk != nil && vm.chunk.Strict); err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+		}
+	}
+	return res
+}
+
+func (vm *VM) opIndexRefInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	src := deref(regs[in.B])
 	if src.typ == ObjectType {
 		// ArrayAccess: ссылку на элемент создать нельзя — возвращаем
@@ -1138,7 +1163,36 @@ func (vm *VM) opIndexSetRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 // записываемого значения разделённым, ret — записью результата присваивания
 // в регистр значения).
 func (vm *VM) indexSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, share, ret bool) execResult {
+	// Контейнер — ячейка-ссылка (элемент, возвращённый offsetGet по ссылке,
+	// либо промежуточное звено цепочки через ссылку): Zend модифицирует
+	// значение самой ячейки, поэтому запись идёт сквозь неё
+	// (ArrayAccess_indirect_append, offset_assign).
+	if r := refContainerOf(regs[in.A]); r != nil {
+		before := deref(regs[in.A])
+		regs[in.A] = before
+		res := vm.indexSetInner(regs, consts, chunk, in, share, ret)
+		after := deref(regs[in.A])
+		if res.err == nil && !res.halt && !res.next && after != before {
+			if err := vm.writeRef(r, after, vm.chunk != nil && vm.chunk.Strict); err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+		}
+		return res
+	}
 	return vm.indexSetInner(regs, consts, chunk, in, share, ret)
+}
+
+// refContainerOf возвращает ячейку-ссылку, если контейнер-регистр её содержит
+// (иначе nil): запись в такой контейнер должна идти сквозь ссылку.
+func refContainerOf(s Slot) *Ref {
+
+	if s.typ == RefType {
+		return s.Ref()
+	}
+	return nil
 }
 
 func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, share, ret bool) execResult {
@@ -1480,6 +1534,26 @@ func (vm *VM) opAppendCompound(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 }
 
 func (vm *VM) opAppend(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	// Контейнер — ячейка-ссылка (offsetGet по ссылке): append идёт сквозь неё.
+	if r := refContainerOf(regs[in.A]); r != nil {
+		before := deref(regs[in.A])
+		regs[in.A] = before
+		res := vm.opAppendInner(regs, consts, chunk, in)
+		after := deref(regs[in.A])
+		if res.err == nil && !res.halt && !res.next && after != before {
+			if err := vm.writeRef(r, after, vm.chunk != nil && vm.chunk.Strict); err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+		}
+		return res
+	}
+	return vm.opAppendInner(regs, consts, chunk, in)
+}
+
+func (vm *VM) opAppendInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	arr := deref(regs[in.A])
 	if arr.typ == ObjectType {
 		// ArrayAccess: $obj[] = $v -> offsetSet(null, $v).

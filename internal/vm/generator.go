@@ -310,6 +310,7 @@ func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
 	traced := g.fn != nil
 	if traced {
 		vm.pushCallAt(g.fn, callerFile, callerChunk, callerLoc, callerFallback, g.args)
+		vm.markGenFrameObjMethod(g)
 	}
 
 	g.forceClose = true
@@ -660,17 +661,44 @@ func (g *Generator) suspendedLine() int {
 // — текущая позиция (место resume) либо "[internal function]" для нативного
 // вызывающего. Строка вычисляется лениво.
 func (vm *VM) pushGenCall(g *Generator) {
-	if d := vm.genDelegPos; d != nil && d != g {
+	// Делегирующий генератор — genDelegPos для прямой делегации (advance с
+	// g.inner) либо ближайший активный кадр генератора: при делегации через
+	// IteratorAggregate (`yield from new It()`) внутренний генератор
+	// запускается из методов-итератора, и genDelegPos указывает на более
+	// внешний генератор (gh15275: место вызова — строка yield from
+	// ближайшего делегирующего генератора).
+	d := vm.genDelegPos
+	for i := len(vm.runningGens) - 1; i >= 0; i-- {
+		if last := vm.runningGens[i]; last != nil && last != g {
+			d = last
+			break
+		}
+	}
+	if d != nil && d != g {
 		// Вложенный генератор вызван из кадра делегирующего: место вызова —
 		// его приостановленный yield from (backtrace_multi_yield_from).
 		vm.pushCallAt(g.fn, vm.curFile, nil, 0, d.suspendedLine(), g.args)
+		vm.markGenFrameObjMethod(g)
 		return
 	}
 	if vm.genResumeCallerInternal() {
 		vm.pushCallAt(g.fn, "[internal function]", nil, 0, 0, g.args)
+		vm.markGenFrameObjMethod(g)
 		return
 	}
 	vm.pushCall(g.fn, g.args)
+	vm.markGenFrameObjMethod(g)
+}
+
+// markGenFrameObjMethod отмечает верхний кадр генератора-метода как вызов
+// через объект: Zend печатает `Class->method()`, когда кадру привязан $this
+// (иначе `Class::method()`), и отдаёт объект в debug_backtrace.
+func (vm *VM) markGenFrameObjMethod(g *Generator) {
+	if g == nil || g.fn == nil || g.fn.Scope == nil || g.this.typ != ObjectType {
+		return
+	}
+	vm.markTopObjMethod()
+	vm.setTopThis(g.this)
 }
 
 // saveTriesForFrame переносит обработчики кадра fp (и глубже) в генератор,

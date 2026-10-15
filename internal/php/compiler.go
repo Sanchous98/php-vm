@@ -14635,6 +14635,13 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		if tempWriteBase(ix.Arr) {
 			return c.emitTempWriteErr(ix), nil, nil
 		}
+		// Результат специального опкода-функции, возвращающей массив
+		// (func_get_args) — временный массив: ссылку на его элемент Zend
+		// создать не может (gh12102_1). Обычный вызов (в т.ч. встроенной
+		// функции) в этой позиции ссылку создаёт.
+		if call, ok := ix.Arr.(*CallExpr); ok && specialTempArrayFuncs[strings.ToLower(strings.TrimPrefix(call.Name, "\\"))] {
+			return c.emitTempWriteErr(ix), nil, nil
+		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 		cell, err := c.refCellForExpr(ix)
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
@@ -17670,6 +17677,11 @@ func (c *compiler) writeCtxBuiltinFatal(e Expr) error {
 // "Cannot use result of built-in function in write context".
 // chr/ord/in_array/call_user_func*/array_slice Zend так не компилирует:
 // запись в их результат даёт рантайм-ошибки (bug70089).
+// specialTempArrayFuncs — специализированные опкод-функции, возвращающие
+// массив-временное значение: элемент такого массива в by-ref позиции
+// запрещён (gh12102_1).
+var specialTempArrayFuncs = map[string]bool{"func_get_args": true}
+
 var specialFuncNames = map[string]bool{
 	"strlen": true, "is_null": true, "is_bool": true,
 	"is_long": true, "is_int": true, "is_integer": true,
@@ -17769,22 +17781,40 @@ func (c *compiler) assignCoalesce(target Expr, value Expr) (uint8, error) {
 		if c.builtinCallBase(t.Arr) {
 			return 0, c.writeCtxBuiltinFatal(t)
 		}
-		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
-		arr, wb, err := c.indexBase(t, true)
-		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
-		if err != nil {
-			return 0, err
+		// Ключи цепочки вычисляются один раз (Zend): сначала IS-чтение всей
+		// цепочки (FETCH_DIM_IS: для ArrayAccess — offsetExists, затем
+		// offsetGet), и только если значение null — отдельный W-fetch базы
+		// и запись (FETCH_DIM_W + ASSIGN_DIM). Порядок вызовов совпадает с
+		// Zend (assign_coalesce_003).
+		keys, kerr := c.evalIndexKeys(t)
+		if kerr != nil {
+			return 0, kerr
 		}
-		k, err := c.expr(t.Key)
-		if err != nil {
-			return 0, err
+		// База-временное выражение (вызов/new) вычисляется один раз: обе
+		// фазы (IS и W) работают с кэшированным значением (assign_coalesce_008).
+		wt := t
+		if base := indexChainBase(t); callLikeBase(base) {
+			br, berr := c.expr(base)
+			if berr != nil {
+				return 0, berr
+			}
+			wt = cloneIndexChainWithBase(t, br)
 		}
-		c.emitLine(c.exprLine(t))
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndex, A: d, B: arr, C: int32(k)})
+		cur, cerr := c.coalesceISChain(wt, keys)
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+		if cerr != nil {
+			return 0, cerr
+		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: d, B: cur})
 		setter = func(r uint8) error {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: k, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+			arr, wb, err := c.indexBaseKeys(wt, keys, true)
+			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+			if err != nil {
+				return err
+			}
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: keys[len(keys)-1], C: int32(r)})
 			if wb != nil {
 				wb(arr)
 			}
@@ -18738,6 +18768,18 @@ func (c *compiler) indexBaseKeys(t *IndexExpr, keys []uint8, dimW bool) (uint8, 
 	a, err := c.expr(t.Arr)
 	if err != nil {
 		return 0, nil, err
+	}
+	// База — вызов функции, возвращающей значение по ссылке (`function &f()`):
+	// Zend делает FETCH_DIM_W прямо через возвращённую ссылку, поэтому запись
+	// меняет исходную ячейку (assign_coalesce_008). Читаем значение через
+	// OpRefGetRaw и возвращаем его назад через OpRefSetRaw — как для
+	// переменной-ссылки выше.
+	if call, ok := t.Arr.(*CallExpr); ok && c.refReturningFunc(call.Name) {
+		arr := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpRefGetRaw, A: arr, B: a})
+		return arr, func(r uint8) {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpRefSetRaw, A: a, B: r})
+		}, nil
 	}
 	return a, nil, nil
 }
@@ -20142,6 +20184,50 @@ func (c *compiler) coalesce(x *CoalesceExpr) (uint8, error) {
 	c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: d, B: r})
 	c.setJump(jf, c.chunk.Len())
 	return d, nil
+}
+
+// coalesceISChain компилирует IS-чтение цепочки индексов (Zend FETCH_DIM_IS)
+// с уже вычисленными ключами: keys имеет раскладку evalIndexKeys (keys[0] —
+// ключ самого глубокого уровня, keys[len-1] — ключ t). Для ArrayAccess
+// вызывается offsetExists, и лишь при существующем ключе — offsetGet.
+func (c *compiler) coalesceISChain(t *IndexExpr, keys []uint8) (uint8, error) {
+	var rec func(e Expr, idx int) (uint8, error)
+	rec = func(e Expr, idx int) (uint8, error) {
+		ix, ok := e.(*IndexExpr)
+		if !ok {
+			return c.expr(e)
+		}
+		base, err := rec(ix.Arr, idx-1)
+		if err != nil {
+			return 0, err
+		}
+		r := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSafeWarn, A: r, B: base, C: int32(keys[idx])})
+		return r, nil
+	}
+	return rec(t, len(keys)-1)
+}
+
+// indexChainBase возвращает самое глубокое не-индексное основание цепочки
+// `$a[k1][k2]...` (выражение, значение которого IS/W-фазы `??=` читают).
+func indexChainBase(e Expr) Expr {
+	for {
+		ix, ok := e.(*IndexExpr)
+		if !ok {
+			return e
+		}
+		e = ix.Arr
+	}
+}
+
+// cloneIndexChainWithBase копирует цепочку индексов, подменяя самое глубокое
+// основание на RegExpr с уже вычисленным значением: база-временное выражение
+// не должна вычисляться дважды (IS- и W-фазы `??=`).
+func cloneIndexChainWithBase(t *IndexExpr, base uint8) *IndexExpr {
+	if inner, ok := t.Arr.(*IndexExpr); ok {
+		return &IndexExpr{Arr: cloneIndexChainWithBase(inner, base), Key: t.Key}
+	}
+	return &IndexExpr{Arr: &RegExpr{Reg: base}, Key: t.Key}
 }
 
 // exprCoalesceBase компилирует левую часть `??` в IS-режиме: вложенные

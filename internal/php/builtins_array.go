@@ -3299,6 +3299,33 @@ func arrayMultisortFn(ctx *vm.Context) vm.Value {
 	for i := range perm {
 		perm[i] = i
 	}
+	// Zend конвертирует элементы в строку при SORT_STRING/SORT_NATURAL: объект
+	// без __toString — Error (array_multisort_exception).
+	for ci := range cols {
+		c := &cols[ci]
+		if f := c.flags &^ 8; f != 2 && f != 6 {
+			continue
+		}
+		for _, e := range c.elems {
+			v := derefSlot(e.v)
+			if v.Type() != vm.ObjectType {
+				continue
+			}
+			if _, ok := objectToStringVia(ctx, v); ok {
+				continue
+			}
+			ci2 := ctx.VM().SlotClassInfo(v)
+			name := "object"
+			if ci2 != nil {
+				name = vm.ClassDisplayName(ci2.Name())
+			}
+			ctx.Throw(vm.NewThrowable("Error", "Object of class "+name+" could not be converted to string"))
+			if ctx.HasThrown() {
+				return *new(vm.Value)
+			}
+			return vm.Bool(false)
+		}
+	}
 	sort.SliceStable(perm, func(i, j int) bool {
 		pi, pj := perm[i], perm[j]
 		for ci := range cols {

@@ -4708,6 +4708,18 @@ func constClassNameNonString(e Expr) bool {
 	return false
 }
 
+// constClassNameScalarLiteral сообщает, что выражение — прямой литерал
+// int/float: Zend отвергает его как имя класса даже в `::class`
+// («Illegal class name»), тогда как прочие константные выражения
+// (bool/null/массив/арифметика) вычисляются с «Cannot use "::class" on T».
+func constClassNameScalarLiteral(e Expr) bool {
+	switch e.(type) {
+	case *IntLit, *FloatLit:
+		return true
+	}
+	return false
+}
+
 // postfixTail разбирает остаток postfix-цепочки для уже разобранного выражения.
 func (p *Parser) postfixTail(x Expr) (Expr, error) {
 	for {
@@ -4765,7 +4777,7 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 			p.next()
 			t := p.next()
 			isClassKw := t.Kind != TVar && t.Kind != TOp && strings.EqualFold(t.Val, "class")
-			if !isClassKw && constClassNameNonString(x) {
+			if constClassNameNonString(x) && !(isClassKw && !constClassNameScalarLiteral(x)) {
 				line := 0
 				if p.exprLines != nil {
 					line = p.exprLines[x]

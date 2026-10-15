@@ -212,6 +212,10 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 	var fnScope ClassInfo
 	if cl.Fn != nil {
 		fnScope = cl.Fn.Scope
+	} else if cl.Fake && cl.Scope != nil {
+		// Фейковое замыкание из __call/__callStatic (Fn == nil): «функция» —
+		// метод класса, поэтому scope класса-источника и есть fnScope.
+		fnScope = cl.Scope
 	}
 	if newThis.typ == ObjectType {
 		if cl.Fn != nil && cl.Fn.IsStatic {
@@ -219,8 +223,12 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 			return MakeNull(), nil
 		}
 		if cl.Fake && fnScope != nil && !vm.slotInstanceOfClass(newThis, fnScope) {
+			mname := cl.MagicName
+			if cl.Fn != nil {
+				mname = cl.Fn.Name
+			}
 			vm.Warning(fmt.Sprintf("Cannot bind method %s::%s() to object of class %s",
-				ClassDisplayName(fnScope.Name()), cl.Fn.Name, ClassDisplayName(vm.classInfo(newThis).Name())))
+				ClassDisplayName(fnScope.Name()), mname, ClassDisplayName(vm.classInfo(newThis).Name())))
 			return MakeNull(), nil
 		}
 	} else {

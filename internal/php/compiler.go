@@ -2940,6 +2940,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_vivify_w", vivifyWBuiltin),
 		vm.Register("__php_next_index", nextIndexBuiltin),
 		vm.Register("__php_dyn_prop_deprecate", dynPropDeprecateBuiltin),
+		vm.Register("__php_prop_ref_check", propRefCheckBuiltin),
 		vm.Register("__php_dyn_static_isset", dynStaticIssetBuiltin),
 		vm.Register("__php_dyn_static_ref", dynStaticRefBuiltin),
 		vm.Register("__php_dyn_class_const", dynClassConstBuiltin),
@@ -3295,6 +3296,25 @@ func classOfBuiltin(ctx *vm.Context) vm.Slot {
 	return vm.MakeString("")
 }
 
+// propRefCheckBuiltin — проверка приёмника ссылочного присваивания свойства:
+// Zend берёт адрес свойства до вычисления RHS, поэтому не-объект-приёмник даёт
+// Error «Attempt to modify property "p" on null» первым (bug75241).
+func propRefCheckBuiltin(ctx *vm.Context) vm.Slot {
+	args := ctx.Args()
+	if len(args) < 2 {
+		return vm.MakeNull()
+	}
+	recv := derefSlot(args[0])
+	if recv.Type() == vm.ObjectType {
+		return vm.MakeNull()
+	}
+	if recv.Type() == vm.ClosureType {
+		return vm.MakeNull()
+	}
+	return throwErr(ctx, vm.NewThrowable("Error",
+		"Attempt to modify property "+strconv.Quote(derefSlot(args[1]).ToString())+" on "+phpTypeName(ctx, 0)))
+}
+
 // dynPropDeprecateBuiltin — Deprecated создания динамического свойства для
 // write-контекста чтения (`$o->p++`, `$o->p += 1`): свойство НЕ создаётся
 // (это делает последующая запись), поэтому чтение всё ещё печатает
@@ -3308,6 +3328,11 @@ func dynPropDeprecateBuiltin(ctx *vm.Context) vm.Slot {
 	ci := vmInst.SlotClassInfo(args[0])
 	o := vmInst.SlotObject(args[0])
 	if ci == nil || o == nil {
+		return vm.MakeNull()
+	}
+	// Магические __get/__set перехватывают обращение — динамическое свойство
+	// не создаётся, Deprecated не печатается (bug30889).
+	if vmInst.ClassHasMethod(ci, "__get") || vmInst.ClassHasMethod(ci, "__set") {
 		return vm.MakeNull()
 	}
 	vmInst.MaybeDeprecateDynamicProp(ci, o, args[1].ToString())
@@ -13666,7 +13691,11 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			return c.emitCall("__php_dyn_class_const", []uint8{clsReg, nm}), nil
 		}
 		if x.ClassExpr != nil {
-			// `EXPR::CONST` — класс, заданный выражением.
+			// `EXPR::CONST` — класс, заданный выражением. В константном
+			// выражении это запрещено (Zend zend_compile_class_const).
+			if c.constCtx || c.constEval > 0 {
+				return 0, &fatalError{msg: "Dynamic class names are not allowed in compile-time class constant references", line: c.exprLine(x)}
+			}
 			clsReg, err := c.expr(x.ClassExpr)
 			if err != nil {
 				return 0, err
@@ -13801,11 +13830,12 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 		case "~":
 			c.chunk.Emit(vm.Instruction{Op: vm.OpBitNot, A: d, B: r})
 		case "+":
-			// Унарный плюс — приведение к числу арифметикой (Zend: ADD с 0):
-			// нечисловая строка даёт Warning «A non-numeric value encountered».
+			// Унарный плюс — приведение к числу умножением на 1 (Zend
+			// компилирует ZEND_MUL с константой 1): float -0.0 сохраняет знак,
+			// ведуще-числовая строка даёт Warning, нечисловая — TypeError.
 			z := c.alloc()
-			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: z, C: int32(c.chunk.AddConst(vm.IntConst(0)))})
-			c.chunk.Emit(vm.Instruction{Op: vm.OpAdd, A: d, B: z, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: z, C: int32(c.chunk.AddConst(vm.IntConst(1)))})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpMul, A: d, B: z, C: int32(r)})
 			return d, nil
 		default:
 			return 0, fmt.Errorf("компилятор: неизвестный унарный оператор %q", x.Op)
@@ -14745,12 +14775,20 @@ func (c *compiler) closureExpr(e Expr) (uint8, error) {
 		suppressRead := false
 		if !ci.isArrow {
 			// `use ($x)`/`use (&$x)` с несуществующей переменной: Zend печатает
-			// «Undefined variable» в точке создания замыкания.
+			// «Undefined variable» в точке создания замыкания (OpGlobalGet в
+			// таблице глобалов предупреждает сам).
 			saveLine := c.curLine
 			c.curLine = ci.line
-			c.emitUndefReadWarn(sp.name, ci.line)
+			if c.useGlobal(sp.name) {
+				r := c.alloc()
+				c.emitLine(ci.line)
+				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGet, A: r,
+					C: int32(c.chunk.AddConst(vm.StrConst(c.globalKey(sp.name))))})
+				suppressRead = true
+			} else {
+				c.emitUndefReadWarn(sp.name, ci.line)
+			}
 			c.curLine = saveLine
-			suppressRead = c.useGlobal(sp.name)
 		}
 		if suppressRead {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
@@ -15553,9 +15591,21 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 			var v uint8
 			var err error
 			if el.ByRef && !byRefThisExpr(el.Val) {
-				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+				// Свойство/статик: ссылочная выборка сама не печатает
+				// «Undefined property», а Deprecated создания динамического
+				// свойства глушиться не должен (dynamic_prop_deprecation_002).
+				quiet := true
+				switch el.Val.(type) {
+				case *PropExpr, *StaticPropExpr:
+					quiet = false
+				}
+				if quiet {
+					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+				}
 				v, err = c.refCellForExpr(el.Val)
-				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+				if quiet {
+					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+				}
 			} else {
 				v, err = c.expr(el.Val)
 			}
@@ -15571,9 +15621,18 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 		}
 		var v uint8
 		if el.ByRef && !byRefThisExpr(el.Val) {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+			quiet := true
+			switch el.Val.(type) {
+			case *PropExpr, *StaticPropExpr:
+				quiet = false
+			}
+			if quiet {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+			}
 			v, err = c.refCellForExpr(el.Val)
-			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+			if quiet {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+			}
 		} else {
 			v, err = c.expr(el.Val)
 		}
@@ -16381,6 +16440,18 @@ func (c *compiler) assignRef(name string, value Expr) (uint8, error) {
 	if containsNullsafe(value) {
 		return 0, c.newFatal("Cannot take reference of a nullsafe chain")
 	}
+	// Результат специализированной встроенной функции (strlen/is_*/call_user_func
+	// и т.п.) — временный zval: `=&` в него запрещено на компиляции.
+	if ce, ok := value.(*CallExpr); ok {
+		for _, n := range []string{ce.Name, ce.Fallback} {
+			if n == "" {
+				continue
+			}
+			if specialFuncNames[strings.ToLower(strings.TrimPrefix(n, "\\"))] {
+				return 0, c.writeCtxBuiltinFatal(value)
+			}
+		}
+	}
 	if c.refAssignNoticeNeeded(value) {
 		if c.callReturnsByValue(value) {
 			// Известная функция без `function &`: Zend выдаёт Notice
@@ -17170,6 +17241,26 @@ func (c *compiler) decoupleCallRef(value Expr, srcCell uint8) uint8 {
 // assignPropRef компилирует `$o->p = &$x` / `$o->$n = &$x`.
 func (c *compiler) assignPropRef(t *PropExpr, value Expr) (uint8, error) {
 	obj, err := c.exprForWrite(t.Recv)
+	if err != nil {
+		return 0, err
+	}
+	// Zend сначала берёт адрес свойства (FETCH_OBJ_W/REF) и лишь затем
+	// вычисляет RHS: диагностика не-объекта-приёмника срабатывает раньше
+	// (bug75241: «Attempt to modify property» вместо ошибки из RHS).
+	{
+		nm := c.alloc()
+		if t.NameExpr != nil {
+			r, nerr := c.expr(t.NameExpr)
+			if nerr != nil {
+				return 0, nerr
+			}
+			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: nm, B: r})
+		} else {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nm,
+				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
+		}
+		c.emitCall("__php_prop_ref_check", []uint8{obj, nm})
+	}
 	if err != nil {
 		return 0, err
 	}

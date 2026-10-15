@@ -1,5 +1,7 @@
 package vm
 
+import "fmt"
+
 import (
 	"math"
 	"strconv"
@@ -1536,7 +1538,9 @@ func (vm *VM) magicGetValue(ci ClassInfo, o Slot, pname string) (Slot, error) {
 func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 	ci := vm.classInfo(recv)
 	if ci == nil {
-		return MakeRef(&Ref{v: MakeNull()}), nil
+		// FETCH_OBJ_W/REF по не-объекту — Error (Zend: «Attempt to modify
+		// property "p" on null», bug75241).
+		return Slot{}, NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", pname, valueTypeName(vm, deref(recv))))
 	}
 	if ci.IsEnum() {
 		return Slot{}, vm.enumWriteError(ci, recv, pname)
@@ -1650,7 +1654,14 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 		return cell, nil
 	}
 	// Создание нового динамического свойства по ссылке: те же ограничения,
-	// что и у обычной записи (WeakReference и т.п.).
+	// что и у обычной записи (WeakReference и т.п.), плюс Deprecated создания
+	// динамического свойства (PHP 8.2).
+	if err := checkDynamicProp(ci, pname); err != nil {
+		return Slot{}, err
+	}
+	vm.MaybeDeprecateDynamicProp(ci, vm.objectOf(recv), pname)
+	// Повторная проверка после обработчика ошибок: пользовательский
+	// error-handler мог уничтожить/изменить объект (dynamic_prop_deprecation_002).
 	if err := checkDynamicProp(ci, pname); err != nil {
 		return Slot{}, err
 	}

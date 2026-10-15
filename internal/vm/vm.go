@@ -818,6 +818,12 @@ func (vm *VM) HasFunction(name string) bool {
 // declare(strict_types=1); на время newInstance() атрибута действует режим
 // файла-объявления атрибута.
 func (vm *VM) StrictTypes() bool {
+	if vm.cufCall {
+		// call_user_func()/forward_static_call() вызывают внутренние функции
+		// с strict_types=0 (Zend zend_call_function не наследует строгость
+		// вызывающего файла) — call_user_func_strict_arginfo_check.
+		return false
+	}
 	if vm.attrStrictSet {
 		return vm.attrStrict
 	}
@@ -7199,15 +7205,17 @@ func (vm *VM) DynClassConst(cls Slot, name string) (Slot, error) {
 // name»), а имя "class" даёт имя класса.
 func (vm *VM) DynClassConstValue(cls Slot, nameSlot Slot) (Slot, error) {
 	ns := deref(nameSlot)
+	// Zend резолвит класс ДО проверки имени: `y::{5}::y` даёт «Class "y" not
+	// found», а не ошибку типа имени (gh10486).
+	ci, cerr := vm.DynClassByName(cls)
+	if cerr != nil {
+		return Slot{}, cerr
+	}
 	if ns.typ != StringType {
 		return Slot{}, NewThrowable("Error", "Cannot use value of type "+operandTypeName(ns)+" as class constant name")
 	}
 	name := ns.StringVal()
 	if strings.EqualFold(name, "class") {
-		ci, err := vm.DynClassByName(cls)
-		if err != nil {
-			return Slot{}, err
-		}
 		return MakeString(ci.Name()), nil
 	}
 	return vm.DynClassConst(cls, name)

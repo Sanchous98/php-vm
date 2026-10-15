@@ -4397,22 +4397,22 @@ func (vm *VM) exec(chunk *Chunk) error {
 			// Fused-путь `строка . int` и `int . int`: одна аллокация вместо
 			// двух (без промежуточной int-строки). Семантика/диагностики не
 			// меняются: обе ветки — чистые типы без __toString/warning о
-			// массиве, поэтому быстрый путь включается только для них.
-			if lb := deref(regs[in.B]); lb.num&bufBit == 0 {
-				if lb.typ == StringType {
-					if rb := deref(regs[in.C]); rb.typ == IntType {
+			// массиве. Вход в быстрый путь — по сырому типу ПРАВОГО операнда
+			// (int), поэтому для обычной все-строковой склейки проверка —
+			// один сравнительный переход, без deref; ссылки уходят в общий путь.
+			if regs[in.C].typ == IntType {
+				if lb := deref(regs[in.B]); lb.num&bufBit == 0 {
+					if lb.typ == StringType {
 						old := regs[in.A]
-						wv := concatStrInt(lb.StringVal(), rb.Int())
+						wv := concatStrInt(lb.StringVal(), regs[in.C].Int())
 						regs[in.A] = wv
 						if trackedType(old.typ) || trackedType(wv.typ) {
 							vm.wRegSlow(int(in.A), old)
 						}
 						continue
-					}
-				} else if lb.typ == IntType {
-					if rb := deref(regs[in.C]); rb.typ == IntType {
+					} else if lb.typ == IntType {
 						old := regs[in.A]
-						wv := concatIntInt(lb.Int(), rb.Int())
+						wv := concatIntInt(lb.Int(), regs[in.C].Int())
 						regs[in.A] = wv
 						if trackedType(old.typ) || trackedType(wv.typ) {
 							vm.wRegSlow(int(in.A), old)
@@ -4460,11 +4460,12 @@ func (vm *VM) exec(chunk *Chunk) error {
 		case OpConcatApp:
 			// `.=` : A = B . C с накоплением в буфере B. Быстрый путь
 			// `строка .= int`: цифры форматируются прямо в буфер (без
-			// промежуточной int-строки).
-			if lb := deref(regs[in.B]); lb.typ == StringType {
-				if rb := deref(regs[in.C]); rb.typ == IntType {
+			// промежуточной int-строки). Вход — по сырому типу C (int), так
+			// что обычное `строка .= строка` платит один сравнительный переход.
+			if regs[in.C].typ == IntType {
+				if lb := deref(regs[in.B]); lb.typ == StringType {
 					old := regs[in.A]
-					wv := appendStrBufInt(lb, lb.StringVal(), rb.Int())
+					wv := appendStrBufInt(lb, lb.StringVal(), regs[in.C].Int())
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 // builtins — встроенные функции, доступные компилируемому коду.
@@ -204,22 +205,39 @@ func builtins() []*vm.Function {
 			if s == "" {
 				return vm.Str("")
 			}
-			return vm.Str(asciiUpper(s[:1]) + s[1:])
+			c := s[0]
+			if c < 'a' || c > 'z' {
+				return vm.Str(s)
+			}
+			buf := make([]byte, len(s))
+			copy(buf, s)
+			buf[0] = c - 32
+			return vm.Str(unsafe.String(&buf[0], len(buf)))
 		}),
 		vm.Register("lcfirst", func(ctx *vm.Context) vm.Value {
 			s := arg0(ctx).ToString()
 			if s == "" {
 				return vm.Str("")
 			}
-			return vm.Str(asciiLower(s[:1]) + s[1:])
+			c := s[0]
+			if c < 'A' || c > 'Z' {
+				return vm.Str(s)
+			}
+			buf := make([]byte, len(s))
+			copy(buf, s)
+			buf[0] = c + 32
+			return vm.Str(unsafe.String(&buf[0], len(buf)))
 		}),
 		vm.Register("ucwords", ucwordsFn),
 		vm.Register("strrev", func(ctx *vm.Context) vm.Value {
 			b := []byte(arg0(ctx).ToString())
+			if len(b) == 0 {
+				return vm.Str("")
+			}
 			for i, j := 0, len(b)-1; i < j; i, j = i+1, j-1 {
 				b[i], b[j] = b[j], b[i]
 			}
-			return vm.Str(string(b))
+			return vm.Str(unsafe.String(&b[0], len(b)))
 		}),
 		vm.Register("trim", func(ctx *vm.Context) vm.Value {
 			return vm.Str(trimString(ctx, "trim", true, true))
@@ -952,8 +970,11 @@ func builtins() []*vm.Function {
 		vm.Register("str_split", strSplitFn),
 		vm.Register("str_shuffle", func(ctx *vm.Context) vm.Value {
 			b := []byte(arg0(ctx).ToString())
+			if len(b) == 0 {
+				return vm.Str("")
+			}
 			phpShuffle(len(b), func(i, j int) { b[i], b[j] = b[j], b[i] })
-			return vm.Str(string(b))
+			return vm.Str(unsafe.String(&b[0], len(b)))
 		}),
 		vm.Register("strtok", strtokFn),
 		vm.Register("str_word_count", strWordCountFn),
@@ -987,7 +1008,7 @@ func builtins() []*vm.Function {
 			return vm.Int(phpStrCmpRaw(arg(ctx, 0).ToString(), arg(ctx, 1).ToString()))
 		}),
 		vm.Register("strcasecmp", func(ctx *vm.Context) vm.Value {
-			return vm.Int(phpStrCmpRaw(asciiLower(arg(ctx, 0).ToString()), asciiLower(arg(ctx, 1).ToString())))
+			return vm.Int(phpStrCaseCmpRaw(arg(ctx, 0).ToString(), arg(ctx, 1).ToString(), -1))
 		}),
 		vm.Register("strncmp", func(ctx *vm.Context) vm.Value {
 			n := int(arg(ctx, 2).ToInt())
@@ -1007,7 +1028,7 @@ func builtins() []*vm.Function {
 					return *new(vm.Value)
 				}
 			}
-			return vm.Int(phpStrCmpRaw(clipLen(asciiLower(arg(ctx, 0).ToString()), n), clipLen(asciiLower(arg(ctx, 1).ToString()), n)))
+			return vm.Int(phpStrCaseCmpRaw(arg(ctx, 0).ToString(), arg(ctx, 1).ToString(), n))
 		}),
 		vm.Register("strrchr", func(ctx *vm.Context) vm.Value {
 			h := arg(ctx, 0).ToString()
@@ -1057,9 +1078,17 @@ func builtins() []*vm.Function {
 		vm.Register("html_entity_decode", htmlEntityDecodeFn),
 		vm.Register("htmlspecialchars_decode", htmlSpecialcharsDecodeFn),
 		vm.Register("count_chars", countCharsFn),
-		vm.Register("bin2hex", func(ctx *vm.Context) vm.Value { return vm.Str(hex.EncodeToString([]byte(arg0(ctx).ToString()))) }),
+		vm.Register("bin2hex", func(ctx *vm.Context) vm.Value {
+			if b, ok := arg0(ctx).ReadOnlyBytes(); ok {
+				return vm.Str(hex.EncodeToString(b))
+			}
+			return vm.Str(hex.EncodeToString([]byte(arg0(ctx).ToString())))
+		}),
 		vm.Register("hex2bin", hex2binFn),
 		vm.Register("base64_encode", func(ctx *vm.Context) vm.Value {
+			if b, ok := arg0(ctx).ReadOnlyBytes(); ok {
+				return vm.Str(base64.StdEncoding.EncodeToString(b))
+			}
 			return vm.Str(base64.StdEncoding.EncodeToString([]byte(arg0(ctx).ToString())))
 		}),
 		vm.Register("base64_decode", base64DecodeFn),

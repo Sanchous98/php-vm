@@ -432,6 +432,19 @@ func html5MultiEntityAt(s string, start int) (string, int, bool) {
 
 // htmlEncodeCore реализует php_escape_html_entities_ex.
 func htmlEncodeCore(s string, flags int64, doubleEncode, allArg bool, enc string) string {
+	// Fast path: чисто ASCII и нет ни одного символа, который может быть
+	// заменён (& < > " '). Тогда результат совпадает с входом при любых флагах.
+	plain := true
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 0x80 || c == '&' || c == '<' || c == '>' || c == '"' || c == '\'' {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
 	cs := enc
 	doctype := flags & 48
 	quote := flags & 3

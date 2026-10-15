@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 // Файл содержит встроенные функции обработки строк: sprintf/pack/unpack,
@@ -424,21 +425,29 @@ func strPadFn(ctx *vm.Context) vm.Value {
 		}
 	}
 	need := n - len(s)
-	mk := func(k int) string {
-		if k <= 0 {
-			return ""
-		}
-		return strings.Repeat(pad, k/len(pad)+1)[:k]
+	if need <= 0 {
+		return vm.Str(s)
 	}
+	fill := func(dst []byte) {
+		for j := range dst {
+			dst[j] = pad[j%len(pad)]
+		}
+	}
+	buf := make([]byte, n)
 	switch padType {
 	case 0: // STR_PAD_LEFT
-		return vm.Str(mk(need) + s)
+		fill(buf[:need])
+		copy(buf[need:], s)
 	case 2: // STR_PAD_BOTH
 		left := need / 2
-		return vm.Str(mk(left) + s + mk(need-left))
+		fill(buf[:left])
+		copy(buf[left:], s)
+		fill(buf[left+len(s):])
 	default:
-		return vm.Str(s + mk(need))
+		copy(buf, s)
+		fill(buf[len(s):])
 	}
+	return vm.Str(unsafe.String(&buf[0], n))
 }
 
 func strSplitFn(ctx *vm.Context) vm.Value {
@@ -1517,14 +1526,35 @@ func pad(s string, width int64, leftAlign, zeroPad bool, padChar byte) string {
 	} else if zeroPad {
 		fill = '0'
 	}
-	padding := strings.Repeat(string(fill), int(width)-len(s))
-	if leftAlign {
-		return s + padding
+	total := int(width)
+	padLen := total - len(s)
+	// Знак числа + zeroPad: знак впереди, затем нули, затем цифры.
+	sign := byte(0)
+	body := s
+	if !leftAlign && fill == '0' && len(s) > 0 && (s[0] == '-' || s[0] == '+') {
+		sign = s[0]
+		body = s[1:]
 	}
-	if fill == '0' && len(s) > 0 && (s[0] == '-' || s[0] == '+') {
-		return string(s[0]) + padding + s[1:]
+	buf := make([]byte, total)
+	switch {
+	case leftAlign:
+		copy(buf, s)
+		for i := len(s); i < total; i++ {
+			buf[i] = fill
+		}
+	case sign != 0:
+		buf[0] = sign
+		for i := 1; i <= padLen; i++ {
+			buf[i] = fill
+		}
+		copy(buf[1+padLen:], body)
+	default:
+		for i := 0; i < padLen; i++ {
+			buf[i] = fill
+		}
+		copy(buf[padLen:], s)
 	}
-	return padding + s
+	return unsafe.String(&buf[0], total)
 }
 
 // --- дополнительные строковые функции ---
@@ -1567,7 +1597,37 @@ func phpStrCmpRaw(a, b string) int64 {
 	return 0
 }
 
-func stripslashesFn(ctx *vm.Context) vm.Value {
+// phpStrCaseCmpRaw — как phpStrCmpRaw, но с ASCII-свёрткой регистра на лету и
+// ограничением длины (limit < 0 — без ограничения). Без аллокаций: полностью
+// эквивалентно phpStrCmpRaw(clipLen(asciiLower(a), limit), clipLen(asciiLower(b), limit)).
+func phpStrCaseCmpRaw(a, b string, limit int) int64 {
+	na, nb := len(a), len(b)
+	if limit >= 0 {
+		if limit < na {
+			na = limit
+		}
+		if limit < nb {
+			nb = limit
+		}
+	}
+	n := na
+	if nb < n {
+		n = nb
+	}
+	for i := 0; i < n; i++ {
+		ca, cb := asciiLowerByte(a[i]), asciiLowerByte(b[i])
+		if ca != cb {
+			return int64(ca) - int64(cb)
+		}
+	}
+	if na < nb {
+		return -1
+	}
+	if na > nb {
+		return 1
+	}
+	return 0
+}
 	s := arg0(ctx).ToString()
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -1588,16 +1648,22 @@ func stripslashesFn(ctx *vm.Context) vm.Value {
 }
 
 func strRot13(s string) string {
-	b := []byte(s)
-	for i, c := range b {
+	if len(s) == 0 {
+		return s
+	}
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		switch {
 		case c >= 'a' && c <= 'z':
 			b[i] = 'a' + (c-'a'+13)%26
 		case c >= 'A' && c <= 'Z':
 			b[i] = 'A' + (c-'A'+13)%26
+		default:
+			b[i] = c
 		}
 	}
-	return string(b)
+	return unsafe.String(&b[0], len(b))
 }
 
 func wordwrapFn(ctx *vm.Context) vm.Value {
@@ -7180,24 +7246,49 @@ func argToStringVal(ctx *vm.Context, i int) string {
 
 // asciiLower/asciiUpper — регистронезависимость только для ASCII (как в PHP:
 // strtolower/strtoupper не трогают байты >0x7F и не портят невалидный UTF-8).
+//
+// Если менять нечего — возвращается исходная строка (без аллокации), иначе одна
+// аллокация и возврат через unsafe.String (без второй копии string(buf)).
 func asciiLower(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'A' && c <= 'Z' {
-			b[i] = c + 32
+	i := 0
+	for i < len(s) {
+		if c := s[i]; c >= 'A' && c <= 'Z' {
+			break
+		}
+		i++
+	}
+	if i == len(s) {
+		return s
+	}
+	buf := make([]byte, len(s))
+	copy(buf, s)
+	for j := i; j < len(buf); j++ {
+		if c := buf[j]; c >= 'A' && c <= 'Z' {
+			buf[j] = c + 32
 		}
 	}
-	return string(b)
+	return unsafe.String(&buf[0], len(buf))
 }
 
 func asciiUpper(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if c >= 'a' && c <= 'z' {
-			b[i] = c - 32
+	i := 0
+	for i < len(s) {
+		if c := s[i]; c >= 'a' && c <= 'z' {
+			break
+		}
+		i++
+	}
+	if i == len(s) {
+		return s
+	}
+	buf := make([]byte, len(s))
+	copy(buf, s)
+	for j := i; j < len(buf); j++ {
+		if c := buf[j]; c >= 'a' && c <= 'z' {
+			buf[j] = c - 32
 		}
 	}
-	return string(b)
+	return unsafe.String(&buf[0], len(buf))
 }
 
 // --- parse_str ---

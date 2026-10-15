@@ -5989,6 +5989,26 @@ func (vm *VM) exec(chunk *Chunk) error {
 				continue
 			}
 		case OpPropGet:
+			// Ультра-быстрый путь в самом диспетчере (IC прогрет): пропускает
+			// вызов обработчика и его ранние guard'ы. Медленный путь — ниже.
+			if recv := deref(regs[in.B]); recv.typ == ObjectType {
+				if ci := vm.classInfo(recv); ci != nil {
+					if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastGet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClass == ci {
+						ob := (*Object)(recv.ptr)
+						if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
+							if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
+								old := regs[in.A]
+								regs[in.A] = s
+								if trackedType(old.typ) || trackedType(s.typ) {
+									vm.wRegSlow(int(in.A), old)
+								}
+								shareSlot(s)
+								break
+							}
+						}
+					}
+				}
+			}
 			if hr := vm.opPropGet(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
@@ -6086,6 +6106,30 @@ func (vm *VM) exec(chunk *Chunk) error {
 				continue
 			}
 		case OpPropSet:
+			// Ультра-быстрый путь в диспетчере (IC прогрет): публичное
+			// нетипизированное не-readonly свойство в слоте.
+			if d := deref(regs[in.A]); d.typ == ObjectType {
+				if ci := vm.classInfo(d); ci != nil && !ci.IsEnum() {
+					if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastSet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClass == ci {
+						ob := (*Object)(d.ptr)
+						if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
+							cur := ob.slots[ic.propIdx]
+							if cur.typ != RefType && cur.typ != slotUninit {
+								val := deref(regs[in.B])
+								ob.slots[ic.propIdx] = val
+								vm.noteDropped(cur)
+								vm.noteStored(val)
+								old := regs[in.B]
+								regs[in.B] = val
+								if trackedType(old.typ) || trackedType(val.typ) {
+									vm.wRegSlow(int(in.B), old)
+								}
+								break
+							}
+						}
+					}
+				}
+			}
 			if hr := vm.opPropSet(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
@@ -8588,6 +8632,8 @@ func (vm *VM) icProp(ci ClassInfo, name string, nameC int32, chunk *Chunk) (*pro
 		if ok && pd != nil && pd.vis != Public && vm.propAccessErr(pd, decl, name) != nil {
 			ic.propAccess = false
 		}
+		ic.propFastGet = ok && idx >= 0 && (ic.propAccess || (pd != nil && pd.vis == Public))
+		ic.propFastSet = ic.propFastGet && pd != nil && !pd.readonly && !pd.hasType
 	}
 	return pd, decl, key, idx, ok
 }

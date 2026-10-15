@@ -14,6 +14,7 @@ varSyntax, arrow_functions, anon и др.). Список — `wavebench/lists/z3
 | контроль: затронутые подкаталоги целиком (`Zend/tests/{anon,arrow_functions,assert,attributes,constants,constexpr,enum,fibers,function_arguments,generators,grammar,in-de-crement,match,nullsafe_operator,numeric_strings,object_types,readonly_classes,readonly_props,restrict_globals,return_types,throw,traits,type_declarations,typehints,varSyntax,weakrefs,zend_ini}`) | 1471/1513 → **1478/1513 (97.7%)**, все провалы — тесты из моего списка или из списков других агентов (`fails_*`, `z2_*`, `root_*`); регрессий нет |
 | контроль: весь `Zend/tests` чанками по 400 (PHPT_OFFSET/PHPT_LIMIT) | без изменений множества провалов по чанкам; чанки 400/800/2000 — предсуществующее зависание (`decRefsSeen` на больших массивах в `wRegSlow`, воспроизводится и до правок) |
 | перф | изменений нет (правки вне горячих путей; `trackedType`/инлайн-опкоды не трогались) |
+| Go-набор репозитория (`go test ./internal/...`) | только предсуществующий `TestRegress21` (проверено на базе 5edebad в отдельном worktree — падает и там) |
 
 ## Сделанные фиксы (по кластерам)
 

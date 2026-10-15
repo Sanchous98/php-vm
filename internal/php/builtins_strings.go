@@ -532,19 +532,39 @@ type byteMask [4]uint64
 func (m *byteMask) set(c byte)     { m[c>>6] |= 1 << (c & 63) }
 func (m byteMask) has(c byte) bool { return m[c>>6]&(1<<(c&63)) != 0 }
 
-// defaultTrimMask — дефолтный charlist trim/ltrim/rtrim: " \t\n\r\0\x0B".
-var defaultTrimMask = func() (m byteMask) {
-	for _, c := range []byte(" \t\n\r\x00\x0B") {
-		m.set(c)
-	}
-	return
-}()
-
-func trimChars(ctx *vm.Context, name string) byteMask {
+// trimString — общий вход trim/ltrim/rtrim/chop. Для простого ASCII-charlist
+// без диапазонов `..` используется strings.Trim*: все символы набора
+// однобайтовые, поэтому байтовая семантика PHP совпадает с рунной семантикой
+// Go. Диапазоны (`a..z`) и не-ASCII charlist разбираются вручную
+// (php_charmask) с побайтовой маской.
+func trimString(ctx *vm.Context, name string, left, right bool) string {
+	s := slotString(ctx, arg0(ctx))
+	cut := " \t\n\r\x00\x0B"
 	if len(ctx.Args()) >= 2 {
-		return expandCharList(ctx, name, arg(ctx, 1).ToString())
+		cut = arg(ctx, 1).ToString()
 	}
-	return defaultTrimMask
+	if !strings.Contains(cut, "..") && asciiOnlyStr(cut) {
+		switch {
+		case left && right:
+			return strings.Trim(s, cut)
+		case left:
+			return strings.TrimLeft(s, cut)
+		default:
+			return strings.TrimRight(s, cut)
+		}
+	}
+	return trimWith(s, expandCharList(ctx, name, cut), left, right)
+}
+
+// asciiOnlyStr — все байты строки < 0x80 (для неё рунная семантика
+// strings.Trim* совпадает с байтовой семантикой PHP).
+func asciiOnlyStr(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // slotString приводит слот к строке, вызывая __toString() у объектов.

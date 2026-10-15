@@ -210,16 +210,16 @@ func builtins() []*vm.Function {
 			return vm.Str(string(b))
 		}),
 		vm.Register("trim", func(ctx *vm.Context) vm.Value {
-			return vm.Str(trimWith(slotString(ctx, arg0(ctx)), trimChars(ctx, "trim"), true, true))
+			return vm.Str(trimString(ctx, "trim", true, true))
 		}),
 		vm.Register("ltrim", func(ctx *vm.Context) vm.Value {
-			return vm.Str(trimWith(slotString(ctx, arg0(ctx)), trimChars(ctx, "ltrim"), true, false))
+			return vm.Str(trimString(ctx, "ltrim", true, false))
 		}),
 		vm.Register("rtrim", func(ctx *vm.Context) vm.Value {
-			return vm.Str(trimWith(slotString(ctx, arg0(ctx)), trimChars(ctx, "rtrim"), false, true))
+			return vm.Str(trimString(ctx, "rtrim", false, true))
 		}),
 		vm.Register("chop", func(ctx *vm.Context) vm.Value {
-			return vm.Str(trimWith(slotString(ctx, arg0(ctx)), trimChars(ctx, "rtrim"), false, true))
+			return vm.Str(trimString(ctx, "rtrim", false, true))
 		}),
 		vm.Register("substr", substrFn),
 		vm.Register("strpos", func(ctx *vm.Context) vm.Value { return strposFn(ctx, false, false) }),

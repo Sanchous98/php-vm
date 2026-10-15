@@ -1208,7 +1208,10 @@ func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 	// Быстрый путь целочисленного ключа: без конверсии в ArrayKey.
 	if ks := deref(regs[in.B]); ks.typ == IntType {
 		a := arr.AsArray().Unshare()
-		cur, found := a.GetInt(ks.Int())
+		cur, found, set, serr := a.SetIntOld(ks.Int(), regs[in.C])
+		if serr != nil {
+			return execResult{err: serr}
+		}
 		if found && cur.typ == RefType {
 			if r := cur.Ref(); r != nil {
 				if err := vm.writeRef(r, regs[in.C], vm.chunk != nil && vm.chunk.Strict); err != nil {
@@ -1231,14 +1234,17 @@ func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 				return execResult{}
 			}
 		}
+		if found && cur.typ == RefType && !set {
+			// Мёртвая ссылка: SetIntOld не записал — дозаписываем значение.
+			if err := a.SetInt(ks.Int(), regs[in.C]); err != nil {
+				return execResult{err: err}
+			}
+		}
 		if found && cur.typ != RefType {
 			vm.noteDropped(cur)
 		}
 		vm.noteStored(regs[in.C])
 		vm.noteSelfRefArray(a, regs[in.C])
-		if err := a.SetInt(ks.Int(), regs[in.C]); err != nil {
-			return execResult{err: err}
-		}
 		{
 			old := regs[in.A]
 			wv := MakeArray(a)
@@ -1261,7 +1267,10 @@ func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 		return execResult{next: true}
 	}
 	a := arr.AsArray().Unshare()
-	cur, found := a.Get(k)
+	cur, found, set, serr := a.SetOld(k, regs[in.C])
+	if serr != nil {
+		return execResult{err: serr}
+	}
 	if found && cur.typ == RefType {
 		if r := cur.Ref(); r != nil {
 			if err := vm.writeRef(r, regs[in.C], vm.chunk != nil && vm.chunk.Strict); err != nil {
@@ -1284,14 +1293,17 @@ func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 			return execResult{}
 		}
 	}
+	if found && cur.typ == RefType && !set {
+		// Мёртвая ссылка: SetOld не записал — дозаписываем значение.
+		if err := a.Set(k, regs[in.C]); err != nil {
+			return execResult{err: err}
+		}
+	}
 	if found && cur.typ != RefType {
 		vm.noteDropped(cur)
 	}
 	vm.noteStored(regs[in.C])
 	vm.noteSelfRefArray(a, regs[in.C])
-	if err := a.Set(k, regs[in.C]); err != nil {
-		return execResult{err: err}
-	}
 	{
 		old := regs[in.A]
 		wv := MakeArray(a)

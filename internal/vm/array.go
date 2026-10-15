@@ -585,11 +585,27 @@ func (a *Array) Set(k ArrayKey, v Slot) error {
 			a.mStr = make(map[string]int32)
 		}
 		a.mStr[k.s] = int32(len(a.entries))
-		a.entries = append(a.entries, KV{key: k, val: v, live: true})
+		a.appendEntry(KV{key: k, val: v, live: true})
 		a.noteVal(v)
 		return nil
 	}
 	return a.SetInt(k.i, v)
+}
+
+// appendEntry добавляет элемент с явным удвоением ёмкости: у Go рост среза
+// при больших len — ~1.25×, из-за чего построение 150k-массива давало десятки
+// перевыделений с копированием (perf2: 78 МБ аллокаций на итерацию).
+func (a *Array) appendEntry(kv KV) {
+	if len(a.entries) == cap(a.entries) {
+		n := 2 * cap(a.entries)
+		if n < 16 {
+			n = 16
+		}
+		ne := make([]KV, len(a.entries), n)
+		copy(ne, a.entries)
+		a.entries = ne
+	}
+	a.entries = append(a.entries, kv)
 }
 
 // SetInt — установка значения по int-ключу (горячий путь $a[$i] = v).
@@ -624,7 +640,7 @@ func (a *Array) SetInt(k int64, v Slot) error {
 		a.mInt = make(map[int64]int32)
 	}
 	a.mInt[k] = int32(len(a.entries))
-	a.entries = append(a.entries, KV{key: intKey(k), val: v, live: true})
+	a.appendEntry(KV{key: intKey(k), val: v, live: true})
 	a.noteVal(v)
 	if k >= a.nextFree {
 		if k < math.MaxInt64 {
@@ -634,6 +650,80 @@ func (a *Array) SetInt(k int64, v Slot) error {
 		}
 	}
 	return nil
+}
+
+// SetIntOld — как SetInt, но возвращает прежнее значение за ОДИН lookup
+// (горячий путь $a[$k] = v без двойного похода в map). Если по ключу лежит
+// Ref-ячейка, значение НЕ перезаписывается: found=true, set=false, old —
+// ячейка ссылки (вызывающий пишет сквозь неё; мёртвую ссылку дозаписывает
+// сам через SetInt).
+func (a *Array) SetIntOld(k int64, v Slot) (old Slot, found, set bool, err error) {
+	if a.packed {
+		old, found = a.GetInt(k)
+		if found && old.typ == RefType {
+			return old, true, false, nil
+		}
+		if serr := a.SetInt(k, v); serr != nil {
+			return Slot{}, false, false, serr
+		}
+		return old, found, true, nil
+	}
+	if idx, ok := a.mInt[k]; ok {
+		old = a.entries[idx].val
+		if old.typ == RefType {
+			return old, true, false, nil
+		}
+		a.entries[idx].val = v
+		a.noteVal(v)
+		return old, true, true, nil
+	}
+	if len(a.entries) >= maxEntries {
+		return Slot{}, false, false, errArrayTooLarge
+	}
+	if a.mInt == nil {
+		a.mInt = make(map[int64]int32)
+	}
+	a.mInt[k] = int32(len(a.entries))
+	a.appendEntry(KV{key: intKey(k), val: v, live: true})
+	a.noteVal(v)
+	if k >= a.nextFree {
+		if k < math.MaxInt64 {
+			a.nextFree = k + 1
+		} else {
+			a.nextFree = math.MaxInt64
+		}
+	}
+	return Slot{}, false, true, nil
+}
+
+// SetOld — как Set, но возвращает прежнее значение за один lookup
+// (см. SetIntOld про Ref-ячейки).
+func (a *Array) SetOld(k ArrayKey, v Slot) (old Slot, found, set bool, err error) {
+	if k.str {
+		if a.packed {
+			a.toMixed()
+		}
+		if idx, ok := a.mStr[k.s]; ok {
+			old = a.entries[idx].val
+			if old.typ == RefType {
+				return old, true, false, nil
+			}
+			a.entries[idx].val = v
+			a.noteVal(v)
+			return old, true, true, nil
+		}
+		if len(a.entries) >= maxEntries {
+			return Slot{}, false, false, errArrayTooLarge
+		}
+		if a.mStr == nil {
+			a.mStr = make(map[string]int32)
+		}
+		a.mStr[k.s] = int32(len(a.entries))
+		a.appendEntry(KV{key: k, val: v, live: true})
+		a.noteVal(v)
+		return Slot{}, false, true, nil
+	}
+	return a.SetIntOld(k.i, v)
 }
 
 // Unset удаляет ключ (tombstone: соседи не сдвигаются). Вызывающий обязан

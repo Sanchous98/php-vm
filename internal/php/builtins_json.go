@@ -87,15 +87,18 @@ func jsonLastErrorMsg(code int) string {
 
 // --- JSON ENCODE ---
 
+// jsonEncoder отдаёт значения jsontext.Encoder: всю запись JSON (синтаксис,
+// разделители, отступы, кавычки, экранирование строк, формат чисел) ведёт
+// stdlib; наш код только обходит PHP-значения и вызывает методы энкодера —
+// собственных записей байтов в буфер нет (out — приёмник вывода энкодера).
 type jsonEncoder struct {
 	vm       *vm.VM
 	ctx      *vm.Context
-	buf      strings.Builder
+	out      strings.Builder
+	enc      *jsontext.Encoder
 	flags    int64
 	maxDepth int
-	pretty   bool
 	err      int
-	qbuf     []byte // скретч для jsontext.AppendQuote — без аллокаций на строку
 }
 
 type jsonEntry struct {
@@ -112,19 +115,38 @@ func jsonEncodeFn(ctx *vm.Context) vm.Value {
 	if len(ctx.Args()) >= 3 && !arg(ctx, 2).IsNull() {
 		depth = int(arg(ctx, 2).ToInt())
 	}
-	e := &jsonEncoder{vm: ctx.VM(), ctx: ctx, flags: flags, maxDepth: depth, pretty: flags&jsonPrettyPrint != 0}
-	// Грубая оценка выходного размера: без Grow Builder растёт аллокацией на
-	// каждое удвоение (на 100-ключевом массиве таких ~8).
+	e := &jsonEncoder{vm: ctx.VM(), ctx: ctx, flags: flags, maxDepth: depth}
+	// Грубая оценка выходного размера (единственный накопитель — итоговая строка).
 	root := arg0(ctx)
 	if root.Type() == vm.ArrayType {
 		if n := root.AsArray().Len(); n > 0 {
 			if n > 1<<18 {
-				e.buf.Grow(1 << 20)
+				e.out.Grow(1 << 20)
 			} else {
-				e.buf.Grow(2 + 16*n)
+				e.out.Grow(2 + 16*n)
 			}
 		}
 	}
+	// Опции энкодера: pretty-раскладка как у PHP (4 пробела, ": "), SUBSTITUTE
+	// невалидного UTF-8 — AllowInvalidUTF8 (U+FFFD вместо ошибки).
+	var opts []jsontext.Options
+	if flags&jsonPrettyPrint != 0 {
+		opts = append(opts, jsontext.Multiline(true), jsontext.WithIndent("    "), jsontext.SpaceAfterColon(true))
+	}
+	if flags&jsonInvalidUTF8Substitute != 0 {
+		// U+FFFD вместо ошибки — php-семантика JSON_INVALID_UTF8_SUBSTITUTE.
+		opts = append(opts, jsontext.AllowInvalidUTF8(true))
+	}
+	if flags&(jsonHexTag|jsonHexAmp) != 0 {
+		// JSON_HEX_TAG/HEX_AMP: '<', '>' и '&' уходят как \uXXXX (stdlib).
+		opts = append(opts, jsontext.EscapeForHTML(true))
+	}
+	if flags&jsonUnescapedUnicode == 0 || flags&jsonUnescapedLineTerminators == 0 {
+		// U+2028/2029 php экранирует, кроме JSON_UNESCAPED_LINE_TERMINATORS
+		// при включённом JSON_UNESCAPED_UNICODE.
+		opts = append(opts, jsontext.EscapeForJS(true))
+	}
+	e.enc = jsontext.NewEncoder(&e.out, opts...)
 	if !e.encode(root) {
 		jsonLastError = e.err
 		if flags&jsonThrowOnError != 0 {
@@ -136,7 +158,14 @@ func jsonEncodeFn(ctx *vm.Context) vm.Value {
 		return vm.Bool(false)
 	}
 	jsonLastError = 0
-	return vm.Str(e.buf.String())
+	out := e.out.String()
+	// Потоковый Encoder завершает документ переводом строки; json_encode его не
+	// отдаёт (json.Marshal снимает его внутренним OmitTopLevelNewline —
+	// публичной опции нет, поэтому срезаем у готовой строки).
+	if n := len(out); n > 0 && out[n-1] == '\n' {
+		out = out[:n-1]
+	}
+	return vm.Str(out)
 }
 
 // objImplementsJsonSerializable сообщает, реализует ли класс JsonSerializable.
@@ -152,12 +181,6 @@ func objImplementsJsonSerializable(ci vm.ClassInfo) bool {
 	return false
 }
 
-func (e *jsonEncoder) writeIndent(n int) {
-	for i := 0; i < n; i++ {
-		e.buf.WriteString("    ")
-	}
-}
-
 func (e *jsonEncoder) encode(v vm.Slot) bool {
 	return e.encodeDepth(v, 0)
 }
@@ -169,15 +192,11 @@ func (e *jsonEncoder) encodeDepth(v vm.Slot, depth int) bool {
 	}
 	switch v.Type() {
 	case vm.NullType:
-		e.buf.WriteString("null")
+		return e.writeToken(jsontext.Null)
 	case vm.BoolType:
-		if v.ToBool() {
-			e.buf.WriteString("true")
-		} else {
-			e.buf.WriteString("false")
-		}
+		return e.writeToken(jsontext.Bool(v.ToBool()))
 	case vm.IntType:
-		e.buf.WriteString(strconv.FormatInt(v.ToInt(), 10))
+		return e.writeToken(jsontext.Int(v.ToInt()))
 	case vm.FloatType:
 		return e.encodeFloat(v.ToFloat())
 	case vm.StringType:
@@ -230,9 +249,16 @@ func (e *jsonEncoder) encodeFloat(f float64) bool {
 		e.err = jsonErrorInfOrNan
 		return false
 	}
+	// Число передаём готовым литералом через jsontext.Value: формат PHP
+	// (1.0e+25, 42.0 при JSON_PRESERVE_ZERO_FRACTION) stdlib не выражает ни
+	// одной опцией. Это value-уровень (аналог json.RawMessage) — структуру,
+	// строки и экранирование по-прежнему пишет jsontext.
 	s := phpFormatFloat(f, e.flags&jsonPreserveZeroFraction != 0)
 	s = strings.Replace(s, "E", "e", 1)
-	e.buf.WriteString(s)
+	if err := e.enc.WriteValue(jsontext.Value(s)); err != nil {
+		e.err = jsonErrorUTF8
+		return false
+	}
 	return true
 }
 
@@ -243,8 +269,7 @@ func (e *jsonEncoder) encodeNumericString(s string) bool {
 		}
 	} else {
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
-			e.buf.WriteString(strconv.FormatInt(n, 10))
-			return true
+			return e.writeToken(jsontext.Int(n))
 		}
 		if f, err := strconv.ParseFloat(s, 64); err == nil {
 			return e.encodeFloat(f)
@@ -270,27 +295,15 @@ func (e *jsonEncoder) encodeArray(a *vm.Array, depth int) bool {
 		list = false
 	}
 	if list {
-		e.buf.WriteByte('[')
-		first := true
+		if !e.writeToken(jsontext.BeginArray) {
+			return false
+		}
 		for _, v := range a.All() {
-			if !first {
-				e.buf.WriteByte(',')
-			}
-			first = false
-			if e.pretty {
-				e.buf.WriteByte('\n')
-				e.writeIndent(depth + 1)
-			}
 			if !e.encodeDepth(v, depth+1) {
 				return false
 			}
 		}
-		if e.pretty && !first {
-			e.buf.WriteByte('\n')
-			e.writeIndent(depth)
-		}
-		e.buf.WriteByte(']')
-		return true
+		return e.writeToken(jsontext.EndArray)
 	}
 	ents := make([]jsonEntry, 0, a.Len())
 	for k, v := range a.All() {
@@ -338,160 +351,39 @@ func objectJSONEntries(m *vm.VM, o *vm.Object) []jsonEntry {
 }
 
 func (e *jsonEncoder) encodeEntries(ents []jsonEntry, depth int) bool {
-	e.buf.WriteByte('{')
-	for i, en := range ents {
-		if i > 0 {
-			e.buf.WriteByte(',')
-		}
-		if e.pretty {
-			e.buf.WriteByte('\n')
-			e.writeIndent(depth + 1)
-		}
+	if !e.writeToken(jsontext.BeginObject) {
+		return false
+	}
+	for _, en := range ents {
 		if !e.encodeString(en.key) {
 			return false
-		}
-		e.buf.WriteByte(':')
-		if e.pretty {
-			e.buf.WriteByte(' ')
 		}
 		if !e.encodeDepth(en.val, depth+1) {
 			return false
 		}
 	}
-	if e.pretty && len(ents) > 0 {
-		e.buf.WriteByte('\n')
-		e.writeIndent(depth)
-	}
-	e.buf.WriteByte('}')
-	return true
+	return e.writeToken(jsontext.EndObject)
 }
 
-func writeU4(b *strings.Builder, r rune) {
-	b.WriteString("\\u")
-	b.WriteByte(hexLower[(r>>12)&0xF])
-	b.WriteByte(hexLower[(r>>8)&0xF])
-	b.WriteByte(hexLower[(r>>4)&0xF])
-	b.WriteByte(hexLower[r&0xF])
-}
-
-func (e *jsonEncoder) encodeString(s string) bool {
-	// Невалидный UTF-8 — пре-проходом (IGNORE выбрасывает, SUBSTITUTE → U+FFFD),
-	// чтобы jsontext всегда видел корректный UTF-8 (как PHP).
-	if e.flags&jsonInvalidUTF8Ignore != 0 {
-		s = sanitizeInvalidUTF8Raw(s, false)
-	} else if e.flags&jsonInvalidUTF8Substitute != 0 {
-		s = sanitizeInvalidUTF8Raw(s, true)
-	}
-	// Быстрый путь: чистый ASCII без требующих эскейпа символов — как есть.
-	if jsonPlainString(s, e.flags) {
-		e.buf.WriteByte('"')
-		e.buf.WriteString(s)
-		e.buf.WriteByte('"')
-		return true
-	}
-	q, err := jsontext.AppendQuote(e.qbuf[:0], s)
-	e.qbuf = q
-	if err != nil {
+// writeToken отдаёт токен jsontext.Encoder: синтаксис, кавычки и экранирование
+// строк делает stdlib. Единственная ошибка здесь — невалидный UTF-8 в строке
+// (без JSON_INVALID_UTF8_*): для json_encode это false / JsonException.
+func (e *jsonEncoder) writeToken(t jsontext.Token) bool {
+	if err := e.enc.WriteToken(t); err != nil {
 		e.err = jsonErrorUTF8
 		return false
 	}
-	e.writePHPQuoted(q)
 	return true
 }
 
-// jsonPlainString сообщает, что строку можно записать в JSON как есть:
-// ASCII без кавычек/бэкслеша/слэша/control и без символов, которых требуют
-// HEX-флаги. Всё остальное (не-ASCII, спецсимволы) идёт путём jsontext.
-func jsonPlainString(s string, flags int64) bool {
-	tag := flags&jsonHexTag != 0
-	amp := flags&jsonHexAmp != 0
-	apos := flags&jsonHexApos != 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 0x80 || c < 0x20 || c == '"' || c == '\\' || c == '/' {
-			return false
-		}
-		if tag && (c == '<' || c == '>') {
-			return false
-		}
-		if amp && c == '&' {
-			return false
-		}
-		if apos && c == '\'' {
-			return false
-		}
+func (e *jsonEncoder) encodeString(s string) bool {
+	// IGNORE: невалидные байты выбрасываем до stdlib. SUBSTITUTE делает опция
+	// AllowInvalidUTF8 (U+FFFD); по умолчанию WriteToken вернёт ошибку — это
+	// php-семантика false для JSON_ERROR_UTF8.
+	if e.flags&jsonInvalidUTF8Ignore != 0 {
+		s = sanitizeInvalidUTF8Raw(s, false)
 	}
-	return true
-}
-
-// writePHPQuoted добавляет к результату jsontext.AppendQuote специфику
-// json_encode: '/' → \/ (без JSON_UNESCAPED_SLASHES), не-ASCII → \uXXXX
-// (сурогатные пары; без JSON_UNESCAPED_UNICODE), флаги JSON_HEX_*,
-// JSON_UNESCAPED_LINE_TERMINATORS. Эскейпы control/кавычек/бэкслеша уже сделаны
-// stdlib и копируются как есть.
-func (e *jsonEncoder) writePHPQuoted(q []byte) {
-	hexTag := e.flags&jsonHexTag != 0
-	hexAmp := e.flags&jsonHexAmp != 0
-	hexApos := e.flags&jsonHexApos != 0
-	hexQuot := e.flags&jsonHexQuot != 0
-	unescSlash := e.flags&jsonUnescapedSlashes != 0
-	unescUni := e.flags&jsonUnescapedUnicode != 0
-	lineTerm := e.flags&jsonUnescapedLineTerminators != 0
-	e.buf.WriteByte('"')
-	for i := 1; i < len(q)-1; i++ {
-		c := q[i]
-		if c == '\\' {
-			// Готовая escape-последовательность: \" или \uXXXX и т.п.
-			if i+1 < len(q) && q[i+1] == '"' && hexQuot {
-				e.buf.WriteString("\\u0022")
-				i++
-				continue
-			}
-			e.buf.WriteByte(c)
-			if i+1 < len(q) {
-				i++
-				e.buf.WriteByte(q[i])
-			}
-			continue
-		}
-		if c < 0x80 {
-			switch {
-			case c == '/':
-				if unescSlash {
-					e.buf.WriteByte('/')
-				} else {
-					e.buf.WriteString("\\/")
-				}
-			case c == '<' && hexTag:
-				e.buf.WriteString("\\u003C")
-			case c == '>' && hexTag:
-				e.buf.WriteString("\\u003E")
-			case c == '&' && hexAmp:
-				e.buf.WriteString("\\u0026")
-			case c == '\'' && hexApos:
-				e.buf.WriteString("\\u0027")
-			default:
-				e.buf.WriteByte(c)
-			}
-			continue
-		}
-		r, size := utf8.DecodeRune(q[i:])
-		if unescUni {
-			if (r == 0x2028 || r == 0x2029) && !lineTerm {
-				writeU4(&e.buf, r)
-			} else {
-				e.buf.Write(q[i : i+size])
-			}
-		} else if r <= 0xFFFF {
-			writeU4(&e.buf, r)
-		} else {
-			r -= 0x10000
-			writeU4(&e.buf, 0xD800+(r>>10))
-			writeU4(&e.buf, 0xDC00+(r&0x3FF))
-		}
-		i += size - 1
-	}
-	e.buf.WriteByte('"')
+	return e.writeToken(jsontext.String(s))
 }
 
 // jsonTextParser — обход токенов encoding/json/jsontext: синтаксис, кавычки и

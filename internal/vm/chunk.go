@@ -618,7 +618,7 @@ func buildArgRegs() [][]byte {
 	}
 	// опкоды, где C — тоже регистр (ключ)
 	for _, op := range []Opcode{OpIndex, OpIndexSet, OpIndexSetOverload, OpIndexIsset, OpIndexRef, OpPropRefDyn, OpPropSetRefDyn,
-		OpIndexRaw, OpIndexSetRaw, OpIndexSetOverloadRaw, OpConcatApp, OpListFetchRef} {
+		OpIndexRaw, OpIndexRawWrite, OpIndexSetRaw, OpIndexSetOverloadRaw, OpConcatApp, OpListFetchRef} {
 		m[op] = []byte("ABC")
 	}
 	// статическое свойство по динамическому имени: A — ссылка, C — регистр-имя

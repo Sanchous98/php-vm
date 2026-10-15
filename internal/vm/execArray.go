@@ -171,11 +171,53 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 	return execResult{}
 }
 
+// stringIndexOfString разбирает ключ строкового offset (регистр C инструкции):
+// TypeError для неподходящего типа, Warning «String offset cast occurred» и
+// «Illegal string offset "..."» — диагностики Zend перед обработкой
+// write/inc-dec по строковому offset.
+func (vm *VM) stringIndexOfString(regs []Slot, in Instruction) error {
+	if err := vm.stringOffsetBadKeyErr(deref(regs[in.C])); err != nil {
+		return err
+	}
+	if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
+		vm.Warn("String offset cast occurred")
+	}
+	_, ok, illegal := vm.stringOffsetKey(regs[in.C])
+	if !ok {
+		return NewThrowable("TypeError", "Cannot access offset of type string on string")
+	}
+	if illegal {
+		vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
+	}
+	return nil
+}
+
+// opIndexRawWrite — A = B[C] как база записи вложенной цепочки. Для строкового
+// контейнера Zend не отдаёт символ (временная строка): после диагностик о
+// ключе бросается Error "Cannot use string offset as an array" (bug53432,
+// bug70089, offset_assign). Для массивов/объектов — как OpIndexRaw.
+func (vm *VM) opIndexRawWrite(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	if src := deref(regs[in.B]); src.typ == StringType {
+		if err := vm.stringIndexOfString(regs, in); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		err := NewThrowable("Error", "Cannot use string offset as an array")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
+	return vm.opIndexRaw(regs, consts, chunk, in)
+}
+
 // opIndexRaw — как opIndex, но без пометки значения разделённым. Только для
-// чтения контейнера-базы записи: результат (или мутированный контейнер)
-// обязательно записывается обратно в тот же элемент (INDEX_SET_OVERLOAD),
-// поэтому второй владелец не появляется, а shareSlot заставлял бы копировать
-// вложенный массив на каждой записи.
+// чтения контейнера-базы записи (inc/dec элемента): результат (или мутированный
+// контейнер) обязательно записывается обратно в тот же элемент
+// (INDEX_SET_OVERLOAD), поэтому второй владелец не появляется, а shareSlot
+// заставлял бы копировать вложенный массив на каждой записи.
 func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	src := deref(regs[in.B])
 	if src.typ == ObjectType {
@@ -208,52 +250,20 @@ func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		return execResult{next: true}
 	}
 	if src.typ == StringType {
-		if err := vm.stringOffsetBadKeyErr(deref(regs[in.C])); err != nil {
+		err := vm.stringIndexOfString(regs, in)
+		if err != nil {
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
 			}
 			return execResult{next: true}
 		}
-		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
-			vm.Warn("String offset cast occurred")
+		// Символ строки — не ячейка: inc/dec строкового offset запрещён
+		// (bug70089: ++$s[0] — Error).
+		err = NewThrowable("Error", "Cannot increment/decrement string offsets")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
 		}
-		i, ok, illegal := vm.stringOffsetKey(regs[in.C])
-		if !ok {
-			err := NewThrowable("TypeError", "Cannot access offset of type string on string")
-			if !vm.handleThrow(chunk, err) {
-				return execResult{err: err}
-			}
-			return execResult{next: true}
-		}
-		if illegal {
-			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
-		}
-		orig := i
-		s := src.StringVal()
-		if i < 0 {
-			i += int64(len(s))
-		}
-		if i < 0 || i >= int64(len(s)) {
-			vm.Warn("Uninitialized string offset " + intToString(orig))
-			{
-				old := regs[in.A]
-				wv := MakeString("")
-				regs[in.A] = wv
-				if trackedType(old.typ) || trackedType(wv.typ) {
-					vm.wRegSlow(int(in.A), old)
-				}
-			}
-			return execResult{}
-		}
-		{
-			old := regs[in.A]
-			wv := MakeString(s[i : i+1])
-			regs[in.A] = wv
-			if trackedType(old.typ) || trackedType(wv.typ) {
-				vm.wRegSlow(int(in.A), old)
-			}
-		}
-		return execResult{}
+		return execResult{next: true}
 	}
 	if src.typ != ArrayType {
 		vm.Warn("Trying to access array offset on " + vm.arrayOffsetTypeName(src))

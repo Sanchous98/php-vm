@@ -15987,18 +15987,19 @@ func (c *compiler) writeCtxBuiltinFatal(e Expr) error {
 // специализированные опкоды с временным результатом (IS_TMP_VAR). Запись в
 // результат такой функции (в т.ч. в его индекс) — компайл-фатал
 // "Cannot use result of built-in function in write context".
+// chr/ord/in_array/call_user_func*/array_slice Zend так не компилирует:
+// запись в их результат даёт рантайм-ошибки (bug70089).
 var specialFuncNames = map[string]bool{
 	"strlen": true, "is_null": true, "is_bool": true,
 	"is_long": true, "is_int": true, "is_integer": true,
 	"is_float": true, "is_double": true, "is_string": true,
 	"is_array": true, "is_object": true, "is_resource": true, "is_scalar": true,
 	"boolval": true, "intval": true, "floatval": true, "doubleval": true,
-	"strval": true, "defined": true, "chr": true, "ord": true,
-	"call_user_func_array": true, "call_user_func": true, "in_array": true,
+	"strval": true, "defined": true,
 	"count": true, "sizeof": true,
 	"get_class": true, "get_called_class": true, "gettype": true,
 	"func_num_args": true, "func_get_args": true,
-	"array_slice": true, "array_key_exists": true,
+	"array_key_exists": true,
 }
 
 // builtinCallBase сообщает, что выражение — цепочка индексов от вызова
@@ -16920,7 +16921,7 @@ func (c *compiler) indexBaseKeys(t *IndexExpr, keys []uint8, dimW bool) (uint8, 
 			}
 		}
 		arr := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRaw, A: arr, B: inner, C: int32(k)})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRawWrite, A: arr, B: inner, C: int32(k)})
 		return arr, func(r uint8) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSetOverloadRaw, A: inner, B: k, C: int32(r)})
 			if wbInner != nil {

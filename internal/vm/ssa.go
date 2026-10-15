@@ -232,6 +232,7 @@ func init() {
 	s(OpRefGetRaw, rDef, rUse, rNone)
 	s(OpRefSetRaw, rUseDef, rUse, rNone)
 	s(OpIndexRaw, rDef, rUse, rUse)
+	s(OpIndexRawWrite, rDef, rUse, rUse)
 	s(OpIndexSetRaw, rUseDef, rUse, rUse)
 	s(OpIndexSetOverloadRaw, rUseDef, rUse, rUse)
 	s(OpListFetchRef, rUseDef, rUse, rUse)

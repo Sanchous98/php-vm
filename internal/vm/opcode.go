@@ -502,10 +502,16 @@ const (
 	// offsetSet(null, результат). Регистр B получает результат присваивания
 	// (bug69955).
 	OpAppendCompound // APPEND_COMPOUND
+
+	// OpIndexRawWrite — A = B[C] как база ЗАПИСИ (nested write chain): как
+	// OpIndexRaw, но для строкового контейнера Zend не отдаёт символ-временный,
+	// а бросает Error "Cannot use string offset as an array" (после диагностик
+	// о нелегальном ключе): bug53432, bug70089, offset_assign.
+	OpIndexRawWrite // INDEX_RAW_WRITE
 )
 
 // numOpcodes — число опкодов (для таблиц, индексируемых опкодом).
-const numOpcodes = int(OpAppendCompound) + 1
+const numOpcodes = int(OpIndexRawWrite) + 1
 
 // IsUnconditionalTerminator сообщает, что после инструкции исполнение не
 // продолжается со следующей позиции (нет fallthrough): компилятор не ставит

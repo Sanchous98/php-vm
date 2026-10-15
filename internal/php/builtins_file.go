@@ -1059,6 +1059,12 @@ type fsHandle struct {
 	filterBuf   []byte
 	filterEOF   bool
 	rawConsumed int64
+	// fbuf — пре-буфер чтения обычных (stdio/memory) потоков (Zend
+	// stream->readbuf): данные, вычитанные из источника одним chunk-чтением,
+	// но ещё не отданные потребителю. Виден как unread_bytes в
+	// stream_get_meta_data и участвует в обработке «pre-buffered data» при
+	// stream_filter_append.
+	fbuf []byte
 	// --- сетевые потоки ---
 	// conn — установленное соединение (клиент/принятый сокет);
 	// ln — слушающий сокет (stream_socket_server).
@@ -1886,6 +1892,7 @@ func (h *fsHandle) checkEOF() bool {
 	if err != nil {
 		return h.eof
 	}
+	cur -= int64(len(h.fbuf))
 	fi, err := h.Stat()
 	if err != nil {
 		return h.eof
@@ -2563,13 +2570,13 @@ func ftellFn(ctx *vm.Context) vm.Value {
 		if err != nil {
 			return vm.Bool(false)
 		}
-		return vm.Int(raw - int64(len(h.filterBuf)))
+		return vm.Int(raw - int64(len(h.fbuf)) - int64(len(h.filterBuf)))
 	}
 	pos, err := h.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return vm.Bool(false)
 	}
-	return vm.Int(pos)
+	return vm.Int(pos - int64(len(h.fbuf)))
 }
 
 func rewindFn(ctx *vm.Context) vm.Value {

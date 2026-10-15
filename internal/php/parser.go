@@ -3408,7 +3408,7 @@ func (p *Parser) funcDecl() (Stmt, error) {
 	// даёт Parse error (Zend: function_declaration_statement требует T_STRING;
 	// сообщение LALR — «expecting "("»: после function парсер ждёт также
 	// открывающую скобку анонимной функции).
-	if t := p.cur(); t.Kind == TKeyword {
+	if t := p.cur(); t.Kind == TKeyword && !semiReservedFuncName(t.Val) {
 		return nil, p.syntaxErrExpect(t, `"("`)
 	}
 	rawName := tokName(p.next())
@@ -4241,6 +4241,18 @@ func (p *Parser) className() string {
 // сегменты пространств имён).
 func isNameTok(t Token) bool {
 	return t.Kind == TIdent || t.Kind == TKeyword
+}
+
+// semiReservedFuncName: null/true/false в грамматике Zend — T_STRING
+// (литералы-константы), поэтому они допустимы как имена функций
+// (is_callable_basic1: function NULL() {}), в отличие от настоящих ключевых
+// слов list/print и т.п.
+func semiReservedFuncName(v string) bool {
+	switch strings.ToLower(v) {
+	case "null", "true", "false":
+		return true
+	}
+	return false
 }
 
 // tokName возвращает текст токена как он записан в исходнике. Лексер хранит

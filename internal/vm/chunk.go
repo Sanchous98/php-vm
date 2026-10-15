@@ -13,6 +13,10 @@ type Const struct {
 	typ Type
 	num uint64
 	str string
+	// strCopy — строковая константа-элемент литерала массива: Zend хранит
+	// такие элементы копией (не interned), в отличие от обычных литералов
+	// (debug_zval_dump печатает refcount(1)).
+	strCopy bool
 }
 
 func NullConst() Const           { return Const{typ: NullType} }
@@ -21,9 +25,16 @@ func IntConst(i int64) Const     { return Const{typ: IntType, num: uint64(i)} }
 func FloatConst(f float64) Const { return Const{typ: FloatType, num: math.Float64bits(f)} }
 func StrConst(s string) Const    { return Const{typ: StringType, str: s} }
 
+// StrConstCopy — строковая константа, материализуемая не-interned копией
+// (литеральный элемент массива длиной > 1).
+func StrConstCopy(s string) Const { return Const{typ: StringType, str: s, strCopy: true} }
+
 // Slot материализует константу в слот, бокся строку в heap.
 func (c Const) Slot() Slot {
 	if c.typ == StringType {
+		if c.strCopy {
+			return MakeString(c.str)
+		}
 		return MakeInternedString(c.str)
 	}
 	return Slot{typ: c.typ, num: c.num}

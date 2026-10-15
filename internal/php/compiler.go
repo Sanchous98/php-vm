@@ -4296,7 +4296,13 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 				return *new(vm.Slot)
 			}
 		} else {
-			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+			// Сбой пользовательского фильтра во время чтения уже дал
+			// Warning «Unprocessed filter buckets remaining»: Zend не
+			// повторяет «Failed to open stream», только «Failed opening»
+			// (include_fail_during_read).
+			if !lastFilterReadFailed {
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+			}
 			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)
@@ -17144,6 +17150,41 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 			return 0, &fatalError{msg: "Cannot use empty array elements in arrays", line: line}
 		}
 	}
+	// Полностью константный литерал Zend собирает в рантайме из
+	// не-interned копий строковых элементов длиной > 1 (debug_zval_dump
+	// печатает refcount(1)); если в литерале есть динамическая часть,
+	// константные элементы берутся из литеральной таблицы op_array и
+	// остаются interned (debug_zval_dump_b: массив с $file_handle).
+	allConst := false
+	for _, el := range x.Elems {
+		if sl, ok := el.Val.(*StrLit); ok && !el.ByRef && !el.Spread && len(sl.V) > 1 {
+			allConst = true
+			break
+		}
+	}
+	if allConst {
+		for _, el := range x.Elems {
+			if el.Spread || el.ByRef {
+				allConst = false
+				break
+			}
+			if _, err := constValueOf(el.Val); err != nil {
+				allConst = false
+				break
+			}
+			if el.Key != nil {
+				if _, err := constValueOf(el.Key); err != nil {
+					allConst = false
+					break
+				}
+			}
+		}
+	}
+	copyStrConst := func(sl *StrLit) uint8 {
+		v := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: v, C: int32(c.chunk.AddConst(vm.StrConstCopy(sl.V)))})
+		return v
+	}
 	r := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpArray, A: r})
 	for _, el := range x.Elems {
@@ -17172,6 +17213,10 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 			continue
 		}
 		if el.Key == nil {
+			if sl, ok := el.Val.(*StrLit); ok && allConst && !el.ByRef && len(sl.V) > 1 {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpAppend, A: r, B: copyStrConst(sl)})
+				continue
+			}
 			var v uint8
 			var err error
 			if el.ByRef && !byRefThisExpr(el.Val) {
@@ -17202,6 +17247,10 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 		k, err := c.expr(el.Key)
 		if err != nil {
 			return 0, err
+		}
+		if sl, ok := el.Val.(*StrLit); ok && allConst && !el.ByRef && len(sl.V) > 1 {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: r, B: k, C: int32(copyStrConst(sl))})
+			continue
 		}
 		var v uint8
 		if el.ByRef && !byRefThisExpr(el.Val) {

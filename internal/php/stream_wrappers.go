@@ -231,7 +231,33 @@ func (h *fsHandle) Read(p []byte) (int, error) {
 	if h.hasReadFilters() {
 		return h.filteredRead(p)
 	}
-	return h.f.Read(p)
+	return h.fileRead(p)
+}
+
+// fileRead читает из источника через пре-буфер чтения (Zend
+// stream->readbuf): заполняет его одним chunk-чтением и отдаёт из него.
+// EOF не защёлкивается: источник может быть дописан вторым дескриптором
+// (bug41815), поэтому пустой буфер снова читает h.f.
+func (h *fsHandle) fileRead(p []byte) (int, error) {
+	if len(h.fbuf) == 0 {
+		buf := make([]byte, h.chunk())
+		n, err := h.f.Read(buf)
+		if n <= 0 {
+			if err == nil {
+				err = io.EOF
+			}
+			return 0, err
+		}
+		h.fbuf = buf[:n]
+	}
+	n := copy(p, h.fbuf)
+	h.fbuf = h.fbuf[n:]
+	return n, nil
+}
+
+// dropFbuf сбрасывает пре-буфер (позиционирование, запись).
+func (h *fsHandle) dropFbuf() {
+	h.fbuf = nil
 }
 
 // Write пишет в поток (обёртка, фильтры или файл).
@@ -278,7 +304,21 @@ func (h *fsHandle) Write(p []byte) (int, error) {
 	if h.hasWriteFilters() {
 		p = h.applyWriteFilters(p)
 	}
+	h.syncFbufForWrite()
 	return h.f.Write(p)
+}
+
+// syncFbufForWrite согласует позицию источника с логической позицией чтения
+// перед записью/усечением: пре-буфер откатывается (мы вычитали вперёд).
+func (h *fsHandle) syncFbufForWrite() {
+	if len(h.fbuf) > 0 {
+		if _, err := h.f.Seek(-int64(len(h.fbuf)), io.SeekCurrent); err != nil {
+			// Источник не позиционируется: оставляем как есть.
+			h.dropFbuf()
+			return
+		}
+	}
+	h.dropFbuf()
 }
 
 // Seek позиционирует поток (обёртка или файл).
@@ -289,6 +329,13 @@ func (h *fsHandle) Seek(off int64, whence int) (int64, error) {
 	if h.conn != nil || h.ln != nil {
 		return 0, fmt.Errorf("stream does not support seeking")
 	}
+	// Пре-буфер держит вычитанные вперёд данные: SEEK_CUR считается от
+	// логической позиции (Zend php_stream_seek учитывает readpos/writepos),
+	// остальные whence его сбрасывают.
+	if len(h.fbuf) > 0 && whence == io.SeekCurrent {
+		off -= int64(len(h.fbuf))
+	}
+	h.dropFbuf()
 	return h.f.Seek(off, whence)
 }
 

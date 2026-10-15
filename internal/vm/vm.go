@@ -2962,9 +2962,9 @@ func (vm *VM) reportUncaught(err error) {
 		if html {
 			msg := errHTML(th.Message)
 			if th.DefinedIn {
-				vm.Write("<br />\n<b>Fatal error</b>:  Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
-				vm.Write("<br />\n<b>Fatal error</b>:  Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
+				vm.Write("\n<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
 			} else {
+				vm.Write("\n<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " in " + file + ":" + strconv.Itoa(line) + "\n")
 			}
 			vm.Write("Stack trace:\n")
 			vm.Write(vm.traceString(th.Trace, file, line) + "\n")
@@ -8743,11 +8743,15 @@ func (vm *VM) callMagicUndefStatic(cls ClassInfo, calledIn ClassInfo, mname stri
 		// BC-правило Zend (PHP 7/8): статически оформленный вызов без метода
 		// из объектного контекста, чей $this — экземпляр вызываемого класса,
 		// идёт в __call; иначе — в __callStatic. Для несвязанного класса
-		// __call из чужого scope не используется (bug42937).
+		// __call из чужого scope не используется (bug42937); наличие __call
+		// проверяется по целевому классу — parent::foo() не видит __call
+		// потомка (t8: Error при __call только в динамическом классе).
 		if tci := vm.classInfo(vm.cur.this); tci != nil && tci.IsA(cls) {
-			if m := tci.lookupMethod("__call"); m != nil {
-				res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArray(passed)})
-				return res, true, err
+			if cls.lookupMethod("__call") != nil {
+				if m := tci.lookupMethod("__call"); m != nil {
+					res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArray(passed)})
+					return res, true, err
+				}
 			}
 		}
 	}

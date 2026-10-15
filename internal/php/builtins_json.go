@@ -410,8 +410,12 @@ func (e *jsonEncoder) encodeString(s string) bool {
 	return true
 }
 
-// phpJSONStringLiteral переводит строковый литерал, подготовленный
-// jsontext.AppendQuote, в формат json_encode: '/' → '\/' (если нет
+// phpJSONStringLiteral — генератор PHP-дельты к базовому эскейпингу
+// jsontext.AppendQuote. Почему это не может делать stdlib: escaping-механизмов
+// у jsontext ровно два — EscapeForHTML ('<', '>', '&') и EscapeForJS
+// (U+2028/2029); кода, печатающего '\/' или '\uXXXX' для не-ASCII, в stdlib нет.
+// Доставку готового литерала обеспечивает PreserveRawStrings(true) +
+// jsontext.Value (см. encodeString). Правила: '/' → '\/' (если нет
 // JSON_UNESCAPED_SLASHES), не-ASCII → '\uXXXX' (сурогатные пары; если нет
 // JSON_UNESCAPED_UNICODE), JSON_HEX_TAG/AMP/APOS/QUOT — верхним регистром, как
 // PHP. U+2028/2029 не трогаем — их экранирует опция EscapeForJS. Готовые

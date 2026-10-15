@@ -139,6 +139,11 @@ func (p *iniParser) parse(s string) *vm.Array {
 				i++
 			}
 			continue
+		case c == '"':
+			// Кавычка в позиции метки: php (оба сканера) — syntax error
+			// unexpected '"' и false; quoted-метки parse_ini_* не поддерживает.
+			p.syntaxError(`"`)
+			return out
 		case c == '[':
 			name, ni := p.scanUntil(s, i+1, ']')
 			i = ni
@@ -515,12 +520,6 @@ func (p *iniParser) iniRawValue(s string, i int) (string, int) {
 	}
 	val := s[i:end]
 	val = strings.TrimRight(val, " \t")
-	if len(val) > 0 && val[0] == '"' && !(len(val) > 1 && val[len(val)-1] == '"') {
-		// RAW-сканер: незакрытая кавычка в строке — syntax error (Zend:
-		// unexpected '"'); значение с переносом строки не допускается.
-		p.syntaxError(`"`)
-		return val, j
-	}
 	if len(val) > 1 && val[0] == '"' && val[len(val)-1] == '"' {
 		val = val[1 : len(val)-1]
 	}

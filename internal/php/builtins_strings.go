@@ -2684,7 +2684,7 @@ func tagName(tag string) string {
 }
 
 func stripTagsFn(ctx *vm.Context) vm.Value {
-	s := arg0(ctx).ToString()
+	s := stringCoerce(ctx, arg0(ctx))
 	allow := ""
 	allowSet := false
 	if len(ctx.Args()) >= 2 {

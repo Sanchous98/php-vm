@@ -1702,11 +1702,29 @@ func (vm *VM) callStringCallable(raw string, args []Slot) (Slot, error) {
 	return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined function %s()", name))
 }
 
+// arrayCallbackIndicesErr — Zend проверяет не только число элементов, но и
+// ключи 0/1: `[1 => x, 2 => y]` не является callable (bug63173).
+func arrayCallbackIndicesErr(a *Array) error {
+	if a == nil {
+		return NewThrowable("Error", "Array callback must have exactly two elements")
+	}
+	if _, ok := a.GetInt(0); !ok {
+		return NewThrowable("Error", "Array callback has to contain indices 0 and 1")
+	}
+	if _, ok := a.GetInt(1); !ok {
+		return NewThrowable("Error", "Array callback has to contain indices 0 and 1")
+	}
+	return nil
+}
+
 // callArrayCallable вызывает [obj|class, method].
 func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
 	a := c.AsArray()
 	if a == nil || a.Len() != 2 {
 		return Slot{}, NewThrowable("Error", "Array callback must have exactly two elements")
+	}
+	if err := arrayCallbackIndicesErr(a); err != nil {
+		return Slot{}, err
 	}
 	vals := a.Values()
 	recv := deref(vals[0])

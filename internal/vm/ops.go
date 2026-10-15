@@ -649,8 +649,8 @@ func objectPropSlots(o *Object) ([]Slot, []bool) {
 	var out []Slot
 	var def []bool
 	add := func(key string) {
-		if v, ok := o.props[key]; ok {
-			out = append(out, valueSlot(v))
+		if v, ok := o.propValueRaw(key); ok {
+			out = append(out, v)
 			def = append(def, true)
 		} else {
 			out = append(out, MakeNull())
@@ -690,7 +690,7 @@ func objectPropSlots(o *Object) ([]Slot, []bool) {
 	}
 	for _, name := range o.dynOrder {
 		if !seen[name] {
-			if _, ok := o.props[name]; ok {
+			if _, ok := o.propValueRaw(name); ok {
 				seen[name] = true
 				add(name)
 			}
@@ -759,7 +759,7 @@ func objectPropNames(o *Object) []string {
 			if pd, ok := c.ownProps[name]; ok && pd.vis == Private {
 				key := mangledPropKey(c, name)
 				seen[key] = true
-				if _, ok := o.props[key]; ok {
+				if _, ok := o.propValueRaw(key); ok {
 					out = append(out, name)
 				}
 				continue

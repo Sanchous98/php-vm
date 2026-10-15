@@ -167,6 +167,117 @@ type propDecl struct {
 	static   bool
 }
 
+// propSlotEntry — объявленное нестатическое свойство в раскладке класса.
+type propSlotEntry struct {
+	key  string // ключ хранения: имя или манглированный private-ключ
+	pd   *propDecl
+	decl *runtimeClass
+}
+
+// classSlots — раскладка слотов объявленных нестатических свойств класса.
+// Индексы стабильны по иерархии: раскладка наследника = копия родительской +
+// собственные свойства; перекрытие (redeclare) сохраняет родительский индекс.
+type classSlots struct {
+	entries []propSlotEntry
+	byKey   map[string]int
+	// defaults — шаблон начальных значений по индексу слота (uninit для
+	// объявленных без дефолта). Массивы в шаблоне помечены shared.
+	defaults []Slot
+	// defErr — отложенная ошибка типа дефолта (Zend: Error при создании).
+	defErr error
+	// done — раскладка собрана.
+	done bool
+}
+
+// layout возвращает раскладку слотов класса (строит при первом обращении).
+func (c *runtimeClass) layout() *classSlots {
+	if c == nil {
+		return &classSlots{}
+	}
+	if c.layoutCache != nil && c.layoutCache.done {
+		return c.layoutCache
+	}
+	return c.buildLayout()
+}
+
+// buildLayout собирает раскладку: слоты родителя, затем собственные
+// объявленные свойства в порядке propOrder. Enum-классы исключены: их кейсы —
+// синглтоны, хранящие name/value напрямую в props.
+func (c *runtimeClass) buildLayout() *classSlots {
+	cs := &classSlots{byKey: map[string]int{}}
+	if p := c.parent; p != nil {
+		ps := p.layout()
+		cs.entries = append(cs.entries, ps.entries...)
+		cs.defaults = append(cs.defaults, ps.defaults...)
+		cs.defErr = ps.defErr
+		for k, v := range ps.byKey {
+			cs.byKey[k] = v
+		}
+	}
+	if !c.isEnum {
+		for _, name := range c.propOrder {
+			pd := c.ownProps[name]
+			if pd != nil && pd.static {
+				// Статическое свойство: не слот экземпляра.
+				continue
+			}
+			if pd == nil {
+				// Свойство без метаданных (DeclareDefault у нативных классов,
+				// напр. php_user_filter::$stream): слот нужен, только если есть
+				// дефолт; иначе это нативный мост (Declare, Go-поле).
+				_, hasDef := c.defaults[name]
+				_, hasLazy := c.lazyDefaults[name]
+				if !hasDef && !hasLazy {
+					continue
+				}
+			}
+			key := name
+			if pd != nil && pd.vis == Private {
+				key = mangledPropKey(c, name)
+			}
+			def := makeUninit()
+			if v, ok := c.defaults[name]; ok {
+				var derr error
+				def, derr = c.defaultSlotValue(pd, name, v)
+				if derr != nil && cs.defErr == nil {
+					cs.defErr = derr
+				}
+			}
+			if idx, ok := cs.byKey[key]; ok {
+				// Перекрытие объявления предка: pd/дефолт — потомка, слот — тот же.
+				cs.entries[idx].pd = pd
+				cs.entries[idx].decl = c
+				cs.defaults[idx] = def
+				continue
+			}
+			idx := len(cs.entries)
+			cs.byKey[key] = idx
+			cs.entries = append(cs.entries, propSlotEntry{key: key, pd: pd, decl: c})
+			cs.defaults = append(cs.defaults, def)
+		}
+	}
+	cs.done = true
+	c.layoutCache = cs
+	return cs
+}
+
+// defaultSlotValue готовит значение дефолта для шаблона раскладки: приводит к
+// объявленному типу (семантика applyDefault, strict) и помечает массивы shared.
+func (c *runtimeClass) defaultSlotValue(pd *propDecl, name string, v Value) (Slot, error) {
+	s := valueSlot(v)
+	if c.vm != nil && pd != nil && pd.hasType {
+		out, err := c.vm.coercePropValue(pd, c, name, s, true, false)
+		if err != nil {
+			return makeUninit(), err
+		}
+		s = out
+	}
+	if s.typ == ArrayType {
+		s.AsArray().MarkShared()
+	}
+	return s, nil
+}
+
 // runtimeClass — универсальный дескриптор класса (userland и нативные классы,
 // чьи данные описаны generic-типом RegisterClass). Поля данных экземпляра
 // здесь нет: они живут в самом Go-типе объекта.
@@ -235,6 +346,9 @@ type runtimeClass struct {
 	// ownProps — метаданные свойств, объявленных непосредственно в этом классе
 	// (тип, readonly, видимость). Нужны для проверок readonly/типизации.
 	ownProps map[string]*propDecl
+	// layoutCache — раскладка слотов объявленных нестатических свойств
+	// (см. classSlots). Строится при первом создании объекта класса.
+	layoutCache *classSlots
 	// privKeys — предвычисленные ключи хранения private-свойств этого класса
 	// ("\x00Класс\x00имя"). Сборка строки на каждом обращении к свойству
 	// аллоцировала (2M чтений $this->x -> 2M аллокаций), поэтому ключи считаются
@@ -580,6 +694,7 @@ func NewClass(name string, parent ClassInfo) *runtimeClass {
 			d = &Object{class: ci}
 		}
 		d.incomplete = o.incomplete
+		d.slots = cloneSlots(o.slots)
 		d.props = cloneProps(o.props)
 		d.unset = cloneBoolMap(o.unset)
 		markReadonlyReinit(ci, d)
@@ -613,7 +728,7 @@ func markReadonlyReinit(c *runtimeClass, d *Object) {
 				if pd.vis == Private {
 					key = mangledPropKey(k, name)
 				}
-				if _, ok := d.props[key]; ok {
+				if d.declaredInitialized(key) {
 					d.AllowReadonlyReinit(key)
 				}
 			}
@@ -631,6 +746,17 @@ func cloneProps(src map[string]Value) map[string]Value {
 	for k, v := range src {
 		dst[k] = v
 	}
+	return dst
+}
+
+// cloneSlots копирует слоты объявленных свойств (клонирование объекта):
+// значения общие (ссылки/массивы COW), слайс — собственный.
+func cloneSlots(src []Slot) []Slot {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]Slot, len(src))
+	copy(dst, src)
 	return dst
 }
 
@@ -676,6 +802,7 @@ func RegisterClass[T any](name string, parent ClassInfo) *runtimeClass {
 			return nil
 		}
 		no := ci.nativeClone(ci, o)
+		no.slots = cloneSlots(o.slots)
 		no.props = cloneProps(o.props)
 		no.unset = cloneBoolMap(o.unset)
 		markReadonlyReinit(ci, no)
@@ -818,12 +945,21 @@ func (c *runtimeClass) cloneObject(o *Object) *Object {
 	return c.cloneObj(o)
 }
 
-// GetProp — handlers чтения: объявленное свойство через доступор, иначе props.
+// GetProp — handlers чтения: объявленное свойство (нативный мост или слот),
+// иначе props.
 func (c *runtimeClass) GetProp(o *Object, name string) (Value, bool) {
 	if f := c.findPropGet(name); f != nil {
 		return f(o), true
 	}
 	if o == nil {
+		return nil, false
+	}
+	if s, ok := o.slotValue(name); ok {
+		return s, true
+	}
+	if _, declared := o.slotIndex(name); declared {
+		// Объявленное, но неинициализированное/снятое unset(): как отсутствие
+		// в props-модели (вызывающий уходит в __get/uninit-диагностику).
 		return nil, false
 	}
 	if v, ok := o.props[name]; ok {
@@ -838,13 +974,31 @@ func (c *runtimeClass) GetProp(o *Object, name string) (Value, bool) {
 	return nil, false
 }
 
-// SetProp — handlers записи.
+// SetProp — handlers записи: нативный мост, объявленный слот, иначе props.
 func (c *runtimeClass) SetProp(o *Object, name string, v Value) {
 	if f := c.findPropSet(name); f != nil {
 		f(o, v)
 		return
 	}
 	if o == nil {
+		return
+	}
+	if idx, ok := o.slotIndex(name); ok {
+		if idx >= len(o.slots) {
+			o.ensureSlots(c)
+		}
+		s := valueSlot(v)
+		old := Slot{}
+		if idx < len(o.slots) {
+			old = o.slots[idx]
+		}
+		if old.typ != slotUninit && c.vm != nil {
+			c.vm.noteDropped(old)
+			c.vm.noteStored(s)
+		} else if c.vm != nil {
+			c.vm.noteStored(s)
+		}
+		o.storeDeclaredSlot(idx, s)
 		return
 	}
 	if o.props == nil {
@@ -1250,7 +1404,31 @@ func (vm *VM) scopedProp(scope, obj ClassInfo, name string) (*propDecl, ClassInf
 	vm.scopedValid = true
 	vm.scopedScope, vm.scopedObj, vm.scopedName = scope, obj, name
 	vm.scopedPd, vm.scopedDecl, vm.scopedOk = pd, decl, ok
+	vm.scopedIdx = -1
+	if ok && pd != nil && !pd.static {
+		key := name
+		if pd.vis == Private {
+			key = mangledPropKey(decl, name)
+		}
+		vm.scopedKey = key
+		if rc, ok2 := asRuntimeClass(decl); ok2 && rc != nil {
+			if i, ok3 := rc.layout().byKey[key]; ok3 {
+				vm.scopedIdx = i
+			}
+		}
+	}
 	return pd, decl, ok
+}
+
+// scopedSlot возвращает результаты резолва свойства вместе с ключом хранения и
+// индексом слота (idx = -1 — свойство хранится не в слоте: динамическое,
+// нативный мост, enum). Использует кэш scopedProp.
+func (vm *VM) scopedSlot(ci ClassInfo, name string) (*propDecl, ClassInfo, string, int, bool) {
+	pd, decl, ok := vm.scopedProp(vm.ctx.self, ci, name)
+	if !ok || pd == nil || pd.static {
+		return pd, decl, "", -1, false
+	}
+	return pd, decl, vm.scopedKey, vm.scopedIdx, true
 }
 
 // propKey возвращает ключ хранения свойства: для private — предвычисленный
@@ -1318,58 +1496,63 @@ func isReadonlyClass(ci ClassInfo) bool {
 	return false
 }
 
-// applyDefaults заполняет props дефолтами с учётом наследования.
+// applyDefaults заполняет слоты дефолтами с учётом наследования. Раскладка
+// класса (classSlots) уже включает родительские слоты; ленивые дефолты
+// разрешаются тут (значения кэшируются в раскладке класса объявления).
 func (c *runtimeClass) applyDefaults(o *Object) {
-	if c.parent != nil {
-		c.parent.applyDefaults(o)
-	}
-	if o == nil || (len(c.defaults) == 0 && len(c.lazyDefaults) == 0) {
+	cs := c.layout()
+	if o == nil {
 		return
 	}
-	if o.props == nil {
-		o.props = make(map[string]Value, len(c.defaults)+len(c.lazyDefaults))
+	if n := len(cs.entries); n > 0 {
+		o.slots = make([]Slot, n)
+		copy(o.slots, cs.defaults)
 	}
-	for _, k := range c.propOrder {
-		if v, ok := c.defaults[k]; ok {
-			c.applyDefault(o, k, v)
+	if cs.defErr != nil && c.vm != nil {
+		c.vm.setPendingDefaultError(cs.defErr)
+	}
+	for k := c; k != nil; k = k.parent {
+		if len(k.lazyDefaults) == 0 {
 			continue
 		}
-		if th, ok := c.lazyDefaults[k]; ok {
-			v, err := c.resolveThunk(th)
+		kcs := k.layout()
+		for _, name := range k.propOrder {
+			th, ok := k.lazyDefaults[name]
+			if !ok {
+				continue
+			}
+			pd := k.ownProps[name]
+			if pd != nil && pd.static {
+				continue
+			}
+			key := name
+			if pd != nil && pd.vis == Private {
+				key = mangledPropKey(k, name)
+			}
+			idx, ok2 := cs.byKey[key]
+			if !ok2 || o.slots == nil {
+				continue
+			}
+			v, err := k.resolveThunk(th)
 			if err != nil {
-				// PHP бросил бы Error во время конструирования; фиксируем в VM.
-				if c.vm != nil {
-					c.vm.setPendingDefaultError(err)
+				if k.vm != nil {
+					k.vm.setPendingDefaultError(err)
 				}
 				continue
 			}
-			c.applyDefault(o, k, v)
-		}
-	}
-}
-
-// applyDefault записывает дефолтное значение свойства, проверяя его
-// совместимость с объявленным типом (правило Zend: как strict-приведение —
-// точное совпадение или int->float). Несовместимость откладывается в VM.
-func (c *runtimeClass) applyDefault(o *Object, k string, v Value) {
-	key := k
-	if pd, ok := c.ownProps[k]; ok && pd.vis == Private {
-		key = mangledPropKey(c, k)
-	}
-	if s, ok := v.(Slot); ok && c.vm != nil {
-		if pd, dc := c.propDeclOf(k); pd != nil && pd.hasType {
-			out, err := c.vm.coercePropValue(pd, dc, k, s, true, false)
-			if err != nil {
-				c.vm.setPendingDefaultError(err)
-				return
+			s, cerr := k.defaultSlotValue(pd, name, v)
+			if cerr != nil {
+				if k.vm != nil {
+					k.vm.setPendingDefaultError(cerr)
+				}
+				continue
 			}
-			v = out
+			o.slots[idx] = s
+			if idx < len(kcs.defaults) {
+				kcs.defaults[idx] = s
+			}
 		}
 	}
-	if s, ok := v.(Slot); ok && s.typ == ArrayType {
-		s.AsArray().MarkShared()
-	}
-	o.props[key] = v
 }
 
 // propDeclOf находит объявление свойства name в цепочке наследования.
@@ -1578,8 +1761,8 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 				key := mangledPropKey(c, name)
 				seen[key] = true
 				suffix := `:"` + c.name + `":private`
-				if v, ok := o.props[key]; ok {
-					out = append(out, DumpEntry{Key: name, Val: valueSlot(v), Suffix: suffix, Decl: c.name})
+				if v, ok := o.propValueRaw(key); ok {
+					out = append(out, DumpEntry{Key: name, Val: v, Suffix: suffix, Decl: c.name})
 					continue
 				}
 				if o.IsUnset(key) {
@@ -1602,8 +1785,8 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 				isTyped = pd.hasType
 				uninitType = pd.typ
 			}
-			if v, ok := o.props[name]; ok {
-				out = append(out, DumpEntry{Key: name, Val: valueSlot(v), Suffix: suffix, Decl: effDecl[name]})
+			if v, ok := o.propValueRaw(name); ok {
+				out = append(out, DumpEntry{Key: name, Val: v, Suffix: suffix, Decl: effDecl[name]})
 				continue
 			}
 			if isTyped {
@@ -1699,7 +1882,7 @@ func (c *runtimeClass) propNames(o *Object) []string {
 					continue
 				}
 				seen[name] = true
-				if _, ok := o.props[mangledPropKey(c, name)]; ok {
+				if _, ok := o.propValueRaw(mangledPropKey(c, name)); ok {
 					out = append(out, name)
 				}
 				continue
@@ -1707,7 +1890,7 @@ func (c *runtimeClass) propNames(o *Object) []string {
 			if seen[name] {
 				continue
 			}
-			if _, ok := o.props[name]; ok {
+			if _, ok := o.propValueRaw(name); ok {
 				seen[name] = true
 				out = append(out, name)
 				continue

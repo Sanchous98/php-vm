@@ -431,10 +431,8 @@ func registerSplArraySerialize(ci *runtimeClass) {
 			ret.Set(MakeIntKey(1), MakeArray(storage))
 			props := NewArray()
 			if o := ctx.ThisObj(); o != nil {
-				for k, v := range o.props {
-					var s Slot
-					SlotOf(&s, v)
-					props.Set(MakeStrKey(k), s)
+				for _, pp := range ctx.VM().ObjectPropPairs(o) {
+					props.Set(MakeStrKey(pp.Key), pp.Val)
 				}
 			}
 			ret.Set(MakeIntKey(2), MakeArray(props))

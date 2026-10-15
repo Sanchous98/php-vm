@@ -98,6 +98,10 @@ type VM struct {
 	scopedPd    *propDecl
 	scopedDecl  ClassInfo
 	scopedOk    bool
+	// scopedKey/scopedIdx — ключ хранения и индекс слота свойства из
+	// последнего резолва (idx = -1, если хранилище не слот).
+	scopedKey string
+	scopedIdx int
 	// unserState — разделяемое состояние активного unserialize() (var_hash):
 	// вложенные вызовы (внутри Serializable::unserialize) переиспользуют его.
 	unserState any
@@ -1954,15 +1958,34 @@ func (vm *VM) mergeNamedVariadic(args []Slot, fn *Function) {
 // аргументы (до упаковки вариативного хвоста). namedCount — число
 // аргументов до лишних именованных (-1, если вызов без них): Zend не
 // учитывает extra named args в func_num_args/func_get_args.
-func (vm *VM) enterFunc(cf *CompiledFunction, args []Slot, namedCount int) func() {
-	prevParams, prevVar, prevFixed, prevIn := vm.funcParams, vm.funcVariadic, vm.funcNumFixed, vm.inFunction
-	prevNamed := vm.curNamedCount
+// funcEnv — сохранённое окружение текущего вызова (замена замыканию enterFunc:
+// восстановление после вызова без аллокации на каждый вызов).
+type funcEnv struct {
+	params     int
+	numFixed   int
+	named      int
+	variadic   bool
+	inFunction bool
+}
+
+// enterFuncEnv переключает VM в контекст тела функции и возвращает прежний.
+func (vm *VM) enterFuncEnv(cf *CompiledFunction, namedCount int) funcEnv {
+	prev := funcEnv{
+		params:     vm.funcParams,
+		numFixed:   vm.funcNumFixed,
+		named:      vm.curNamedCount,
+		variadic:   vm.funcVariadic,
+		inFunction: vm.inFunction,
+	}
 	vm.funcParams, vm.funcVariadic, vm.funcNumFixed, vm.inFunction = cf.numParams, cf.variadic, cf.numFixed, true
 	vm.curNamedCount = namedCount
-	return func() {
-		vm.funcParams, vm.funcVariadic, vm.funcNumFixed, vm.inFunction = prevParams, prevVar, prevFixed, prevIn
-		vm.curNamedCount = prevNamed
-	}
+	return prev
+}
+
+// restoreFuncEnv восстанавливает окружение вызывающего.
+func (vm *VM) restoreFuncEnv(prev funcEnv) {
+	vm.funcParams, vm.funcVariadic, vm.funcNumFixed, vm.inFunction = prev.params, prev.variadic, prev.numFixed, prev.inFunction
+	vm.curNamedCount = prev.named
 }
 
 // InFunction сообщает, исполняется ли сейчас тело userland-функции.
@@ -5800,13 +5823,15 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			return res, err
 		}
 	}
-	var restFn func()
+	var env funcEnv
+	haveEnv := false
 	// rawArgs — аргументы как их видит вызывающий: в трейсе вариативные
 	// аргументы показываются по отдельности (Zend хранит их в кадре), а не
 	// упакованным массивом.
 	rawArgs := display
 	if cf, ok := fn.Executable.(*CompiledFunction); ok {
-		restFn = vm.enterFunc(cf, args, namedCount)
+		env = vm.enterFuncEnv(cf, namedCount)
+		haveEnv = true
 		if len(fn.ByRefArgs) > 0 {
 			// Диагностику by-ref смотрим на исходных аргументах: variadic-хвост
 			// ещё не упакован (value-аргументы вариативного by-ref параметра
@@ -5821,8 +5846,8 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	vm.pendingFrameNamed = nil
 	if extras != nil && isNativeFn && !fn.AcceptsExtraNamed {
 		vm.popCall()
-		if restFn != nil {
-			restFn()
+		if haveEnv {
+			vm.restoreFuncEnv(env)
 		}
 		return Slot{}, vm.extraNamedNativeErr(fn)
 	}
@@ -5845,8 +5870,8 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	vm.ctx.this, vm.ctx.self, vm.ctx.called = savedThis, savedSelf, savedCalled
 	vm.suppress = savedSuppress
 	vm.popCall()
-	if restFn != nil {
-		restFn()
+	if haveEnv {
+		vm.restoreFuncEnv(env)
 	}
 	return res, err
 }
@@ -6739,28 +6764,38 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		vm.warnByRefArgs(fn, args)
 	}
 	cf, isCompiled := fn.Executable.(*CompiledFunction)
-	var restFn func()
+	var env funcEnv
+	haveEnv := false
 	if isCompiled {
-		restFn = vm.enterFunc(cf, args, namedCount)
+		env = vm.enterFuncEnv(cf, namedCount)
+		haveEnv = true
 	}
 	var base []Slot
-	if isCompiled && cf.variadic {
-		base = cf.PackVariadic(args)
-		vm.mergeNamedVariadic(base, fn)
-	} else if !isCompiled {
-		// Нативные функции получают аргументы как есть: у builtins NumArgs=-1.
-		base = args
+	var full []Slot
+	if isCompiled && !cf.variadic && len(cl.Captures) == 0 && !fn.HasParamCoercion() && fn.NumArgs >= 0 && len(args) >= fn.NumArgs {
+		// Быстрый путь: параметры кладутся в кадр прямо из аргументов вызова
+		// (без промежуточных срезов); типов нет — приводить нечего.
+		base = args[:fn.NumArgs]
+		full = base
 	} else {
-		n := fn.NumArgs
-		if n < 0 {
-			n = 0
+		if isCompiled && cf.variadic {
+			base = cf.PackVariadic(args)
+			vm.mergeNamedVariadic(base, fn)
+		} else if !isCompiled {
+			// Нативные функции получают аргументы как есть: у builtins NumArgs=-1.
+			base = args
+		} else {
+			n := fn.NumArgs
+			if n < 0 {
+				n = 0
+			}
+			base = make([]Slot, n)
+			copy(base, args)
 		}
-		base = make([]Slot, n)
-		copy(base, args)
+		full = make([]Slot, len(base)+len(cl.Captures))
+		copy(full, base)
+		copy(full[len(base):], cl.Captures)
 	}
-	full := make([]Slot, len(base)+len(cl.Captures))
-	copy(full, base)
-	copy(full[len(base):], cl.Captures)
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedPending := vm.pendingThis
 	savedSuppress := vm.suppress
@@ -6800,8 +6835,8 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	vm.ctx.this, vm.ctx.self, vm.ctx.called = savedThis, savedSelf, savedCalled
 	vm.pendingThis = savedPending
 	vm.suppress = savedSuppress
-	if restFn != nil {
-		restFn()
+	if haveEnv {
+		vm.restoreFuncEnv(env)
 	}
 	return res, err
 }
@@ -6839,10 +6874,12 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 	vm.ctx.self = fn.Scope
 	vm.ctx.called = called
 	vm.pendingThis = recv
-	var restFn func()
+	var env funcEnv
+	haveEnv := false
 	rawArgs := display
 	if cf, ok := fn.Executable.(*CompiledFunction); ok {
-		restFn = vm.enterFunc(cf, args, namedCount)
+		env = vm.enterFuncEnv(cf, namedCount)
+		haveEnv = true
 		args = cf.PackVariadic(args)
 		vm.mergeNamedVariadic(args, fn)
 	}
@@ -6867,8 +6904,8 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 			if pushed {
 				vm.popCall()
 			}
-			if restFn != nil {
-				restFn()
+			if haveEnv {
+				vm.restoreFuncEnv(env)
 			}
 			return Slot{}, vm.extraNamedNativeErr(fn)
 		}
@@ -6887,8 +6924,8 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 	if pushed {
 		vm.popCall()
 	}
-	if restFn != nil {
-		restFn()
+	if haveEnv {
+		vm.restoreFuncEnv(env)
 	}
 	vm.ctx.this, vm.ctx.self, vm.ctx.called = savedThis, savedSelf, savedCalled
 	vm.pendingThis = savedPending
@@ -7140,6 +7177,45 @@ func (vm *VM) icAt(chunk *Chunk) *icEntry {
 	}
 	return &chunk.ic[pc]
 }
+
+// icProp резолвит объявленное свойство для инструкции с per-pc IC: повторные
+// исполнения (горячие циклы) не обходят иерархию классов и не ищут слот.
+func (vm *VM) icProp(ci ClassInfo, name string, chunk *Chunk) (*propDecl, ClassInfo, string, int, bool) {
+	ic := vm.icAt(chunk)
+	if ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == name && ic.propScope == vm.ctx.self {
+		return ic.propPd, ic.propDecl, ic.propKey, ic.propIdx, ic.propOk
+	}
+	pd, decl, key, idx, ok := vm.scopedSlot(ci, name)
+	if ic != nil {
+		switch ic.propState {
+		case icEmpty:
+			ic.propState = icMono
+		case icMono:
+			ic.propMiss++
+			if ic.propMiss >= icMaxMiss {
+				// Полиморфный сайт: IC не помогает, отключаем (и снимаем
+				// закэшированный признак доступа — он относился к другому
+				// ключу).
+				ic.propState = icDisabled
+				ic.propAccess = false
+				return pd, decl, key, idx, ok
+			}
+		case icDisabled:
+			return pd, decl, key, idx, ok
+		}
+		ic.propClass, ic.propScope, ic.propName = ci, vm.ctx.self, name
+		ic.propPd, ic.propDecl, ic.propKey, ic.propIdx, ic.propOk = pd, decl, key, idx, ok
+		ic.propAccess = true
+		if ok && pd != nil && pd.vis != Public && vm.propAccessErr(pd, decl, name) != nil {
+			ic.propAccess = false
+		}
+	}
+	return pd, decl, key, idx, ok
+}
+
+// icPropAccess сообщает, доступно ли из scope записи IC свойство (доступ
+// считается при заполнении IC: scope — часть ключа).
+func (vm *VM) icPropAccess(ic *icEntry) bool { return ic == nil || ic.propAccess }
 
 // icMaxMiss — сколько смен ключа допускает мономорфный кэш до отключения.
 const icMaxMiss = 4

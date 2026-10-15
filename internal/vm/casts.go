@@ -431,7 +431,6 @@ func castToArray(vm *VM, s Slot) Slot {
 		return MakeArray(NewArray())
 	case ObjectType:
 		a := NewArray()
-		var v Slot
 		o := vm.objectOf(s)
 		if o == nil {
 			return MakeArray(a)
@@ -462,12 +461,11 @@ func castToArray(vm *VM, s Slot) Slot {
 			}
 			return MakeArray(a)
 		}
-		for k, pv := range o.props {
-			SlotOf(&v, pv)
-			if n, ok := canonicalIntKey(k); ok {
-				_ = a.SetInt(n, v)
+		for _, pp := range vm.ObjectPropPairs(o) {
+			if n, ok := canonicalIntKey(pp.Key); ok {
+				_ = a.SetInt(n, pp.Val)
 			} else {
-				_ = a.SetStr(k, v)
+				_ = a.SetStr(pp.Key, pp.Val)
 			}
 		}
 		return MakeArray(a)

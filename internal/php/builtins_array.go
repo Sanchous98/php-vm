@@ -1111,30 +1111,24 @@ func arraySliceFn(ctx *vm.Context) vm.Value {
 	if a.Type() != vm.ArrayType {
 		return vm.MakeArray(out)
 	}
-	type kv struct {
-		k vm.ArrayKey
-		v vm.Slot
-	}
-	var vals []kv
-	for k, v := range a.AsArray().All() {
-		vals = append(vals, kv{k, v})
-	}
+	arr := a.AsArray()
+	n := arr.Len()
 	preserve := len(ctx.Args()) >= 4 && arg(ctx, 3).ToBool()
 	off := int(arg(ctx, 1).ToInt())
 	if off < 0 {
-		off = len(vals) + off
+		off = n + off
 	}
 	if off < 0 {
 		off = 0
 	}
-	if off > len(vals) {
+	if off > n {
 		return vm.MakeArray(out)
 	}
-	end := len(vals)
+	end := n
 	if len(ctx.Args()) >= 3 {
 		lslot := arg(ctx, 2)
 		if lslot.Type() == vm.NullType {
-			end = len(vals)
+			end = n
 		} else {
 			switch lslot.Type() {
 			case vm.IntType, vm.BoolType, vm.FloatType:
@@ -1153,26 +1147,42 @@ func arraySliceFn(ctx *vm.Context) vm.Value {
 			}
 			l := int(lslot.ToInt())
 			if l >= 0 {
-				if l > len(vals)-off {
-					end = len(vals)
+				if l > n-off {
+					end = n
 				} else {
 					end = off + l
 				}
 			} else {
-				end = len(vals) + l
+				end = n + l
 				if end < 0 {
 					end = 0
 				}
 			}
 		}
 	}
-	if end > len(vals) {
-		end = len(vals)
+	if end > n {
+		end = n
 	}
 	if end < off {
 		return vm.MakeArray(out)
 	}
-	for _, e := range vals[off:end] {
+	// Собираем только запрошенный диапазон: хвост массива не копируется.
+	type kv struct {
+		k vm.ArrayKey
+		v vm.Slot
+	}
+	vals := make([]kv, 0, end-off)
+	idx := 0
+	for k, v := range arr.All() {
+		if idx >= end {
+			break
+		}
+		if idx >= off {
+			vals = append(vals, kv{k, v})
+		}
+		idx++
+	}
+	for _, e := range vals {
 		if preserve || e.k.IsStr() {
 			out.Set(e.k, e.v)
 		} else {
@@ -2048,6 +2058,38 @@ func arrayMapFn(ctx *vm.Context) vm.Value {
 		return *new(vm.Value)
 	}
 	arrays := args[1:]
+	// Один массив (горячий случай): без снимков значений/ключей — обход
+	// исходного массива напрямую, буфер аргументов переиспользуется.
+	if len(arrays) == 1 {
+		if arrays[0].Type() != vm.ArrayType {
+			ctx.Throw(vm.NewThrowable("TypeError",
+				vm.ArgTypeError("array_map", 2, "array", "array", phpTypeName(ctx, 1), "", 0)))
+			if ctx.HasThrown() {
+				return *new(vm.Value)
+			}
+		}
+		identity := cb.IsNull()
+		if identity {
+			src := derefSlot(arrays[0])
+			if src.Type() == vm.ArrayType {
+				src.AsArray().MarkShared()
+				return src
+			}
+		}
+		arr := arrays[0].AsArray()
+		out := vm.NewArray()
+		var ab [1]vm.Slot
+		for k, v := range arr.All() {
+			ab[0] = v
+			res, err := ctx.VMInstance().CallCallable(ctx, cb, ab[:])
+			throwCallable(ctx, err)
+			if ctx.HasThrown() {
+				return *new(vm.Value)
+			}
+			out.Set(k, res)
+		}
+		return vm.MakeArray(out)
+	}
 	values := make([][]vm.Slot, len(arrays))
 	keys := make([][]vm.ArrayKey, len(arrays))
 	maxLen := 0
@@ -2064,6 +2106,8 @@ func arrayMapFn(ctx *vm.Context) vm.Value {
 			}
 		}
 		arr := arrays[i].AsArray()
+		values[i] = make([]vm.Slot, 0, arr.Len())
+		keys[i] = make([]vm.ArrayKey, 0, arr.Len())
 		for k, v := range arr.All() {
 			keys[i] = append(keys[i], k)
 			values[i] = append(values[i], v)
@@ -2154,19 +2198,22 @@ func arrayFilterFn(ctx *vm.Context) vm.Value {
 	}
 	out := vm.NewArray()
 	useCb := !cb.IsNull()
+	var ab [2]vm.Slot
 	for k, v := range arr.All() {
 		keep := v.ToBool()
 		if useCb {
-			var callArgs []vm.Slot
+			n := 1
 			switch mode {
 			case 2:
-				callArgs = []vm.Slot{arrayKeySlot(k)}
+				ab[0] = arrayKeySlot(k)
 			case 1:
-				callArgs = []vm.Slot{v, arrayKeySlot(k)}
+				ab[0] = v
+				ab[1] = arrayKeySlot(k)
+				n = 2
 			default:
-				callArgs = []vm.Slot{v}
+				ab[0] = v
 			}
-			res, err := ctx.VMInstance().CallCallable(ctx, cb, callArgs)
+			res, err := ctx.VMInstance().CallCallable(ctx, cb, ab[:n])
 			throwCallable(ctx, err)
 			if ctx.HasThrown() {
 				return *new(vm.Value)
@@ -2197,8 +2244,10 @@ func arrayReduceFn(ctx *vm.Context) vm.Value {
 	if len(args) >= 3 {
 		carry = args[2]
 	}
+	var ab [2]vm.Slot
 	for _, v := range arr.All() {
-		res, err := ctx.VMInstance().CallCallable(ctx, cb, []vm.Slot{carry, v})
+		ab[0], ab[1] = carry, v
+		res, err := ctx.VMInstance().CallCallable(ctx, cb, ab[:])
 		throwCallable(ctx, err)
 		if ctx.HasThrown() {
 			return *new(vm.Value)
@@ -2213,6 +2262,26 @@ type arrayElem struct {
 	k vm.ArrayKey
 	v vm.Slot
 }
+
+// elemSorter — стабильная сортировка снимка массива пользовательским
+// компаратором: sort.Stable по конкретному типу (без reflect-swapper, который
+// использует sort.SliceStable).
+type elemSorter struct {
+	elems    []arrayElem
+	byKey    bool
+	callComp func(lhs, rhs vm.Slot) bool
+}
+
+func (s elemSorter) Len() int { return len(s.elems) }
+
+func (s elemSorter) Less(i, j int) bool {
+	if s.byKey {
+		return s.callComp(arrayKeySlot(s.elems[i].k), arrayKeySlot(s.elems[j].k))
+	}
+	return s.callComp(s.elems[i].v, s.elems[j].v)
+}
+
+func (s elemSorter) Swap(i, j int) { s.elems[i], s.elems[j] = s.elems[j], s.elems[i] }
 
 func arrayElems(a *vm.Array) []arrayElem {
 	out := make([]arrayElem, 0, a.Len())
@@ -2435,9 +2504,9 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 		return *new(vm.Value)
 	}
 	cb := arg(ctx, 1)
-	elems := arrayElems(a)
 	var callErr error
 	boolRet := false
+	var ab [2]vm.Slot
 	sign := func(x int64) int64 {
 		if x > 0 {
 			return 1
@@ -2451,7 +2520,8 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 	// вызывает Deprecated и (для false) повторный вызов с перестановкой
 	// операндов, как в Zend.
 	callComp := func(lhs, rhs vm.Slot) bool {
-		res, err := ctx.VMInstance().CallCallable(ctx, cb, []vm.Slot{lhs, rhs})
+		ab[0], ab[1] = lhs, rhs
+		res, err := ctx.VMInstance().CallCallable(ctx, cb, ab[:])
 		if err != nil {
 			if callErr == nil {
 				callErr = err
@@ -2461,7 +2531,8 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 		if res.Type() == vm.BoolType {
 			boolRet = true
 			if !res.ToBool() {
-				res2, err2 := ctx.VMInstance().CallCallable(ctx, cb, []vm.Slot{rhs, lhs})
+				ab[0], ab[1] = rhs, lhs
+				res2, err2 := ctx.VMInstance().CallCallable(ctx, cb, ab[:])
 				if err2 != nil {
 					if callErr == nil {
 						callErr = err2
@@ -2474,15 +2545,17 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 		}
 		return sign(res.ToInt()) < 0
 	}
-	sort.SliceStable(elems, func(i, j int) bool {
-		var lhs, rhs vm.Slot
-		if byKey {
-			lhs, rhs = arrayKeySlot(elems[i].k), arrayKeySlot(elems[j].k)
-		} else {
-			lhs, rhs = elems[i].v, elems[j].v
-		}
-		return callComp(lhs, rhs)
-	})
+	// usort (ключи не сохраняются): сортируем только значения — Swap
+	// переставляет Slot (24 байта), а не пару ключ/значение.
+	var elems []arrayElem
+	var vals []vm.Slot
+	if !preserve && !byKey {
+		vals = a.Values()
+		sort.Stable(slotSorter{vals: vals, callComp: callComp})
+	} else {
+		elems = arrayElems(a)
+		sort.Stable(elemSorter{elems: elems, byKey: byKey, callComp: callComp})
+	}
 	if boolRet {
 		ctx.VM().Deprecated(fn + "(): Returning bool from comparison function is deprecated, return an integer less than, equal to, or greater than zero")
 	}
@@ -2491,16 +2564,33 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 		return *new(vm.Value)
 	}
 	out := vm.NewArray()
-	for _, e := range elems {
-		if preserve {
-			out.Set(e.k, e.v)
-		} else {
-			out.Append(e.v)
+	if vals != nil {
+		for _, v := range vals {
+			out.Append(v)
+		}
+	} else {
+		for _, e := range elems {
+			if preserve {
+				out.Set(e.k, e.v)
+			} else {
+				out.Append(e.v)
+			}
 		}
 	}
 	set(out)
 	return vm.Bool(true)
 }
+
+// slotSorter — стабильная сортировка снимка значений (usort): ключи не
+// сохраняются, поэтому Swap перемещает только сами значения.
+type slotSorter struct {
+	vals     []vm.Slot
+	callComp func(lhs, rhs vm.Slot) bool
+}
+
+func (s slotSorter) Len() int           { return len(s.vals) }
+func (s slotSorter) Less(i, j int) bool { return s.callComp(s.vals[i], s.vals[j]) }
+func (s slotSorter) Swap(i, j int)      { s.vals[i], s.vals[j] = s.vals[j], s.vals[i] }
 
 func usortFn(ctx *vm.Context) vm.Value  { return sortWithCallback(ctx, "usort", false, false) }
 func uasortFn(ctx *vm.Context) vm.Value { return sortWithCallback(ctx, "uasort", false, true) }

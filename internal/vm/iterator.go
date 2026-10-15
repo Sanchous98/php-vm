@@ -205,7 +205,7 @@ func (vm *VM) iterInitPropsMode(o Slot) Slot {
 	state.SetStr("keys", MakeArray(keys))
 	state.SetStr("idx", MakeInt(0))
 	if ob := vm.objectOf(o); ob != nil {
-		state.SetStr("n", MakeInt(int64(len(ob.props))))
+		state.SetStr("n", MakeInt(int64(ob.propCount())))
 	}
 	return MakeArray(state)
 }
@@ -468,7 +468,7 @@ func (vm *VM) iterPropsValid(a *Array) bool {
 		return false
 	}
 	keys := deref(stateGet(a, "keys")).AsArray()
-	if ob := vm.objectOf(o); ob != nil && int64(len(ob.props)) != stateGet(a, "n").Int() {
+	if ob := vm.objectOf(o); ob != nil && int64(ob.propCount()) != stateGet(a, "n").Int() {
 		seen := map[string]bool{}
 		for _, v := range keys.All() {
 			seen[v.ToString()] = true
@@ -478,7 +478,7 @@ func (vm *VM) iterPropsValid(a *Array) bool {
 				_, _ = keys.Append(MakeString(n))
 			}
 		}
-		a.SetStr("n", MakeInt(int64(len(ob.props))))
+		a.SetStr("n", MakeInt(int64(ob.propCount())))
 	}
 	idx := stateGet(a, "idx").Int()
 	for idx < int64(keys.Len()) {

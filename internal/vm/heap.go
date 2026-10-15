@@ -25,7 +25,13 @@ type Object struct {
 	// incomplete — класс объекта это __PHP_Incomplete_Class (быстрая проверка
 	// на горячем пути вызова метода вместо сравнения имени класса).
 	incomplete bool
-	props      map[string]Value
+	// slots — объявленные нестатические свойства по раскладке класса
+	// (runtimeClass.layout): запись/чтение без боксинга Value-интерфейса.
+	// Индекс слота стабилен для всей иерархии (наследник копирует родительские
+	// слоты). Неинициализированное типизированное свойство и свойство, снятое
+	// unset(), лежат как uninitSlot. Динамические свойства — в props.
+	slots []Slot
+	props map[string]Value
 	// unset — имена объявленных свойств, явно снятых unset(). После unset
 	// доступ идёт через __get (PHP-семантика «unset state»).
 	unset map[string]bool
@@ -145,6 +151,145 @@ func (o *Object) ClassName() string {
 	return o.class.Name()
 }
 
+// uninitType — внутренний тег слота «объявленное свойство не инициализировано»
+// (типизированное без дефолта) или «снято unset()». Наружу (Value/диагностики/
+// дампы) такой слот не выходит: потребители проверяют isUninit.
+const slotUninit Type = 0xFF
+
+// makeUninit — слот неинициализированного объявленного свойства.
+func makeUninit() Slot { return Slot{typ: slotUninit} }
+
+// isUninit сообщает, что слот — маркер неинициализированного свойства.
+func isUninit(s Slot) bool { return s.typ == slotUninit }
+
+// slotIndex возвращает индекс слота объявленного свойства по ключу хранения
+// (имя или манглированный ключ private). ok=false для динамических свойств,
+// нативных мостов (Go-поля) и объектов без раскладки.
+func (o *Object) slotIndex(key string) (int, bool) {
+	if o == nil {
+		return 0, false
+	}
+	rc, ok := asRuntimeClass(o.class)
+	if !ok || rc == nil {
+		return 0, false
+	}
+	cs := rc.layout()
+	if len(cs.entries) == 0 {
+		return 0, false
+	}
+	idx, ok := cs.byKey[key]
+	return idx, ok
+}
+
+// slotValue читает объявленное свойство по ключу хранения (без боксинга).
+// ok=false также для неинициализированного/снятого unset() слота.
+func (o *Object) slotValue(key string) (Slot, bool) {
+	idx, ok := o.slotIndex(key)
+	if !ok || idx >= len(o.slots) {
+		return Slot{}, false
+	}
+	s := o.slots[idx]
+	return s, s.typ != slotUninit
+}
+
+// propValueRaw читает свойство (объявленное или динамическое) по ключу
+// хранения без боксинга Value. Нативные мосты (Go-поля) конвертируются.
+// Наличие объявленного, но неинициализированного свойства неотличимо от
+// отсутствующего — как в props-модели.
+func (o *Object) propValueRaw(key string) (Slot, bool) {
+	if o == nil || o.class == nil {
+		return Slot{}, false
+	}
+	if rc, ok := asRuntimeClass(o.class); ok && rc != nil {
+		if f := rc.findPropGet(key); f != nil {
+			return valueSlot(f(o)), true
+		}
+	}
+	if s, ok := o.slotValue(key); ok {
+		return s, true
+	}
+	if o.hasClassSlot(key) {
+		// Свойство объявлено (слот существует), но пусто: динамическую
+		// запись под тем же ключом props-модель не создавала.
+		return Slot{}, false
+	}
+	if v, ok := o.props[key]; ok {
+		return valueSlot(v), true
+	}
+	return Slot{}, false
+}
+
+// hasClassSlot сообщает, что ключ — объявленное нестатическое свойство класса
+// (слот есть, значение может быть неинициализировано).
+func (o *Object) hasClassSlot(key string) bool {
+	_, ok := o.slotIndex(key)
+	return ok
+}
+
+// declaredInitialized сообщает, что объявленное свойство инициализировано
+// (используется проверками readonly/uninit).
+func (o *Object) declaredInitialized(key string) bool {
+	_, ok := o.slotValue(key)
+	return ok
+}
+
+// storeDeclaredSlot записывает значение в слот объявленного свойства.
+// Учёт ссылок (noteStored/noteDropped) делает вызывающий (как в map-пути).
+func (o *Object) storeDeclaredSlot(idx int, s Slot) {
+	if o == nil || idx < 0 || idx >= len(o.slots) {
+		return
+	}
+	o.slots[idx] = s
+}
+
+// propCount возвращает число «живых» мест хранения свойств (инициализированные
+// слоты + записи props): используется foreach-состоянием для детекции
+// изменений свойств во время обхода.
+func (o *Object) propCount() int {
+	if o == nil {
+		return 0
+	}
+	n := len(o.props)
+	for i := range o.slots {
+		if o.slots[i].typ != slotUninit {
+			n++
+		}
+	}
+	return n
+}
+
+// forEachPropValue вызывает f на каждом инициализированном слоте свойств
+// (объявленные слоты + записи props). Порядок не определён (для обхода ссылок).
+func (o *Object) forEachPropValue(f func(Slot)) {
+	if o == nil {
+		return
+	}
+	for i := range o.slots {
+		if s := o.slots[i]; s.typ != slotUninit {
+			f(s)
+		}
+	}
+	for _, v := range o.props {
+		f(valueSlot(v))
+	}
+}
+
+// ensureSlots материализует слоты объекта по раскладке класса (защитный путь
+// для объектов, созданных в обход newObj: слоты выделяются при первой записи).
+func (o *Object) ensureSlots(c *runtimeClass) {
+	if o == nil || c == nil {
+		return
+	}
+	cs := c.layout()
+	if len(cs.entries) == 0 || len(o.slots) >= len(cs.entries) {
+		return
+	}
+	ns := make([]Slot, len(cs.entries))
+	copy(ns, cs.defaults)
+	copy(ns, o.slots)
+	o.slots = ns
+}
+
 // GetProp/SetProp — доступ к свойствам через handlers класса.
 func (o *Object) GetProp(name string) (Value, bool) {
 	if o == nil || o.class == nil {
@@ -160,8 +305,20 @@ func (o *Object) SetProp(name string, v Value) {
 	o.class.SetProp(o, name, v)
 }
 
-// UnsetProp удаляет динамическое свойство (unset($o->x)).
+// UnsetProp удаляет свойство (unset($o->x)): объявленное — слот становится
+// неинициализированным (значение отпускается), динамическое — удаляется из props.
 func (o *Object) UnsetProp(name string) {
+	if idx, ok := o.slotIndex(name); ok {
+		if idx < len(o.slots) {
+			if old := o.slots[idx]; old.typ != slotUninit {
+				if rc, okr := asRuntimeClass(o.class); okr && rc != nil && rc.vm != nil {
+					rc.vm.noteDropped(old)
+				}
+			}
+			o.slots[idx] = makeUninit()
+		}
+		return
+	}
 	if o.props != nil {
 		delete(o.props, name)
 	}
@@ -484,11 +641,58 @@ func (vm *VM) slotOf(o *Object) Slot {
 }
 
 // ObjectPropMap возвращает сырую карту свойств объекта (для builtins).
+// Объявленные слоты добавляются как Slot-значения (props-модель).
 func (vm *VM) ObjectPropMap(o *Object) map[string]Value {
 	if o == nil {
 		return nil
 	}
-	return o.props
+	if len(o.slots) == 0 {
+		return o.props
+	}
+	out := make(map[string]Value, len(o.props)+len(o.slots))
+	for k, v := range o.props {
+		out[k] = v
+	}
+	rc, ok := asRuntimeClass(o.class)
+	if !ok || rc == nil {
+		return out
+	}
+	cs := rc.layout()
+	for i, e := range cs.entries {
+		if i >= len(o.slots) || o.slots[i].typ == slotUninit {
+			continue
+		}
+		out[e.key] = o.slots[i]
+	}
+	return out
+}
+
+// ObjectPropPairs возвращает инициализированные свойства объекта парами
+// (ключ хранения, значение): объявленные слоты + динамические записи.
+func (vm *VM) ObjectPropPairs(o *Object) []PropPair {
+	if o == nil {
+		return nil
+	}
+	out := make([]PropPair, 0, len(o.slots)+len(o.props))
+	if rc, ok := asRuntimeClass(o.class); ok && rc != nil {
+		cs := rc.layout()
+		for i, e := range cs.entries {
+			if i >= len(o.slots) || o.slots[i].typ == slotUninit {
+				continue
+			}
+			out = append(out, PropPair{Key: e.key, Val: o.slots[i]})
+		}
+	}
+	for k, v := range o.props {
+		out = append(out, PropPair{Key: k, Val: valueSlot(v)})
+	}
+	return out
+}
+
+// PropPair — пара (ключ хранения свойства, значение) для builtins.
+type PropPair struct {
+	Key string
+	Val Slot
 }
 
 // NewObjectOf создаёт объект класса ci без вызова конструктора.
@@ -578,8 +782,10 @@ func (vm *VM) setProp(s Slot, name string, v Value) {
 
 func (vm *VM) unsetProp(s Slot, name string) {
 	if o := vm.objectOf(s); o != nil {
-		if old, ok := o.props[name]; ok {
-			vm.noteDroppedValue(old)
+		if _, declared := o.slotIndex(name); !declared {
+			if old, ok := o.props[name]; ok {
+				vm.noteDroppedValue(old)
+			}
 		}
 		o.UnsetProp(name)
 	}

@@ -78,12 +78,35 @@ type Function struct {
 	// SensitiveVariadic — вариативный параметр помечен #[SensitiveParameter]:
 	// все собранные в него аргументы скрываются.
 	SensitiveVariadic bool
+	// typesChecked/hasTypes — кэш «среди ParamTypes есть непустой тип»:
+	// если типов нет, checkParams при вызове ничего не делает.
+	typesChecked bool
+	hasTypes     bool
 	// IsFinal — метод объявлен `final` (для ReflectionMethod::isFinal).
 	IsFinal bool
 	// Attrs — атрибуты `#[...]` объявления (для ReflectionFunction/Method).
 	Attrs []AttributeInfo
 	// ParamAttrs[idx] — атрибуты параметра idx (для ReflectionParameter).
 	ParamAttrs [][]AttributeInfo
+}
+
+// HasParamCoercion сообщает, что хотя бы у одного параметра объявлен тип
+// (при вызове нужен checkParams). Пустые строки в ParamTypes типов не задают.
+func (f *Function) HasParamCoercion() bool {
+	if f == nil {
+		return false
+	}
+	if !f.typesChecked {
+		any := false
+		for _, t := range f.ParamTypes {
+			if t != "" {
+				any = true
+				break
+			}
+		}
+		f.typesChecked, f.hasTypes = true, any
+	}
+	return f.hasTypes
 }
 
 // MarkTrivial помечает функцию как «пустышку» (пустое тело, без параметров):

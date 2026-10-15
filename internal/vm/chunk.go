@@ -310,6 +310,19 @@ type icEntry struct {
 	vis   Visibility
 	miss  uint8
 	state uint8
+
+	// --- IC объявленного свойства (OpPropGet/Set/…, отдельное пространство) ---
+	propState  uint8     // icEmpty / icMono / icDisabled
+	propClass  ClassInfo // класс объекта — guard
+	propScope  ClassInfo // область видимости — guard (vm.ctx.self)
+	propName   string    // имя свойства — guard
+	propPd     *propDecl // метаданные (nil — не объявлено)
+	propDecl   ClassInfo // класс объявления
+	propKey    string    // ключ хранения (манглированный для private)
+	propIdx    int       // индекс слота (-1 — не слот)
+	propOk     bool      // свойство объявлено
+	propAccess bool      // свойство доступно из propScope (кэш propAccessErr)
+	propMiss   uint8
 }
 
 // TryCatch описывает одну catch-ветку try-региона.

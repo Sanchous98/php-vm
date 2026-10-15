@@ -433,6 +433,15 @@ type Closure struct {
 	capUndef []bool
 }
 
+// CapUndefFlags возвращает флаги «неявный захват не определён» (стрелочные
+// функции): такие захваты не печатаются в var_dump (bug81076).
+func (c *Closure) CapUndefFlags() []bool {
+	if c == nil {
+		return nil
+	}
+	return c.capUndef
+}
+
 // ID возвращает PHP-хендл замыкания (#N) или 0, если он ещё не присвоен.
 func (c *Closure) ID() int {
 	if c == nil {

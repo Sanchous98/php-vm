@@ -13423,7 +13423,7 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		}
 		return cell, nil, nil
 	}
-	if !info.silent && refableExpr(e) && info.name != "array_multisort" {
+	if !info.silent && c.refableExprC(e) && info.name != "array_multisort" {
 		// Вызов/new в by-ref позиции: если результат — ссылка, она
 		// пробрасывается; иначе Notice и временная ячейка.
 		// array_multisort — исключение: он не эмитит Notice для временных
@@ -13448,7 +13448,7 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 	// неизвестны), включая скаляры-флаги, которые в Zend by-value: для него
 	// не эмитим диагностику передачи не-переменной.
 	if info.name != "array_multisort" && !info.silent {
-		if refableExpr(e) {
+		if c.refableExprC(e) {
 			c.emitRefNotice("Only variables should be passed by reference")
 		} else {
 			c.emitByRefError(info, pos)
@@ -13479,6 +13479,21 @@ func refableExpr(e Expr) bool {
 		return true
 	}
 	return false
+}
+
+// refableExprC — как refableExpr, но для вызова известной ВСТРОЕННОЙ функции
+// значение не может быть передано по ссылке: Zend бросает «could not be passed
+// by reference» (bug79783), а не Notice «Only variables should be passed by
+// reference» (та — для результатов пользовательских вызовов).
+func (c *compiler) refableExprC(e Expr) bool {
+	if ce, ok := e.(*CallExpr); ok {
+		if i, ok := c.idx[strings.ToLower(strings.TrimLeft(ce.Name, "\\"))]; ok && i >= 0 && i < len(c.funcs) {
+			if _, isNative := c.funcs[i].Executable.(*vm.NativeFunction); isNative {
+				return false
+			}
+		}
+	}
+	return refableExpr(e)
 }
 
 // emitByRefError эмитит фатальную ошибку "could not be passed by reference".

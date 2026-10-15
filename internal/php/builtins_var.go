@@ -1834,17 +1834,24 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			dumpElem(b, vm.MakeArray(parr), indent+1, st)
 		}
 		if len(capVals) > 0 {
-			b.WriteString(inner + `["static"]=>` + "\n")
 			sarr := vm.NewArray()
 			for i, v := range capVals {
+				// Неявный захват стрелочной функции, не определённый в точке
+				// создания, в дамп не попадает (bug81076).
+				if cl != nil && i < len(cl.CapUndefFlags()) && cl.CapUndefFlags()[i] {
+					continue
+				}
 				name := ""
 				if i < len(capNames) {
 					name = capNames[i]
 				}
 				_ = sarr.SetStr(name, v)
 			}
-			b.WriteString(inner)
-			dumpElem(b, vm.MakeArray(sarr), indent+1, st)
+			if sarr.Len() > 0 {
+				b.WriteString(inner + `["static"]=>` + "\n")
+				b.WriteString(inner)
+				dumpElem(b, vm.MakeArray(sarr), indent+1, st)
+			}
 		}
 		if hasThis {
 			b.WriteString(inner + `["this"]=>` + "\n")

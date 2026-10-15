@@ -549,6 +549,12 @@ func (vm *VM) SetDisabledFunctions(names []string) {
 		f.Disabled = true
 		display := f.Name
 		f.NumArgs = 0
+		// Отключённая функция не проверяет арность: Zend не знает её вовсе
+		// (bug69315: is_string() с 0 аргументов — тоже «undefined function»).
+		f.MinArgs = 0
+		f.MaxArgs = 0
+		f.NumRequired = 0
+		f.NativeVariadic = true
 		f.Executable = &NativeFunction{fn: func(ctx *Context, args []Slot) (Slot, error) {
 			return Slot{}, NewThrowable("Error", "Call to undefined function "+display+"()")
 		}}

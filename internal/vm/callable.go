@@ -640,6 +640,25 @@ var scopeIntrospectionNames = map[string]bool{
 	"func_get_arg": true, "func_get_args": true, "func_num_args": true,
 }
 
+// scopeIntrospectionArityErr — Zend проверяет арность frameless-функций
+// (func_get_args/func_num_args — 0, func_get_arg — 1) до запрета динамического
+// вызова: лишние аргументы дают ArgumentCountError (bug72107).
+// Возвращает nil, если аргументов столько, сколько ждёт функция.
+func scopeIntrospectionArityErr(name string, n int) error {
+	want := 0
+	if name == "func_get_arg" {
+		want = 1
+	}
+	if n == want {
+		return nil
+	}
+	plural := "arguments"
+	if want == 1 {
+		plural = "argument"
+	}
+	return NewThrowable("ArgumentCountError", fmt.Sprintf("%s() expects exactly %d %s, %d given", name, want, plural, n))
+}
+
 // scopeIntrospectionName возвращает каноническое имя функции, если callable —
 // строковое имя scope-introspection функции (используется для запрета
 // динамических вызовов).
@@ -773,8 +792,12 @@ func (vm *VM) CallCallableNamedDirectScope(ctx *Context, c Slot, arr *Array, sel
 func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (Slot, error) {
 	// Динамический вызов scope-introspection функций запрещён (Zend:
 	// "Cannot call %s() dynamically") — проверяем до маршалинга аргументов,
-	// чтобы не печатать предупреждения о by-ref параметрах.
+	// чтобы не печатать предупреждения о by-ref параметрах. Арность
+	// func_get_* проверяется ещё раньше (bug72107).
 	if name, ok := scopeIntrospectionName(c); ok {
+		if aerr := scopeIntrospectionArityErr(name, len(args)); aerr != nil {
+			return Slot{}, aerr
+		}
 		return Slot{}, NewThrowable("Error", "Cannot call "+name+"() dynamically")
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called

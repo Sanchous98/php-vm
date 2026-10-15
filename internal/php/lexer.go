@@ -102,6 +102,9 @@ type Lexer struct {
 	pos  int
 	toks []Token
 	php  bool // true — сейчас в режиме PHP-кода, false — HTML-текст
+	// braceDepth — глубина `{}` в PHP-коде: нужна для проверки, что
+	// __halt_compiler() стоит на верхнем уровне скрипта.
+	braceDepth int
 	// pendingAttrs — тексты атрибутов, ожидающие прикрепления к следующему
 	// значащему токену.
 	pendingAttrs []AttrRaw
@@ -344,6 +347,11 @@ func (l *Lexer) runPHP() error {
 			w := l.src[start:l.pos]
 			// __halt_compiler(): всё после него — данные, не разбираем.
 			if strings.EqualFold(w, "__halt_compiler") {
+				// Zend допускает конструкцию только на верхнем уровне
+				// скрипта (bug75218, halt03).
+				if l.braceDepth > 0 {
+					return &fatalError{msg: "__HALT_COMPILER() can only be used from the outermost scope", line: 1 + strings.Count(l.src[:start], "\n")}
+				}
 				j := l.pos
 				for j < len(l.src) && isSpaceByte(l.src[j]) {
 					j++
@@ -407,6 +415,11 @@ func (l *Lexer) runPHP() error {
 			op := l.operator()
 			if op == "" {
 				return l.parseErrf("syntax error, unexpected character 0x%02X", c)
+			}
+			if op == "{" {
+				l.braceDepth++
+			} else if op == "}" && l.braceDepth > 0 {
+				l.braceDepth--
 			}
 			l.emit(Token{Kind: TOp, Val: op, Pos: start})
 		}

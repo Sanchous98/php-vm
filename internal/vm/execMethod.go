@@ -627,6 +627,8 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		// `self::class`/`static::class`/`parent::class` без области класса:
 		// Zend бросает "Cannot use \"X\" in the global scope", а не
 		// "Cannot access ..." (class_name_as_scalar_error_005/006/007).
+		// C == 1 — резолв для `new self/static/parent`: там ошибка Zend —
+		// "Cannot access ... when no class scope is active" (bug70918).
 		kw := ""
 		switch in.B {
 		case 0:
@@ -636,7 +638,11 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		case 2:
 			kw = "parent"
 		}
-		err := NewThrowable("Error", `Cannot use "`+kw+`" in the global scope`)
+		msg := `Cannot use "` + kw + `" in the global scope`
+		if in.C == 1 {
+			msg = `Cannot access "` + kw + `" when no class scope is active`
+		}
+		err := NewThrowable("Error", msg)
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}

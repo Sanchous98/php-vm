@@ -25,6 +25,10 @@ type Compiled struct {
 	// Нужно, чтобы eval() мог бросить перехватываемый ParseError вместо
 	// печати фатала (PHP: parse error в eval — исключение).
 	ParseFatal *parseError
+	// CatchableFatal — не nil, если чанк лишь печатает фатал, который в
+	// eval()/include Zend превращает в перехватываемый CompileError
+	// (диагностики фазы парсера, напр. «Multiple final modifiers…», bug75218).
+	CatchableFatal *fatalError
 }
 
 // compilerDeprecations — стартовые deprecation-сообщения, собранные при
@@ -3673,6 +3677,18 @@ func runSubCode(ctx *vm.Context, src, file string, phpMode bool) (vm.Slot, bool)
 		}
 		return vm.MakeNull(), false
 	}
+	// Компиляционные диагностики фазы парсера в eval()/include — тоже
+	// перехватываемый CompileError (bug75218), а не печать Fatal error.
+	if c.CatchableFatal != nil {
+		th := vm.NewThrowable("ParseError", c.CatchableFatal.msg)
+		th.LocFile = c.Main.File
+		th.LocLine = c.CatchableFatal.line
+		ctx.Throw(th)
+		if ctx.HasThrown() {
+			return *new(vm.Slot), *new(bool)
+		}
+		return vm.MakeNull(), false
+	}
 	// Линкуем новые функции/классы и исполняем подключённый файл в той же VM,
 	// что и вызывающий код (общие globals, видимость объявлений).
 	res, returned, err := vmc.RunLinked(c.Main, c.Funcs, c.Classes, len(funcs), len(classes))
@@ -3876,7 +3892,11 @@ func compileFileModeLink(src, file string, phpMode bool, linkBase *Compiled) (*C
 	c, err := compileProgramLink(src, file, phpMode, linkBase)
 	if err != nil {
 		if fe, ok := err.(*fatalError); ok {
-			return fatalCompiled(fe, file), nil
+			c := fatalCompiled(fe, file)
+			if evalCatchableCompileError(fe.msg) {
+				c.CatchableFatal = fe
+			}
+			return c, nil
 		}
 		if pe, ok := err.(*parseError); ok {
 			return parseFatalCompiled(pe, file), nil
@@ -3884,6 +3904,26 @@ func compileFileModeLink(src, file string, phpMode bool, linkBase *Compiled) (*C
 		return nil, err
 	}
 	return c, nil
+}
+
+// evalCatchableCompileError сообщает, что диагностика компиляции в Zend
+// относится к фазе парсера и потому в eval()/include превращается в
+// перехватываемый CompileError (а в основном скрипте остаётся Fatal error).
+func evalCatchableCompileError(msg string) bool {
+	switch msg {
+	case "Multiple final modifiers are not allowed",
+		"Multiple readonly modifiers are not allowed",
+		"Multiple access type modifiers are not allowed",
+		"Multiple abstract modifiers are not allowed",
+		"Multiple static modifiers are not allowed",
+		"Cannot use the final modifier on an abstract class",
+		"Cannot use the final modifier on an abstract method",
+		"Cannot use the final modifier on a property",
+		"Encoding must be a literal",
+		"__HALT_COMPILER() can only be used from the outermost scope":
+		return true
+	}
+	return false
 }
 
 // stripScriptBOM убирает ведущий UTF-8 BOM скрипта при включённом
@@ -4742,6 +4782,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						return nil, base.newFatal("Cannot use the readonly modifier on a method")
 					}
 					if m.Final {
+						if cd.IsInterface {
+							return nil, base.newFatal(fmt.Sprintf("Interface method %s::%s() must not be final", ci.Name(), m.MName))
+						}
 						return nil, base.newFatal("Cannot use the final modifier on an abstract method")
 					}
 					if cd.IsInterface && visOf(m.Vis) != vm.Public {
@@ -8815,7 +8858,7 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 		if p.Default != nil && p.Type != "" {
 			if k, ok := defaultKind(p.Default); ok && k != "null" && !typeAllowsDefault(p.Type, k) {
 				return nil, c.newFatal(fmt.Sprintf("Cannot use %s as default value for parameter $%s of type %s",
-					k, strings.TrimPrefix(p.Name, "$"), displayType(p.Type)))
+					k, strings.TrimPrefix(p.Name, "$"), defaultTypeDisplay(p.Type)))
 			}
 		}
 	}
@@ -10025,6 +10068,21 @@ func displayType(t string) string {
 	return vm.TypeString(t)
 }
 
+// defaultTypeDisplay — тип для диагностики «Cannot use X as default value for
+// parameter ... of type T»: встроенные имена Zend печатает в нижнем регистре
+// (`String` -> `string`), классы — как написаны.
+func defaultTypeDisplay(t string) string {
+	s := displayType(t)
+	if !strings.ContainsAny(s, "|&?") {
+		switch strings.ToLower(s) {
+		case "int", "float", "string", "bool", "array", "object", "callable",
+			"iterable", "mixed", "void", "never", "null", "false", "true":
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}
+
 // canonicalUnionType приводит union-тип к каноническому порядку Zend для
 // сообщений об ошибках (напр. `int|string` -> `string|int`). Порядок частей
 // соответствует zend_type_to_string: встроенные типы в фиксированном порядке
@@ -10509,9 +10567,62 @@ func containsStaticClassKeyword(e Expr) bool {
 	return false
 }
 
+// emptyIndexRead ищет чтение с пустым индексом `[]` (IndexExpr с Key == nil):
+// Zend запрещает его на компиляции («Cannot use [] for reading»), в том числе
+// внутри константных выражений (bug70912).
+func emptyIndexRead(e Expr) Expr {
+	switch x := e.(type) {
+	case *IndexExpr:
+		if x.Key == nil {
+			return x
+		}
+		if r := emptyIndexRead(x.Arr); r != nil {
+			return r
+		}
+		return emptyIndexRead(x.Key)
+	case *BinExpr:
+		if r := emptyIndexRead(x.L); r != nil {
+			return r
+		}
+		return emptyIndexRead(x.R)
+	case *UnaryExpr:
+		return emptyIndexRead(x.X)
+	case *TernaryExpr:
+		if r := emptyIndexRead(x.Cond); r != nil {
+			return r
+		}
+		if x.Then != nil {
+			if r := emptyIndexRead(x.Then); r != nil {
+				return r
+			}
+		}
+		return emptyIndexRead(x.Else)
+	case *CoalesceExpr:
+		if r := emptyIndexRead(x.L); r != nil {
+			return r
+		}
+		return emptyIndexRead(x.R)
+	case *ArrayLit:
+		for _, el := range x.Elems {
+			if el.Key != nil {
+				if r := emptyIndexRead(el.Key); r != nil {
+					return r
+				}
+			}
+			if r := emptyIndexRead(el.Val); r != nil {
+				return r
+			}
+		}
+	}
+	return nil
+}
+
 func (c *compiler) makeConstValue(cls vm.ClassInfo, e Expr, name string) (vm.Value, *vm.Thunk, error) {
 	if containsStaticClassKeyword(e) {
 		return nil, nil, c.newFatal("static::class cannot be used for compile-time class name resolution")
+	}
+	if idx := emptyIndexRead(e); idx != nil {
+		return nil, nil, &fatalError{msg: "Cannot use [] for reading", line: c.exprLine(idx)}
 	}
 	if v, err := constValueOf(e); err == nil {
 		return v, nil, nil
@@ -10915,6 +11026,12 @@ func (c *compiler) stmt(st Stmt) error {
 					c.storeVar(v.Name, n)
 					c.setUndef(v.Name)
 				}
+			case *DynCallExpr, *CallExpr:
+				// Zend требует «переменную» в unset(): прямой вызов функции —
+				// ошибка компиляции (bug70240).
+				return c.newFatal("Can't use function return value in write context")
+			case *MethodCallExpr, *StaticCallExpr:
+				return c.newFatal("Can't use method return value in write context")
 			}
 		}
 	case *StaticVarStmt:
@@ -14114,18 +14231,36 @@ func (c *compiler) newExpr(x *NewExpr) (uint8, error) {
 	if strings.EqualFold(x.Class, "static") && c.curClass != nil {
 		return c.newStatic(x.Args)
 	}
+	// Без области класса Zend резолвит self/parent/static в рантайме и бросает
+	// перехватываемый Error (bug70918), а не «Class "static" not found».
+	if c.curClass == nil {
+		switch strings.ToLower(strings.TrimLeft(x.Class, "\\")) {
+		case "self":
+			return c.newScopeSel(0, x.Args)
+		case "static":
+			return c.newScopeSel(1, x.Args)
+		case "parent":
+			return c.newScopeSel(2, x.Args)
+		}
+	}
 	return c.newNamed(x.Class, x.Args)
 }
 
 // newStatic компилирует `new static` с поздним статическим связыванием:
 // класс-получатель берётся в рантайме (OpClassName с селектором called).
 func (c *compiler) newStatic(args []Expr) (uint8, error) {
+	return c.newScopeSel(1, args)
+}
+
+// newScopeSel — `new self/static/parent`: класс резолвится в рантайме по
+// селектору (0/1/2); без области класса OpClassName бросает Error.
+func (c *compiler) newScopeSel(sel uint8, args []Expr) (uint8, error) {
 	if hasNamedArg(args) {
 		if msg := argOrderError(args); msg != "" {
 			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
 		}
 		nameReg := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: 1})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel, C: 1})
 		arr, err := c.buildArgArray(args, true, nil)
 		if err != nil {
 			return 0, err
@@ -14133,7 +14268,7 @@ func (c *compiler) newStatic(args []Expr) (uint8, error) {
 		return c.emitCall("__php_new_named", []uint8{nameReg, arr}), nil
 	}
 	nameReg := c.alloc()
-	c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: 1})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel, C: 1})
 	argRegs, wbs, err := c.evalArgs(c.methodRefs["__construct"], args, byRefInfo{})
 	if err != nil {
 		return 0, err

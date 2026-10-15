@@ -2837,6 +2837,12 @@ func (p *Parser) declareStmt() (Stmt, error) {
 			case *IntLit, *FloatLit, *StrLit, *BoolLit, *NullLit:
 				lit = true
 			}
+			// Не-литеральное значение — ошибка компиляции (в eval/include
+			// перехватываемый CompileError, bug75218); не зависит от
+			// zend.multibyte: literal-проверка идёт первой (declare_001..004).
+			if !lit {
+				return nil, &fatalError{msg: "Encoding must be a literal", line: encLine}
+			}
 			return &ExprStmt{X: &CallExpr{Name: "__php_declare_encoding", Args: []Expr{
 				encVal, &BoolLit{V: lit}, &IntLit{V: int64(encLine)},
 			}}}, nil
@@ -5557,7 +5563,12 @@ func (p *Parser) dynAfterDollar() (Expr, error) {
 		p.next()
 		return &VarExpr{Name: t.Val}, nil
 	}
-	return nil, fmt.Errorf("parser: ожидалось имя переменной после $, получено %q", p.cur().Val)
+	t := p.cur()
+	if t.Kind == TStr {
+		// Zend: текст неожидаемой строки печатается как есть (bug70430).
+		return nil, &parseError{msg: "syntax error, unexpected double-quoted string " + strconv.Quote(t.Val) + `, expecting variable or "{" or "$"`, line: p.lineAt(t.Pos)}
+	}
+	return nil, &parseError{msg: "syntax error, unexpected " + tokenDesc(t) + `, expecting variable or "{" or "$"`, line: p.lineAt(t.Pos)}
 }
 
 // braceName разбирает `{ expr }` после `->`/`::`/`$`.

@@ -800,9 +800,7 @@ func (m *lifeVisit) obj(o *Object) {
 			return
 		}
 	}
-	for _, v := range o.props {
-		m.value(v)
-	}
+	o.forEachPropValue(func(s Slot) { m.slot(s) })
 	m.native(o)
 }
 
@@ -1621,11 +1619,7 @@ func (vm *VM) walkObjectRefs(o *Object, f func(Slot)) {
 	case "WeakReference":
 		return
 	}
-	for _, v := range o.props {
-		if s, ok := v.(Slot); ok {
-			f(s)
-		}
-	}
+	o.forEachPropValue(f)
 	// Нативные данные.
 	rc, ok := o.class.(*runtimeClass)
 	if !ok || rc == nil || rc.nativeType == nil {
@@ -1648,11 +1642,7 @@ func (vm *VM) walkObjectRefsOwned(o *Object, fn func(Slot)) {
 	}
 	if vm.fiberClass != nil && o.class.isA(vm.fiberClass) {
 		f := objectAs[Fiber](o, vm.fiberClass)
-		for _, v := range o.props {
-			if s, ok := v.(Slot); ok {
-				fn(s)
-			}
-		}
+		o.forEachPropValue(fn)
 		rc, ok := o.class.(*runtimeClass)
 		if !ok || rc == nil || rc.nativeType == nil {
 			return
@@ -1937,11 +1927,11 @@ func (vm *VM) removeObjectRefSources(o *Object) {
 			if !pd.hasType || strings.EqualFold(pd.typ, "mixed") {
 				continue
 			}
-			v, found := o.props[key]
+			v, found := o.propValueRaw(key)
 			if !found {
 				continue
 			}
-			s := valueSlot(v)
+			s := v
 			if s.typ == RefType {
 				if r := s.Ref(); r != nil {
 					r.delSource(k, name)
@@ -1979,11 +1969,11 @@ func (vm *VM) addCloneRefSources(o *Object) {
 			if !pd.hasType || strings.EqualFold(pd.typ, "mixed") {
 				continue
 			}
-			v, found := o.props[key]
+			v, found := o.propValueRaw(key)
 			if !found {
 				continue
 			}
-			s := valueSlot(v)
+			s := v
 			if s.typ == RefType {
 				if r := s.Ref(); r != nil {
 					if g := guardFor(pd, k, name); g != nil {

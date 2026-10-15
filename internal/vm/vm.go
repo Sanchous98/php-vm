@@ -4152,6 +4152,23 @@ func (vm *VM) exec(chunk *Chunk) error {
 				}
 			}
 		case OpMod:
+			a, b := &regs[in.B], &regs[in.C]
+			if a.typ == IntType && b.typ == IntType {
+				ai, bi := int64(a.num), int64(b.num)
+				if bi == 0 {
+					if !vm.handleThrow(chunk, errModByZero) {
+						return errModByZero
+					}
+					continue
+				}
+				d := &regs[in.A]
+				if in.A != in.B && int(in.A) != int(in.C) && trackedType(d.typ) {
+					vm.wDropReg(int(in.A))
+				}
+				// Go: INT_MIN % -1 == 0 (как и в PHP), паники нет.
+				d.typ, d.num, d.ptr = IntType, uint64(ai%bi), nil
+				break
+			}
 			r, err := vm.modSlow(regs[in.B], regs[in.C])
 			if err != nil {
 				if !vm.handleThrow(chunk, err) {
@@ -4908,6 +4925,38 @@ func (vm *VM) exec(chunk *Chunk) error {
 					}
 				}
 			}
+		case OpModIntK:
+			a := &regs[in.B]
+			if a.typ == IntType {
+				ai, bi := int64(a.num), chunk.constInts[in.C]
+				if bi == 0 {
+					if !vm.handleThrow(chunk, errModByZero) {
+						return errModByZero
+					}
+					continue
+				}
+				d := &regs[in.A]
+				if in.A != in.B && trackedType(d.typ) {
+					vm.wDropReg(int(in.A))
+				}
+				d.typ, d.num, d.ptr = IntType, uint64(ai%bi), nil
+			} else {
+				r, err := vm.modSlow(*a, consts[in.C])
+				if err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return err
+					}
+					continue
+				}
+				{
+					old := regs[in.A]
+					wv := r
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+				}
+			}
 
 		case OpAddIntImm:
 			a := &regs[in.B]
@@ -4986,6 +5035,38 @@ func (vm *VM) exec(chunk *Chunk) error {
 				}
 			} else {
 				r, err := vm.mulSlow(*a, MakeInt(int64(in.C)))
+				if err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return err
+					}
+					continue
+				}
+				{
+					old := regs[in.A]
+					wv := r
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+				}
+			}
+		case OpModIntImm:
+			a := &regs[in.B]
+			if a.typ == IntType {
+				ai, bi := int64(a.num), int64(in.C)
+				if bi == 0 {
+					if !vm.handleThrow(chunk, errModByZero) {
+						return errModByZero
+					}
+					continue
+				}
+				d := &regs[in.A]
+				if in.A != in.B && trackedType(d.typ) {
+					vm.wDropReg(int(in.A))
+				}
+				d.typ, d.num, d.ptr = IntType, uint64(ai%bi), nil
+			} else {
+				r, err := vm.modSlow(*a, MakeInt(int64(in.C)))
 				if err != nil {
 					if !vm.handleThrow(chunk, err) {
 						return err

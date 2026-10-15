@@ -20025,6 +20025,11 @@ func kFormOp(op vm.Opcode, k vm.Const) (vm.Opcode, bool) {
 			return vm.OpMulIntK, true
 		}
 		return 0, false
+	case vm.OpMod:
+		if isInt {
+			return vm.OpModIntK, true
+		}
+		return 0, false
 	case vm.OpLess:
 		if isInt {
 			return vm.OpLessIntK, true
@@ -20064,6 +20069,8 @@ func immFormOp(kop vm.Opcode) vm.Opcode {
 		return vm.OpSubIntImm
 	case vm.OpMulIntK:
 		return vm.OpMulIntImm
+	case vm.OpModIntK:
+		return vm.OpModIntImm
 	case vm.OpLessIntK:
 		return vm.OpLessIntImm
 	case vm.OpLessOrEqualIntK:

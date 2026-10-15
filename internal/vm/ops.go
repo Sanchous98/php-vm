@@ -48,22 +48,27 @@ func arithOperand(s Slot) Slot {
 // строка -> число с Warning "A non-numeric value encountered".
 func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 	a, b = deref(a), deref(b)
-	// Ведуще-числовая (но не вполне числовая) строка СЛЕВА: PHP приводит её
-	// к числу (Warning "A non-numeric value encountered") до проверки
-	// совместимости операндов — в т.ч. если правый операнд недопустим
-	// (`"123foo" + []` → Warning, затем Unsupported operand types).
-	warned := false
-	// Предупреждение о ведуще-числовой строке слева: Zend приводит её к числу
-	// перед проверкой совместимости для +, -, /, %, **, <<, >>; для * и
-	// битовых & | ^ проверка типа идёт раньше (без предупреждения).
+	// Ведуще-числовая (но не вполне числовая) строка: PHP приводит её к числу
+	// с Warning "A non-numeric value encountered" (zend_operators:
+	// is_numeric_string с allow_errors). Предупреждение выдаётся на КАЖДЫЙ
+	// такой операнд ("2 Lorem" + "3 ipsum" — два warning'а).
+	prefixJunk := func(x Slot) bool {
+		if x.typ != StringType || IsNumericString(x.StringVal()) {
+			return false
+		}
+		_, _, ok := numericPrefix(x.StringVal())
+		return ok
+	}
+	warned := 0
+	// Zend приводит левый операнд к числу перед проверкой совместимости для
+	// +, -, /, %, **, <<, >>; для * и битовых & | ^ проверка типа идёт раньше
+	// (без предупреждения).
 	switch op {
 	case "*", "&", "|", "^":
 	default:
-		if a.typ == StringType && !IsNumericString(a.StringVal()) {
-			if _, _, ok := numericPrefix(a.StringVal()); ok {
-				vm.Warn("A non-numeric value encountered")
-				warned = true
-			}
+		if prefixJunk(a) {
+			vm.Warn("A non-numeric value encountered")
+			warned = 1
 		}
 	}
 	// Массивы: `+` — объединение массивов (union), для остальных операций —
@@ -86,6 +91,15 @@ func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 	aBad := a.typ == StringType && !IsNumericString(a.StringVal())
 	bBad := b.typ == StringType && !IsNumericString(b.StringVal())
 	if aBad || bBad {
+		// Warning'и на каждый не-вполне-числовой операнд с числовым префиксом
+		// (левый мог предупредить выше).
+		if warned == 0 && prefixJunk(a) {
+			vm.Warn("A non-numeric value encountered")
+			warned = 1
+		}
+		if prefixJunk(b) {
+			vm.Warn("A non-numeric value encountered")
+		}
 		aNo := aBad
 		if aNo {
 			_, _, aNo = numericPrefix(a.StringVal())
@@ -98,9 +112,6 @@ func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 		}
 		if aNo || bNo {
 			return Slot{}, Slot{}, bitwiseTypeError(a, b, op)
-		}
-		if !warned {
-			vm.Warn("A non-numeric value encountered")
 		}
 	}
 	return arithOperand(a), arithOperand(b), nil

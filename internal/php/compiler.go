@@ -15145,11 +15145,13 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpBitNot, A: d, B: r})
 		case "+":
 			// Унарный плюс — приведение к числу умножением на 1 (Zend
-			// компилирует ZEND_MUL с константой 1): float -0.0 сохраняет знак,
-			// ведуще-числовая строка даёт Warning, нечисловая — TypeError.
+			// компилирует ZEND_MUL: операнд слева, константа 1 справа —
+			// поэтому диагностика "Unsupported operand types: string * int").
+			// float -0.0 сохраняет знак, ведуще-числовая строка даёт Warning,
+			// нечисловая — TypeError.
 			z := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: z, C: int32(c.chunk.AddConst(vm.IntConst(1)))})
-			c.chunk.Emit(vm.Instruction{Op: vm.OpMul, A: d, B: z, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpMul, A: d, B: r, C: int32(z)})
 			return d, nil
 		default:
 			return 0, fmt.Errorf("компилятор: неизвестный унарный оператор %q", x.Op)
@@ -16109,11 +16111,17 @@ func (c *compiler) newNamed(name string, args []Expr) (uint8, error) {
 		}
 		return c.emitCall("__php_new_spread", []uint8{idxReg, arr}), nil
 	}
+	// Zend выделяет объект (ZEND_NEW) до вычисления аргументов конструктора,
+	// поэтому хендл #N занимается раньше объектов из аргументов
+	// (constexpr/new_arg_eval, readonly_clone_success2). Фазы разделены:
+	// OpNew с сентинелом newAllocOnly, затем с newCtorOnly.
+	d := c.alloc()
+	c.emitCallLineHere()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpNew, A: d, C: int32(idx) | int32(vm.NewAllocOnlySentinel)<<16})
 	argRegs, wbs, err := c.evalArgs(c.methodRefs["__construct"], args, byRefInfo{})
 	if err != nil {
 		return 0, err
 	}
-	d := c.alloc()
 	base := c.alloc()
 	for range argRegs {
 		c.alloc()
@@ -16125,7 +16133,7 @@ func (c *compiler) newNamed(name string, args []Expr) (uint8, error) {
 		}
 	}
 	c.emitCallLineHere()
-	c.chunk.Emit(vm.Instruction{Op: vm.OpNew, A: d, B: base, C: int32(idx) | int32(len(argRegs)+1)<<16})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpNew, A: d, B: base, C: int32(len(argRegs)) | int32(vm.NewCtorOnlySentinel)<<16})
 	c.restoreStmtLine()
 	c.tmp = base + uint8(len(argRegs))
 	for _, wb := range wbs {

@@ -306,6 +306,20 @@ func (vm *VM) opRet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 	if l := chunk.LineAt(vm.ip - 1); l > 0 {
 		vm.retLine = l
 	}
+	// return из выполняемого finally отбрасывает отложенное исключение: Zend
+	// оставляет его «активным» до завершения кадра, и ошибка, поднятая при
+	// возврате (тип возврата/выражение return), встаёт в цепочку previous
+	// (return_types/029).
+	for i := len(vm.tries) - 1; i >= 0; i-- {
+		h := &vm.tries[i]
+		if h.fp != vm.fp {
+			continue
+		}
+		if h.savedErr != nil && !h.savedErr.close {
+			vm.abandonedExc = h.savedErr
+			break
+		}
+	}
 	return execResult{err: retSignal{}}
 
 }

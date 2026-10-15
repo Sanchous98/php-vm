@@ -718,7 +718,9 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			// трейта): Zend сообщает про отсутствие родителя.
 			msg = `Cannot use "parent" when current class scope has no parent`
 		} else if in.C == 1 {
-			msg = `Cannot use "` + kw + `" when no class scope is active`
+			// `new self/static/parent` без области класса: Zend бросает
+			// "Cannot access ..." (bug70918, constexpr/new_self_parent).
+			msg = `Cannot access "` + kw + `" when no class scope is active`
 		}
 		err := NewThrowable("Error", msg)
 		if !vm.handleThrow(chunk, err) {

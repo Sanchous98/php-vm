@@ -356,7 +356,9 @@ func (p *iniParser) scanVarRef(s string, i int) (string, int) {
 	if i < len(s) && s[i] == '}' {
 		i++
 	} else if hasFb {
-		p.fail("syntax error, unexpected TC_FALLBACK, expecting TC_VARNAME in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
+		// Fallback прочитан, а '}' нет: Zend сообщает ожидание '}' (а не
+		// TC_FALLBACK/TC_VARNAME) — oss_fuzz_428983568.
+		p.fail("syntax error, unexpected end of file, expecting '}' in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
 	} else {
 		p.fail("syntax error, unexpected end of file, expecting TC_FALLBACK or '}' in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
 	}

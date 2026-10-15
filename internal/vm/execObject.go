@@ -26,8 +26,59 @@ func validClassAutoName(name string) bool {
 	return true
 }
 
+// NewAllocOnlySentinel/NewCtorOnlySentinel — сентинелы поля argc (старшие 16 бит C) для
+// разделённого `new`: Zend выделяет объект (ZEND_NEW) ДО вычисления
+// аргументов конструктора, поэтому хендл #N занимается раньше значений
+// аргументов (constexpr/new_arg_eval, readonly_clone_success2).
+const (
+	// NewAllocOnlySentinel — сентинел argc: только выделение объекта.
+	NewAllocOnlySentinel = 0x7FFF // C = <classIdx> | NewAllocOnlySentinel<<16
+	// NewCtorOnlySentinel — сентинел argc: вызов конструктора над объектом
+	// в regs[A], число аргументов — в младших 16 битах C.
+	NewCtorOnlySentinel = 0x7FFE
+)
+
 func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	classIdx := int(in.C) & 0xFFFF
+	raw := int(in.C >> 16)
+	if raw == NewAllocOnlySentinel {
+		return vm.newAllocInto(regs, chunk, int(in.C)&0xFFFF, int(in.A))
+	}
+	if raw == NewCtorOnlySentinel {
+		return vm.newCtorCall(regs, chunk, in, int(in.C)&0xFFFF)
+	}
+	if hr := vm.newAllocInto(regs, chunk, int(in.C)&0xFFFF, int(in.A)); !hr.ok() {
+		return hr
+	}
+	// argc упакован в старшие 16 бит C как (argc+1): 0 — легаси-байткод без
+	// упакованного argc (ручные чанки в тестах), тогда для конструктора с
+	// необязательными параметрами читаем ctor.NumArgs регистров (старое
+	// поведение). Компилятор всегда упаковывает argc+1, поэтому `new C` без
+	// аргументов не подхватывает устаревшие регистры.
+	argc := raw - 1
+	if raw == 0 {
+		argc = 0
+		if ci := vm.regsObjClass(regs, int(in.A)); ci != nil {
+			if ctor := ci.lookupCtor(); ctor != nil && ctor.NumArgs > 0 && ctor.NumRequired == 0 {
+				argc = ctor.NumArgs
+			}
+		}
+	}
+	return vm.newCtorCall(regs, chunk, in, argc)
+}
+
+// regsObjClass возвращает класс объекта в регистре (для легаси-байткода
+// OpNew без упакованного argc).
+func (vm *VM) regsObjClass(regs []Slot, reg int) ClassInfo {
+	return vm.classInfo(regs[reg])
+}
+
+// ok сообщает, что инструкция завершилась штатно и исполнение продолжается.
+func (r execResult) ok() bool { return r.err == nil && !r.next && !r.halt }
+
+// newAllocInto выполняет фазу ZEND_NEW: проверки класса, выделение объекта и
+// присвоение PHP-хендла. Объект помечается MarkNoDestruct (до успешного
+// конструктора деструктор не вызывается).
+func (vm *VM) newAllocInto(regs []Slot, chunk *Chunk, classIdx, dst int) execResult {
 	if classIdx >= len(vm.classes) {
 		return execResult{err: errUnknownClass}
 	}
@@ -55,7 +106,6 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 	}
 	// disable_classes: Zend убирает класс из таблицы, оставляя имя: new даёт
 	// Warning, конструктор не вызывается, объявленных свойств у объекта нет.
-	disabled := vm.classDisabled(ci)
 	vm.warnDisabledClass(ci)
 	if cerr := vm.resolveAllLazyConsts(ci); cerr != nil {
 		if !vm.handleThrow(chunk, cerr) {
@@ -78,27 +128,26 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 		}
 		return execResult{next: true}
 	}
-	// argc упакован в старшие 16 бит C как (argc+1): 0 — легаси-байткод без
-	// упакованного argc (ручные чанки в тестах), тогда для конструктора с
-	// необязательными параметрами читаем ctor.NumArgs регистров (старое
-	// поведение). Компилятор всегда упаковывает argc+1, поэтому `new C` без
-	// аргументов не подхватывает устаревшие регистры.
-	rawArgc := int(in.C >> 16)
-	argc := rawArgc - 1
-	if rawArgc == 0 {
-		argc = 0
-		if ctor := ci.lookupCtor(); ctor != nil && ctor.NumArgs > 0 && ctor.NumRequired == 0 {
-			argc = ctor.NumArgs
-		}
-	}
 	{
-		old := regs[in.A]
+		old := regs[dst]
 		wv := ci.objectSlot(obj, classIdx)
-		regs[in.A] = wv
+		regs[dst] = wv
 		if trackedType(old.typ) || trackedType(wv.typ) {
-			vm.wRegSlow(int(in.A), old)
+			vm.wRegSlow(dst, old)
 		}
 	}
+	return execResult{}
+}
+
+// newCtorCall выполняет фазу ZEND_DO_FCALL для `new`: вызывает __construct
+// над уже выделенным объектом (regs[in.A]), аргументы — B..B+argc-1.
+func (vm *VM) newCtorCall(regs []Slot, chunk *Chunk, in Instruction, argc int) execResult {
+	obj := regs[in.A]
+	ci := vm.classInfo(obj)
+	if ci == nil {
+		return execResult{}
+	}
+	disabled := vm.classDisabled(ci)
 	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil && !disabled {
 		if !canAccess(ctorVis, ctorDecl, vm.ctx.self) {
 			err := vm.ctorAccessError(ctorVis, classDisplayName(ctorDecl), "__construct")
@@ -111,7 +160,7 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 		if argc > 0 {
 			cargs = regs[int(in.B) : int(in.B)+argc]
 		}
-		if _, err := vm.invokeMethod(ctor, regs[in.A], ci, cargs); err != nil {
+		if _, err := vm.invokeMethod(ctor, obj, ci, cargs); err != nil {
 			// Брошенный конструктор: объект не построен, __destruct не
 			// вызывается (пометка MarkNoDestruct остаётся).
 			if !vm.handleThrow(chunk, err) {
@@ -120,9 +169,11 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 			return execResult{next: true}
 		}
 	}
-	vm.UnmarkNoDestruct(obj)
-	if disabled {
-		vm.unsetDeclaredProps(obj, ci)
+	if o := vm.objectOf(obj); o != nil {
+		vm.UnmarkNoDestruct(o)
+		if disabled {
+			vm.unsetDeclaredProps(o, ci)
+		}
 	}
 	return execResult{}
 }
@@ -1005,20 +1056,50 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			declared = false
 		}
 		if declared && pd.readonly && !readMode && !compound {
-			// Косвенная запись в readonly-свойство:
-			// - промежуточное звено (OpPropGetRWInterm): инициализированное
-			//   свойство допустимо (модифицируется вложенный объект), пустое —
-			//   «Cannot indirectly modify» (variation_nested);
-			// - прямой контейнер (OpPropGetRW): пустое — «indirectly», а
-			//   инициализированное — «Cannot modify» (variation.phpt).
-			if _, init := vm.getProp(recv, key); !init {
+			// Клонированное readonly-свойство сохраняет одноразовое разрешение
+			// на переинициализацию: косвенная запись в __clone допустима и
+			// снимает флаг (readonly_clone_success3/error5).
+			if ob := vm.objectOf(recv); ob != nil && ob.ReadonlyReinitPending(vm.propKey(pd, decl, pname)) {
+				// Разрешено однократно (клонированное readonly-свойство);
+				// флаг снимается на фактической записи (propRefCellMode).
+			} else if arrMode {
+				// Дим-запись в readonly-свойство с объектом-контейнером
+				// (ArrayAccess): Zend модифицирует объект на месте, запись в
+				// само свойство не выполняется — помечаем запись-обратно
+				// разрешённой без readonly-проверки
+				// (readonly_containing_object).
+				if v, ok := vm.getProp(recv, key); ok {
+					if s := valueSlot(v); deref(s).typ == ObjectType || deref(s).typ == ClosureType {
+						if ob := vm.objectOf(recv); ob != nil {
+							vm.pushWbSkipReadonly(ob, key)
+						}
+					} else {
+						err := NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+pname)
+						if !vm.handleThrow(chunk, err) {
+							return execResult{err: err}
+						}
+						return execResult{next: true}
+					}
+				} else {
+					err := NewThrowable("Error", "Cannot indirectly modify readonly property "+decl.Name()+"::$"+pname)
+					if !vm.handleThrow(chunk, err) {
+						return execResult{err: err}
+					}
+					return execResult{next: true}
+				}
+			} else if _, init := vm.getProp(recv, key); !init {
+				// Косвенная запись в readonly-свойство:
+				// - промежуточное звено (OpPropGetRWInterm): инициализированное
+				//   свойство допустимо (модифицируется вложенный объект), пустое —
+				//   «Cannot indirectly modify» (variation_nested);
+				// - прямой контейнер (OpPropGetRW): пустое — «indirectly», а
+				//   инициализированное — «Cannot modify» (variation.phpt).
 				err := NewThrowable("Error", "Cannot indirectly modify readonly property "+decl.Name()+"::$"+pname)
 				if !vm.handleThrow(chunk, err) {
 					return execResult{err: err}
 				}
 				return execResult{next: true}
-			}
-			if !interm {
+			} else if !interm {
 				err := NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+pname)
 				if !vm.handleThrow(chunk, err) {
 					return execResult{err: err}
@@ -1223,6 +1304,34 @@ func (vm *VM) propSetOverloadCommon(regs []Slot, consts []Slot, chunk *Chunk, in
 		name := consts[in.C].StringVal()
 		if dyn {
 			name = deref(regs[in.C]).ToString()
+		}
+		// Запись-обратно, разрешённая дим-записью: readonly-свойство
+		// снимало флаг переинициализации (clone) или содержало объект,
+		// модифицируемый на месте (ArrayObject) — повторная readonly-проверка
+		// не выполняется (FETCH_OBJ_W в Zend уже прошёл —
+		// readonly_containing_object).
+		if ob := vm.objectOf(obj); ob != nil {
+			pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name)
+			key := name
+			if declared {
+				key = vm.propKey(pd, decl, name)
+			}
+			if vm.takeWbSkipReadonly(ob, key) {
+				val := deref(regs[in.B])
+				if declared {
+					cv, verr := vm.coercePropValue(pd, decl, name, val, chunk != nil && chunk.Strict, false)
+					if verr != nil {
+						if !vm.handleThrow(chunk, verr) {
+							return execResult{err: verr}
+						}
+						return execResult{next: true}
+					}
+					val = cv
+				}
+				ob.ClearUnset(key)
+				vm.setProp(obj, key, val)
+				return execResult{}
+			}
 		}
 		if overloaded, byRef := vm.propRefOverloaded(ci, obj, name, true); overloaded && !byRef {
 			// Запись-обратно в overloaded-свойство не выполняется; снимаем
@@ -1467,6 +1576,10 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			}
 			return execResult{next: true}
 		}
+		// Запись-обратно после косвенной модификации: если свойство было
+		// клонировано, одноразовое разрешение на переинициализацию снимается
+		// (readonly_clone_error5: вторая модификация в __clone — ошибка).
+		vm.consumeReadonlyReinit(o, pd, decl, pname)
 		if ob := vm.objectOf(o); ob != nil {
 			ob.ClearUnset(declKey)
 		}

@@ -1650,7 +1650,19 @@ func (vm *VM) propRefCellMode(recv Slot, pname string, argMode bool) (Slot, erro
 		}
 		key := vm.propKey(pd, decl, pname)
 		if pd.readonly {
-			if _, found := vm.getProp(recv, key); found {
+			// Клинированное свойство: одноразовая переинициализация (реальная
+			// ячейка), readonly_clone_success3/error5.
+			if ob := vm.objectOf(recv); ob != nil && ob.ConsumeReadonlyReinit(key) {
+				return vm.propRefCell(recv, key)
+			}
+			if v, found := vm.getProp(recv, key); found {
+				// Zend (8.3) разрешает ссылку на readonly-свойство с объектом:
+				// ячейка отсоединена (запись в неё само свойство не меняет,
+				// объект остаётся общим — readonly_containing_object). Для
+				// не-объектного значения — ошибка.
+				if s := valueSlot(v); deref(s).typ == ObjectType || deref(s).typ == ClosureType {
+					return MakeRef(&Ref{v: deref(s)}), nil
+				}
 				return Slot{}, NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+pname)
 			}
 			return Slot{}, NewThrowable("Error", "Cannot indirectly modify readonly property "+decl.Name()+"::$"+pname)
@@ -1889,6 +1901,15 @@ func (vm *VM) IncDecTypedProp(o Slot, name string, cur Slot, dec bool) (Slot, er
 			fmt.Sprintf("Attempt to %s/decrement property %q on %s", dir, name, valueTypeName(vm, deref(o))))
 	}
 	pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name)
+	// Zend переводит ++/-- свойства в write-контекст (FETCH_OBJ_W): для
+	// readonly-свойства ошибка поднимается ДО вычисления значения
+	// (readonly_containing_object: `++$obj->prop` с объектом-значением даёт
+	// «Cannot modify readonly property», а не «Cannot increment stdClass»).
+	if declared && pd != nil && pd.readonly {
+		if ob := vm.objectOf(o); ob == nil || !ob.ReadonlyReinitPending(vm.propKey(pd, decl, name)) {
+			return Slot{}, NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+name)
+		}
+	}
 	// PRE_INC_OBJ перечитывает ячейку свойства: обработчик ошибки, вызванный
 	// warning'ом при чтении неопределённого свойства, мог записать в это же
 	// свойство (in-de-crement/unset_property_converted_to_obj_in_error_handler).

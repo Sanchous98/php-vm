@@ -965,10 +965,15 @@ func (c *Chunk) buildFallbackLiveMasks(env *RegAllocEnv) []uint64 {
 	for pc := 0; pc < n; pc++ {
 		in := c.code[pc]
 		u, d := &uses[pc], &defs[pc]
-		addOp(u, opArole[in.Op], int(in.A))
+		aRole := opArole[in.Op]
+		if in.Op == OpNew && int(in.C>>16) == NewCtorOnlySentinel {
+			// Фаза вызова конструктора: объект только читается из A.
+			aRole = rUse
+		}
+		addOp(u, aRole, int(in.A))
 		addOp(u, opBrole[in.Op], int(in.B))
 		addOp(u, opCrole[in.Op], int(in.C&0xFF))
-		if opArole[in.Op] == rDef || opArole[in.Op] == rUseDef {
+		if aRole == rDef || aRole == rUseDef {
 			d[in.A>>6] |= 1 << uint(in.A&63)
 		}
 		if opBrole[in.Op] == rDef || opBrole[in.Op] == rUseDef {
@@ -998,7 +1003,7 @@ func (c *Chunk) buildFallbackLiveMasks(env *RegAllocEnv) []uint64 {
 		}
 		switch in.Op {
 		case OpNew:
-			if width == 0 {
+			if width == 0 && int(in.C>>16) == 0 {
 				u[in.B>>6] |= 1 << uint(in.B&63)
 			}
 		case OpMethodCallDyn, OpStaticCallDyn:
@@ -1141,6 +1146,12 @@ func windowFallback(in Instruction, env *RegAllocEnv) (base, width int, slot byt
 		return int(in.B), na, 'B'
 	case OpNew:
 		raw := int(in.C >> 16)
+		if raw == NewAllocOnlySentinel {
+			return int(in.B), 0, 'B'
+		}
+		if raw == NewCtorOnlySentinel {
+			return int(in.B), int(in.C) & 0xFFFF, 'B'
+		}
 		if raw == 0 {
 			return int(in.B), 0, 'B' // легаси: арность берётся у конструктора
 		}

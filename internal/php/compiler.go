@@ -3042,7 +3042,11 @@ func listIndexBuiltin(ctx *vm.Context) vm.Slot {
 // closeGenBuiltin закрывает генератор в слоте (при unset), прогоняя finally.
 func closeGenBuiltin(ctx *vm.Context) vm.Value {
 	if args := ctx.Args(); len(args) > 0 {
-		if err := ctx.VM().CloseIfGenerator(args[0]); err != nil {
+		var exclude []int
+		for _, a := range args[1:] {
+			exclude = append(exclude, int(a.ToInt()))
+		}
+		if err := ctx.VM().CloseIfGeneratorEx(args[0], exclude...); err != nil {
 			if th, ok := err.(*vm.Throwable); ok {
 				ctx.Throw(th)
 				if ctx.HasThrown() {
@@ -11098,7 +11102,17 @@ func (c *compiler) stmt(st Stmt) error {
 					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 					cur := c.loadVar(v.Name)
 					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
-					c.emitCall("__php_close_gen", []uint8{cur})
+					// Регистры, держащие то же значение (сама переменная и
+					// загруженная копия), не считаются «другой ссылкой»:
+					// unset закрывает генератор, только если на него больше
+					// никто не смотрит (bug69221).
+					ex1 := c.alloc()
+					c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: ex1,
+						C: int32(c.chunk.AddConst(vm.IntConst(int64(c.vars[v.Name]))))})
+					ex2 := c.alloc()
+					c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: ex2,
+						C: int32(c.chunk.AddConst(vm.IntConst(int64(cur))))})
+					c.emitCall("__php_close_gen", []uint8{cur, ex1, ex2})
 				}
 				if v.NameExpr == nil && c.useGlobal(v.Name) {
 					c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalUnset, C: int32(c.chunk.AddConst(vm.StrConst(c.globalKey(v.Name))))})

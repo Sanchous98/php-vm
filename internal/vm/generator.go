@@ -567,10 +567,82 @@ func (vm *VM) IsGeneratorSlot(s Slot) bool { return vm.genOfSlot(s) != nil }
 // CloseIfGenerator закрывает незавершённый генератор в слоте (при unset/
 // переприсваивании), исполняя его finally-блоки.
 func (vm *VM) CloseIfGenerator(s Slot) error {
+	return vm.CloseIfGeneratorEx(s)
+}
+
+// CloseIfGeneratorEx — как CloseIfGenerator, но не закрывает генератор, пока
+// на него есть ссылки в других регистрах/глобалах (exclude — индексы регистров
+// текущего кадра, которые ссылкой не считаются: сама переменная и её копия).
+func (vm *VM) CloseIfGeneratorEx(s Slot, exclude ...int) error {
 	if g := vm.genOfSlot(s); g != nil {
+		if vm.objReferencedElsewhere(s, exclude) {
+			return nil
+		}
 		return vm.closeGenerator(g, false)
 	}
 	return nil
+}
+
+// objReferencedElsewhere ищет ссылку на объект из s в живых регистрах (кроме
+// исключённых в текущем кадре), глобалах и аргументах кадров.
+func (vm *VM) objReferencedElsewhere(s Slot, exclude []int) bool {
+	target := vm.objectOf(s)
+	if target == nil {
+		return false
+	}
+	skip := map[int]bool{}
+	for _, i := range exclude {
+		skip[i] = true
+	}
+	for i := 0; i <= vm.fp && i < len(vm.frames); i++ {
+		for j, r := range vm.frames[i].regs {
+			if i == vm.fp && skip[j] {
+				continue
+			}
+			if slotHasObject(r, target, 0) {
+				return true
+			}
+		}
+	}
+	for _, r := range vm.globals {
+		if slotHasObject(r, target, 0) {
+			return true
+		}
+	}
+	for i := range vm.callStack {
+		for _, a := range vm.callStack[i].args {
+			if slotHasObject(a, target, 0) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func slotHasObject(s Slot, o *Object, depth int) bool {
+	if depth > 2 {
+		return false
+	}
+	for i := 0; s.typ == RefType && i < 10; i++ {
+		r := s.Ref()
+		if r == nil {
+			return false
+		}
+		s = r.v
+	}
+	switch s.typ {
+	case ObjectType:
+		return s.obj() == o
+	case ArrayType:
+		if a := s.AsArray(); a != nil {
+			for _, v := range a.All() {
+				if slotHasObject(v, o, depth+1) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // genMethod регистрирует нативный метод класса Generator.

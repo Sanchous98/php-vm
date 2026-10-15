@@ -698,7 +698,7 @@ func iterArrayRefSync(a *Array, arr *Array) bool {
 	if arr.id == 0 {
 		arr.id = newArrayID()
 	}
-	if ai, ok := a.mStr["aid"]; ok && int(ai) < len(a.entries) {
+	if ai, ok := a.idxOfStr("aid"); ok && int(ai) < len(a.entries) {
 		if v := a.entries[ai].val; v.typ == IntType && uint64(v.Int()) == arr.id {
 			return false
 		}

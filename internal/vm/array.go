@@ -75,10 +75,14 @@ type Array struct {
 	floats []float64 // packedFloat
 	strs   []pstr    // packedStr
 
-	// mixed-представление
-	entries []KV             // порядок вставки; значения и tombstone здесь
-	mStr    map[string]int32 // строковый ключ -> позиция в entries
-	mInt    map[int64]int32  // int-ключ      -> позиция в entries
+	// mixed-представление: entries — порядок вставки (значения и tombstone),
+	// buckets — своя открытая хеш-таблица ключ -> позиция в entries
+	// (см. htab.go): вместо пары Go-map, чтобы запись шла за один проход, а
+	// COW-копирование (Unshare) было memcpy срезов, а не переобходом ключей.
+	entries []KV      // порядок вставки; значения и tombstone здесь
+	buckets []hbucket // открытая адресная таблица: fp+индекс entries+1 | 0/Tomb
+	nLive   int32     // живых элементов (Len без обхода entries)
+	used    int32     // занятых бакетов (живые + tombstone) — триггер роста
 
 	// nextFree — следующий авто-индекс (zend nNextFreeElement). Сентинел
 	// math.MinInt64 — «не задан»; при добавлении отрицательное значение
@@ -118,11 +122,13 @@ type Array struct {
 	id uint64
 }
 
-// KV — элемент mixed-массива в порядке вставки.
+// KV — элемент mixed-массива в порядке вставки. Порядок полей подобран так,
+// чтобы запись занимала 64 Б (uint32-хеш уложен между ключом и значением).
 type KV struct {
 	key  ArrayKey
+	hash uint32 // хеш ключа (hashKeyStr/hashKeyInt); он же отпечаток в бакете
+	live bool   // false -> tombstone после unset
 	val  Slot
-	live bool // false -> tombstone после unset
 }
 
 // ArrayKey — ключ PHP-массива: только int или string.
@@ -345,7 +351,7 @@ func (a *Array) Len() int {
 		}
 		return len(a.values)
 	}
-	return len(a.mStr) + len(a.mInt)
+	return int(a.nLive)
 }
 
 // packedSlot — значение packed-элемента i как слот.
@@ -437,12 +443,18 @@ func (a *Array) Get(k ArrayKey) (Slot, bool) {
 		return Slot{}, false // строковых ключей в packed нет
 	}
 	if k.str {
-		if idx, ok := a.mStr[k.s]; ok {
+		if len(a.buckets) == 0 {
+			return Slot{}, false
+		}
+		if idx, _ := a.htFindStr(k.s, hashKeyStr(k.s)); idx >= 0 {
 			return a.entries[idx].val, true
 		}
 		return Slot{}, false
 	}
-	if idx, ok := a.mInt[k.i]; ok {
+	if len(a.buckets) == 0 {
+		return Slot{}, false
+	}
+	if idx, _ := a.htFindInt(k.i, hashKeyInt(k.i)); idx >= 0 {
 		return a.entries[idx].val, true
 	}
 	return Slot{}, false
@@ -573,7 +585,10 @@ func (a *Array) Set(k ArrayKey, v Slot) error {
 		if a.packed {
 			a.toMixed()
 		}
-		if idx, ok := a.mStr[k.s]; ok {
+		a.htEnsure()
+		h := hashKeyStr(k.s)
+		idx, b := a.htFindStr(k.s, h)
+		if idx >= 0 {
 			a.entries[idx].val = v
 			a.noteVal(v)
 			return nil
@@ -581,15 +596,29 @@ func (a *Array) Set(k ArrayKey, v Slot) error {
 		if len(a.entries) >= maxEntries {
 			return errArrayTooLarge
 		}
-		if a.mStr == nil {
-			a.mStr = make(map[string]int32)
-		}
-		a.mStr[k.s] = int32(len(a.entries))
-		a.appendEntry(KV{key: k, val: v, live: true})
-		a.noteVal(v)
+		a.htPutNew(k, h, v, b)
 		return nil
 	}
 	return a.SetInt(k.i, v)
+}
+
+// htPutNew дописывает новый элемент (ключа в таблице ещё нет; b — бакет для
+// вставки, полученный из htFind*) и заводит его бакет. При необходимости
+// таблица растёт — тогда бакет пересчитывается. noteVal вызывается здесь.
+func (a *Array) htPutNew(k ArrayKey, h uint32, v Slot, b int32) {
+	if a.htNeedGrow() {
+		a.htGrow()
+		if k.str {
+			_, b = a.htFindStr(k.s, h)
+		} else {
+			_, b = a.htFindInt(k.i, h)
+		}
+	}
+	a.appendEntry(KV{key: k, hash: h, val: v, live: true})
+	a.buckets[b] = hbucket{fp: h, idx: int32(len(a.entries)-1) + 1}
+	a.used++
+	a.nLive++
+	a.noteVal(v)
 }
 
 // appendEntry добавляет элемент с явным удвоением ёмкости: у Go рост среза
@@ -628,7 +657,10 @@ func (a *Array) SetInt(k int64, v Slot) error {
 		}
 		a.toMixed()
 	}
-	if idx, ok := a.mInt[k]; ok {
+	a.htEnsure()
+	h := hashKeyInt(k)
+	idx, b := a.htFindInt(k, h)
+	if idx >= 0 {
 		a.entries[idx].val = v
 		a.noteVal(v)
 		return nil
@@ -636,12 +668,7 @@ func (a *Array) SetInt(k int64, v Slot) error {
 	if len(a.entries) >= maxEntries {
 		return errArrayTooLarge
 	}
-	if a.mInt == nil {
-		a.mInt = make(map[int64]int32)
-	}
-	a.mInt[k] = int32(len(a.entries))
-	a.appendEntry(KV{key: intKey(k), val: v, live: true})
-	a.noteVal(v)
+	a.htPutNew(intKey(k), h, v, b)
 	if k >= a.nextFree {
 		if k < math.MaxInt64 {
 			a.nextFree = k + 1
@@ -668,7 +695,10 @@ func (a *Array) SetIntOld(k int64, v Slot) (old Slot, found, set bool, err error
 		}
 		return old, found, true, nil
 	}
-	if idx, ok := a.mInt[k]; ok {
+	a.htEnsure()
+	h := hashKeyInt(k)
+	idx, b := a.htFindInt(k, h)
+	if idx >= 0 {
 		old = a.entries[idx].val
 		if old.typ == RefType {
 			return old, true, false, nil
@@ -680,12 +710,7 @@ func (a *Array) SetIntOld(k int64, v Slot) (old Slot, found, set bool, err error
 	if len(a.entries) >= maxEntries {
 		return Slot{}, false, false, errArrayTooLarge
 	}
-	if a.mInt == nil {
-		a.mInt = make(map[int64]int32)
-	}
-	a.mInt[k] = int32(len(a.entries))
-	a.appendEntry(KV{key: intKey(k), val: v, live: true})
-	a.noteVal(v)
+	a.htPutNew(intKey(k), h, v, b)
 	if k >= a.nextFree {
 		if k < math.MaxInt64 {
 			a.nextFree = k + 1
@@ -703,7 +728,10 @@ func (a *Array) SetOld(k ArrayKey, v Slot) (old Slot, found, set bool, err error
 		if a.packed {
 			a.toMixed()
 		}
-		if idx, ok := a.mStr[k.s]; ok {
+		a.htEnsure()
+		h := hashKeyStr(k.s)
+		idx, b := a.htFindStr(k.s, h)
+		if idx >= 0 {
 			old = a.entries[idx].val
 			if old.typ == RefType {
 				return old, true, false, nil
@@ -715,12 +743,7 @@ func (a *Array) SetOld(k ArrayKey, v Slot) (old Slot, found, set bool, err error
 		if len(a.entries) >= maxEntries {
 			return Slot{}, false, false, errArrayTooLarge
 		}
-		if a.mStr == nil {
-			a.mStr = make(map[string]int32)
-		}
-		a.mStr[k.s] = int32(len(a.entries))
-		a.appendEntry(KV{key: k, val: v, live: true})
-		a.noteVal(v)
+		a.htPutNew(k, h, v, b)
 		return Slot{}, false, true, nil
 	}
 	return a.SetIntOld(k.i, v)
@@ -730,11 +753,12 @@ func (a *Array) SetOld(k ArrayKey, v Slot) (old Slot, found, set bool, err error
 // предварительно сделать Unshare.
 func (a *Array) Unset(k ArrayKey) {
 	if k.str {
-		if a.packed {
+		if a.packed || len(a.buckets) == 0 {
 			return // строковых ключей в packed нет
 		}
-		if idx, ok := a.mStr[k.s]; ok {
-			delete(a.mStr, k.s)
+		if idx, b := a.htFindStr(k.s, hashKeyStr(k.s)); idx >= 0 {
+			a.buckets[b].idx = bucketTomb
+			a.nLive--
 			a.entries[idx].live = false
 			a.entries[idx].val = Slot{}
 			if a.pos == int(idx) {
@@ -754,8 +778,12 @@ func (a *Array) UnsetInt(k int64) {
 		}
 		a.toMixed()
 	}
-	if idx, ok := a.mInt[k]; ok {
-		delete(a.mInt, k)
+	if len(a.buckets) == 0 {
+		return
+	}
+	if idx, b := a.htFindInt(k, hashKeyInt(k)); idx >= 0 {
+		a.buckets[b].idx = bucketTomb
+		a.nLive--
 		a.entries[idx].live = false
 		a.entries[idx].val = Slot{}
 		if a.pos == int(idx) {
@@ -1035,7 +1063,7 @@ func (a *Array) Values() []Slot {
 		}
 		return out
 	}
-	out := make([]Slot, 0, len(a.mStr)+len(a.mInt))
+	out := make([]Slot, 0, int(a.nLive))
 	for i := range a.entries {
 		if a.entries[i].live {
 			out = append(out, a.entries[i].val)
@@ -1150,14 +1178,17 @@ func (a *Array) toGeneric() {
 func (a *Array) toMixed() {
 	n := a.storeLen()
 	a.entries = make([]KV, n)
-	if n > 0 {
-		a.mInt = make(map[int64]int32, n)
-	}
 	for i := 0; i < n; i++ {
-		a.entries[i] = KV{key: intKey(int64(i)), val: a.packedSlot(i), live: true}
-		a.mInt[int64(i)] = int32(i)
+		h := hashKeyInt(int64(i))
+		a.entries[i] = KV{key: intKey(int64(i)), hash: h, val: a.packedSlot(i), live: true}
 	}
 	a.values, a.ints, a.floats, a.strs = nil, nil, nil, nil
+	a.nLive = int32(n)
+	if n > 0 {
+		a.htResize(htSizeFor(n))
+	} else {
+		a.buckets, a.used = nil, 0
+	}
 	if n > 0 && a.nextFree < int64(n) {
 		a.nextFree = int64(n)
 	}
@@ -1207,30 +1238,33 @@ func (a *Array) Unshare() *Array {
 			copy(c.values, a.values)
 		}
 	} else {
-		c.entries = make([]KV, len(a.entries))
-		copy(c.entries, a.entries)
-		if a.mStr != nil {
-			c.mStr = make(map[string]int32, len(a.mStr))
-			for k, idx := range a.mStr {
-				c.mStr[k] = idx
-			}
+		if len(a.entries) > 0 {
+			c.entries = make([]KV, len(a.entries))
+			copy(c.entries, a.entries)
 		}
-		if a.mInt != nil {
-			c.mInt = make(map[int64]int32, len(a.mInt))
-			for k, idx := range a.mInt {
-				c.mInt[k] = idx
-			}
+		if len(a.buckets) > 0 {
+			c.buckets = make([]hbucket, len(a.buckets))
+			copy(c.buckets, a.buckets)
 		}
+		c.nLive, c.used = a.nLive, a.used
 	}
 	// И a, и c теперь ссылаются на вложенные массивы -> они разделены.
-	for i := range c.values {
-		if c.values[i].typ == ArrayType {
-			c.values[i].AsArray().MarkShared()
+	// Скан значений дешёвый (values непуст только у packedGeneric), а вот
+	// проход по entries на 150k — это лишние 10 МБ чтения на каждой COW-копии;
+	// его можно пропустить, если массив заведомо не держит объекты/массивы
+	// (objRefs — монотонный флаг, см. noteVal).
+	if a.objRefs || a.packed {
+		for i := range c.values {
+			if c.values[i].typ == ArrayType {
+				c.values[i].AsArray().MarkShared()
+			}
 		}
 	}
-	for i := range c.entries {
-		if c.entries[i].live && c.entries[i].val.typ == ArrayType {
-			c.entries[i].val.AsArray().MarkShared()
+	if a.objRefs {
+		for i := range c.entries {
+			if c.entries[i].live && c.entries[i].val.typ == ArrayType {
+				c.entries[i].val.AsArray().MarkShared()
+			}
 		}
 	}
 	return c

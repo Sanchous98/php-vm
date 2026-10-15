@@ -164,10 +164,10 @@ func (v *iterView) nextLive(z int) (idx int, ok bool) {
 // isArrayRefIterState — быстрая проверка, что массив — состояние обхода by ref
 // (ключи mode/cell/aid + флаг iterState).
 func isArrayRefIterState(st *Array) bool {
-	if st == nil || !st.iterState || st.mStr == nil || len(st.mStr) != 3 {
+	if st == nil || !st.iterState || st.nLive != 3 {
 		return false
 	}
-	mi, ok := st.mStr["mode"]
+	mi, ok := st.idxOfStr("mode")
 	if !ok || int(mi) >= len(st.entries) || !st.entries[mi].live {
 		return false
 	}
@@ -233,7 +233,7 @@ func (vm *VM) remapIters(cell Slot, fn func(pos, zlive int, v *iterView) int) {
 		if !isArrayRefIterState(st) {
 			continue
 		}
-		ci, ok := st.mStr["cell"]
+		ci, ok := st.idxOfStr("cell")
 		if !ok || int(ci) >= len(st.entries) {
 			continue
 		}
@@ -246,7 +246,7 @@ func (vm *VM) remapIters(cell Slot, fn func(pos, zlive int, v *iterView) int) {
 			view = &v
 			tid = arr.ensureIterID()
 		}
-		ai, ok := st.mStr["aid"]
+		ai, ok := st.idxOfStr("aid")
 		if !ok || int(ai) >= len(st.entries) || st.entries[ai].val.typ != IntType ||
 			uint64(st.entries[ai].val.Int()) != tid {
 			// Ячейка уже указывает на другой массив (переприсваивание

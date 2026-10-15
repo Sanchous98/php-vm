@@ -156,28 +156,28 @@ func TestArrayMapOnlyForMixed(t *testing.T) {
 	if !a.packed {
 		t.Fatal("Append должен оставаться packed")
 	}
-	if a.mStr != nil || a.mInt != nil {
+	if a.buckets != nil {
 		t.Fatal("packed-массив не должен выделять карту индекса")
 	}
 
-	// строковый ключ -> mixed, появляется mStr
+	// строковый ключ -> mixed, появляется таблица индекса
 	a.Set(stringKey("x"), MakeInt(1))
 	if a.packed {
 		t.Fatal("после строкового ключа массив должен стать mixed")
 	}
-	if a.mStr == nil {
-		t.Fatal("mixed со строковым ключом должен иметь mStr")
+	if a.buckets == nil {
+		t.Fatal("mixed со строковым ключом должен иметь таблицу индекса")
 	}
 
-	// int-ключ с разрывом -> mixed, появляется mInt
+	// int-ключ с разрывом -> mixed, появляется таблица индекса
 	b := newArray()
 	b.Append(MakeInt(1))
 	b.Set(intKey(10), MakeInt(2))
 	if b.packed {
 		t.Fatal("разрыв int-ключа должен перевести в mixed")
 	}
-	if b.mInt == nil {
-		t.Fatal("mixed с int-ключом должен иметь mInt")
+	if b.buckets == nil {
+		t.Fatal("mixed с int-ключом должен иметь таблицу индекса")
 	}
 }
 

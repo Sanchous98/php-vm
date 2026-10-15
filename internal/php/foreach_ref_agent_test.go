@@ -63,6 +63,21 @@ func TestForeachRefAgentVsPHP(t *testing.T) {
 		// Клон получает собственный хендл (не переиспользует хендл источника).
 		`<?php $a=new stdClass; $b=clone $a; var_dump($a,$b);`,
 		`<?php $a=new WeakMap; $o=new stdClass; $a[$o]=1; $b=clone $a; var_dump($a,$b);`,
+
+		// S1+p1_free: by-ref обход и переиспользование дырок entries
+		// (putEntry): unset текущего/последнего + append в теле. Порядок
+		// визитации и позиции курсора наблюдаемы — сверяем с php.
+		// Счётчик-break: unset текущего + append в теле сам по себе бесконечен
+		// и в php (курсор by-ref идёт по живым позициям, а массив растёт).
+		`<?php $a=[1,2,3]; $n=0; foreach($a as $k=>&$v){ if($n++>=8) break; unset($a[$k]); $a[] = 100+$k; echo $k,":",$v,";"; } echo "|"; var_dump($a);`,
+		`<?php $a=['a'=>1,'b'=>2,'c'=>3]; foreach($a as $k=>&$v){ if($k==='b'){ unset($a[$k]); $a['z']=99; } echo $k,":",$v,";"; } echo "|"; var_dump($a);`,
+		`<?php $a=['a'=>1,'b'=>2,'c'=>3]; foreach($a as $k=>&$v){ if($k==='c'){ unset($a['c']); $a['d']=4; } echo $k,":",$v,";"; } echo "|"; var_dump($a);`,
+		`<?php $a=[1,2,3]; $n=0; foreach($a as $k=>&$v){ if($n++>=6) break; $a[]=$v; if($k===0) unset($a[1]); echo $k,":",$v,";"; } echo "|"; var_dump($a);`,
+		`<?php $a=[]; for($i=0;$i<10;$i++)$a['k'.$i]=$i; $n=0; foreach($a as $k=>&$v){ if($n++>=12) break; if($v%2===0){ unset($a[$k]); $a['n'.$v]=$v; } } echo "|"; var_dump($a);`,
+		// Компактизация entries (maybeCompact) на mixed без активных курсоров:
+		// много tombstone -> сжатие + повторные вставки.
+		`<?php $a=[]; for($i=0;$i<100;$i++)$a[$i]=$i; for($i=0;$i<95;$i++)unset($a[$i]); for($i=100;$i<120;$i++)$a[$i]=$i; echo count($a),"|"; var_dump(array_keys($a)); var_dump($a);`,
+		`<?php $a=[]; for($i=0;$i<40;$i++)$a['k'.$i]=$i; for($i=0;$i<40;$i+=2)unset($a['k'.$i]); for($i=0;$i<20;$i++)$a['n'.$i]=$i; echo count($a),"|"; var_dump($a);`,
 	}
 
 	for _, src0 := range cases {

@@ -192,6 +192,18 @@ func streamGetMetaDataFn(ctx *vm.Context) vm.Value {
 		out.SetStr("uri", vm.MakeString(h.path))
 		return vm.MakeArray(out)
 	}
+	// popen-поток: STDIO без обёртки (нет wrapper_type/uri), не seekable.
+	if h.popenProc != nil {
+		out := vm.NewArray()
+		out.SetStr("timed_out", vm.MakeBool(false))
+		out.SetStr("blocked", vm.MakeBool(true))
+		out.SetStr("eof", vm.MakeBool(h.eof))
+		out.SetStr("stream_type", vm.MakeString("STDIO"))
+		out.SetStr("mode", vm.MakeString(h.mode))
+		out.SetStr("unread_bytes", vm.MakeInt(int64(unreadBytes(h))))
+		out.SetStr("seekable", vm.MakeBool(false))
+		return vm.MakeArray(out)
+	}
 	out := vm.NewArray()
 	wrapper, streamType := "plainfile", "STDIO"
 	seekable := true

@@ -1203,8 +1203,14 @@ func (vm *VM) SymtabBindRef(name string, ref Slot) {
 			if vm.globals == nil {
 				vm.globals = map[string]Slot{}
 			}
+			old, had := vm.globals[key]
 			vm.globals[key] = ref
 			vm.syncGlobalsSnapshot(key)
+			// Сначала привязка ссылки, затем снятие старого значения
+			// (деструктор старого объекта пишет через новую ссылку, GH-18209).
+			if had {
+				vm.noteDropped(old)
+			}
 			return
 		}
 		if vm.cur != nil {
@@ -1221,8 +1227,14 @@ func (vm *VM) SymtabBindRef(name string, ref Slot) {
 	if vm.globals == nil {
 		vm.globals = map[string]Slot{}
 	}
+	old, had := vm.globals["$"+name]
 	vm.globals["$"+name] = ref
 	vm.syncGlobalsSnapshot("$" + name)
+	// Привязка ссылки до снятия старого значения (GH-18209: деструктор
+	// заменяемого объекта пишет через уже привязанную ссылку).
+	if had {
+		vm.noteDropped(old)
+	}
 }
 
 // CountRefHolders считает, сколько «живых» слотов ссылаются на r: в глобальных
@@ -1642,7 +1654,10 @@ func (vm *VM) RunLinked(chunk *Chunk, funcs []*Function, classes []ClassInfo, fn
 	chunk.checkConstKinds()
 
 	// Запуск в новом кадре (как execCompiled, но без аргументов и с
-	// семантикой верхнеуровневого return).
+	// семантикой верхнеуровневого return). $this наследуется от вызывающего
+	// кадра: Zend выполняет eval/include в текущей области видимости (иначе
+	// eval внутри метода теряет объект — bug21961).
+	callerThis := vm.cur.this
 	callerPC := vm.ip
 	prevChunk := vm.chunk
 	prevFile := vm.curFile
@@ -1683,10 +1698,84 @@ func (vm *VM) RunLinked(chunk *Chunk, funcs []*Function, classes []ClassInfo, fn
 	} else {
 		vm.clearRegs(vm.cur)
 	}
-	vm.cur.this = Slot{}
+	vm.cur.this = callerThis
 	vm.ip = 0
 	vm.chunk = chunk
+	// eval/include внутри функции видят переменные вызывающего кадра (Zend
+	// делит область видимости): копируем локальные переменные вызывающей
+	// функции в таблицу глобалов, после выполнения — обратно (foreachLoop.012:
+	// eval('array_pop($a);') меняет локальный $a функции).
+	var aliasNames []string
+	var aliasRegs []int
+	var aliasSaved []Slot
+	var aliasHad []bool
+	if prevChunk != nil && vm.fp > 0 {
+		if caller := vm.frames[vm.fp-1].regs; caller != nil {
+			if named := prevChunk.NamedRegs(); len(named) > 0 {
+				for name, reg := range named {
+					if name == "" || name[0] == '\x00' || name == "this" {
+						continue
+					}
+					if reg < 0 || reg >= len(caller) {
+						continue
+					}
+					aliasNames = append(aliasNames, name)
+					aliasRegs = append(aliasRegs, reg)
+					old, had := vm.globals["$"+name]
+					aliasSaved = append(aliasSaved, old)
+					aliasHad = append(aliasHad, had)
+					vm.globals["$"+name] = caller[reg]
+				}
+			}
+		}
+	}
+	// eval/include компилируются как main-чанк: их именованные переменные
+	// живут в таблице глобалов, а не в регистрах вызывающей функции.
+	// Сбрасываем флаг функции, чтобы SymtabSet (extract и т.п.) писал туда же,
+	// откуда читает код (иначе $http_response_header внутри eval терялся).
+	prevInFunction := vm.inFunction
+	vm.inFunction = false
 	err = vm.exec(chunk)
+	vm.inFunction = prevInFunction
+	// Возврат изменённых переменных в кадр вызывающей функции (и восстановление
+	// прежних значений глобалов).
+	if len(aliasNames) > 0 {
+		if caller := vm.frames[vm.fp-1].regs; caller != nil {
+			for i, name := range aliasNames {
+				reg := aliasRegs[i]
+				newv, has := vm.globals["$"+name]
+				if !has {
+					newv = MakeNull()
+				}
+				if reg < len(caller) {
+					if r := caller[reg].Ref(); r != nil && caller[reg].typ == RefType {
+						// Переменная вызывающего кадра — ячейка ссылки:
+						// пишем через неё, чтобы aliases увидели изменение.
+						r.v = deref(newv)
+					} else {
+						old := caller[reg]
+						caller[reg] = deref(newv)
+						if trackedType(old.typ) || trackedType(caller[reg].typ) {
+							vm.wRegSlow(reg, old)
+						}
+					}
+				}
+				if aliasHad[i] {
+					vm.globals["$"+name] = aliasSaved[i]
+				} else {
+					delete(vm.globals, "$"+name)
+				}
+			}
+		} else {
+			for i, name := range aliasNames {
+				if aliasHad[i] {
+					vm.globals["$"+name] = aliasSaved[i]
+				} else {
+					delete(vm.globals, "$"+name)
+				}
+			}
+		}
+	}
 	if _, ok := err.(retSignal); ok {
 		res, returned, err = vm.retVal, true, nil
 	}
@@ -1800,13 +1889,14 @@ func (vm *VM) info(e *callEntry) callFrameInfo {
 		file = vm.fileNames[e.fileID]
 	}
 	return callFrameInfo{
-		callee:     e.callee,
-		callerFile: file,
-		callerLine: line,
-		objMethod:  e.callerPC&objMethodBit != 0,
-		args:       e.args,
-		named:      e.named,
-		this:       e.this,
+		callee:       e.callee,
+		callerFile:   file,
+		callerLine:   line,
+		objMethod:    e.callerPC&objMethodBit != 0,
+		args:         e.args,
+		named:        e.named,
+		this:         e.this,
+		includeFrame: isIncludeFrameFn(e.callee),
 	}
 }
 
@@ -1834,6 +1924,12 @@ func (vm *VM) pushCall(fn *Function, args []Slot) {
 			pc = uint32(vm.nextFramePC)
 		}
 		fallback = int32(vm.nextFrameLine)
+	case fn.Name == "[constant expression]" && fn.DefFile != "":
+		// Отложенное константное выражение: Zend привязывает кадр к месту
+		// объявления (значение свойства/константы), а не к нативному вызову
+		// (bug77664: `#0 file(4): [constant expression]()`).
+		fileID = vm.internFile(fn.DefFile)
+		fallback = int32(fn.DefLine)
 	case vm.markNextFrameInternal:
 		vm.markNextFrameInternal = false
 		fileID = fileIDInternal
@@ -1852,6 +1948,10 @@ func (vm *VM) pushCall(fn *Function, args []Slot) {
 		// позиции исходника).
 		if f := vm.chunk.InlineFileAt(int(pc)); f != "" {
 			fileID = vm.internFile(f)
+		} else if vm.noActiveFile {
+			// shutdown-фаза: curFile = "[no active file]", но код функции
+			// исполняется в файле своего объявления.
+			fileID = vm.activeFileIDForFrame()
 		}
 	}
 	entry := callEntry{
@@ -1864,6 +1964,108 @@ func (vm *VM) pushCall(fn *Function, args []Slot) {
 		vm.pendingFrameNamed = nil
 	}
 	vm.callStack = append(vm.callStack, entry)
+}
+
+// pushIntrospectionFrame добавляет синтетический кадр внутренней функции для
+// ошибок динамического вызова scope-introspection функций (Zend создаёт кадр
+// ещё до проверки: в трейсе виден `#0 func_get_args()`). Возвращает снятие.
+func (vm *VM) pushIntrospectionFrame(name string, args []Slot) func() {
+	fileID := vm.curFileID
+	var chunk uintptr
+	var pc uint32
+	fallback := int32(vm.curLine)
+	switch {
+	case vm.noActiveFile && (vm.cur == nil || vm.cur == &vm.frames[0]):
+		// Прямой вызов из shutdown-механизма: userland-позиции нет.
+		fileID = fileIDInternal
+	case len(vm.callStack) > 0 && isNativeCallee(vm.callStack[len(vm.callStack)-1].callee):
+		fileID = fileIDInternal
+	default:
+		chunk = uintptr(unsafe.Pointer(vm.chunk))
+		if vm.ip > 0 {
+			pc = uint32(vm.ip - 1)
+		}
+		if vm.chunk != nil {
+			if f := vm.chunk.InlineFileAt(int(pc)); f != "" {
+				fileID = vm.internFile(f)
+			} else if vm.noActiveFile {
+				// В shutdown-фазе curFile = "[no active file]", но код
+				// shutdown-функции исполняется в своём файле.
+				fileID = vm.activeFileIDForFrame()
+			}
+		}
+	}
+	fn := &Function{Name: name}
+	vm.callStack = append(vm.callStack, callEntry{
+		callee: fn, callerChunk: chunk, callerPC: pc, fallback: fallback, fileID: fileID, args: args,
+	})
+	n := len(vm.callStack)
+	return func() {
+		if len(vm.callStack) == n {
+			vm.callStack = vm.callStack[:n-1]
+		}
+	}
+}
+
+// activeFileIDForFrame — файл текущего исполняемого userland-кода; нужен,
+// когда vm.curFile недостоверен (shutdown: "[no active file]").
+func (vm *VM) activeFileIDForFrame() int32 {
+	if vm.chunk != nil && vm.chunk.File != "" {
+		return vm.internFile(vm.chunk.File)
+	}
+	if n := len(vm.callStack); n > 0 {
+		if fn := vm.callStack[n-1].callee; fn != nil && fn.DefFile != "" {
+			return vm.internFile(fn.DefFile)
+		}
+	}
+	return vm.curFileID
+}
+
+// IntrospectionCallError создаёт ошибку динамического вызова
+// scope-introspection функции с кадром в трейсе (порядок проверок Zend:
+// для func_get_arg арность проверяется раньше динамической диагностики).
+func (vm *VM) IntrospectionCallError(name string, args []Slot) *Throwable {
+	remove := vm.pushIntrospectionFrame(name, args)
+	var th *Throwable
+	if name == "func_get_arg" && len(args) < 1 {
+		th = NewThrowable("ArgumentCountError", "func_get_arg() expects exactly 1 argument, 0 given")
+	} else {
+		th = NewThrowable("Error", "Cannot call "+name+"() dynamically")
+	}
+	th.Trace = vm.captureExceptionTrace()
+	remove()
+	return th
+}
+
+// PushIncludeFrame регистрирует синтетический кадр include/require на время
+// выполнения конструкции (Zend исполняет подключаемый файл отдельным кадром;
+// debug_print_backtrace/трейсы показывают `include()`). Возвращает снятие.
+func (vm *VM) PushIncludeFrame(name string) func() {
+	fn := includeFrameFn(name)
+	pc := 0
+	if vm.ip > 0 {
+		pc = vm.ip - 1
+	}
+	vm.pushCallAt(fn, vm.curFile, vm.chunk, pc, vm.curLine, nil)
+	n := len(vm.callStack)
+	return func() {
+		if len(vm.callStack) == n && n > 0 {
+			vm.callStack = vm.callStack[:n-1]
+		}
+	}
+}
+
+// isIncludeFrameFn сообщает, что кадр — синтетический include/require.
+func isIncludeFrameFn(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	for _, f := range includeFrameFns {
+		if f == fn {
+			return true
+		}
+	}
+	return false
 }
 
 // pushCallAt регистрирует вызов с уже известной позицией вызывающего (нужно
@@ -2469,6 +2671,9 @@ func (vm *VM) writeUncaughtChain(chain []*Throwable) {
 		if i > 0 {
 			prefix = "\nNext "
 		}
+		if vm.htmlErrors() && i == 0 {
+			prefix = "<br />\n<b>Fatal error</b>:  Uncaught "
+		}
 		if e.Message != "" {
 			vm.Write(prefix + class + ": " + e.Message + " in " + file + ":" + strconv.Itoa(line) + "\n")
 		} else {
@@ -2494,7 +2699,20 @@ func (vm *VM) writeUncaughtChain(chain []*Throwable) {
 		file = "Unknown"
 	}
 	line := last.LocLine
-	vm.Write("  thrown in " + file + " on line " + strconv.Itoa(line) + "\n")
+	if vm.htmlErrors() {
+		vm.Write("  thrown in <b>" + file + "</b> on line <b>" + strconv.Itoa(line) + "</b><br />\n")
+	} else {
+		vm.Write("  thrown in " + file + " on line " + strconv.Itoa(line) + "\n")
+	}
+}
+
+// htmlErrors сообщает текущее значение html_errors (для формата диагностик).
+func (vm *VM) htmlErrors() bool {
+	if vm.iniLookup == nil {
+		return false
+	}
+	v, ok := vm.iniLookup("html_errors")
+	return ok && iniBool(v)
 }
 
 // reportUncaught печатает непойманное исключение в PHP-подобном формате.
@@ -8000,11 +8218,15 @@ func (vm *VM) callMagicUndefStatic(cls ClassInfo, calledIn ClassInfo, mname stri
 		// BC-правило Zend (PHP 7/8): статически оформленный вызов без метода
 		// из объектного контекста, чей $this — экземпляр вызываемого класса,
 		// идёт в __call; иначе — в __callStatic. Для несвязанного класса
-		// __call из чужого scope не используется (bug42937).
+		// __call из чужого scope не используется (bug42937); наличие __call
+		// проверяется по целевому классу — parent::foo() не видит __call
+		// потомка (t8: Error при __call только в динамическом классе).
 		if tci := vm.classInfo(vm.cur.this); tci != nil && tci.IsA(cls) {
-			if m := tci.lookupMethod("__call"); m != nil {
-				res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArray(passed)})
-				return res, true, err
+			if cls.lookupMethod("__call") != nil {
+				if m := tci.lookupMethod("__call"); m != nil {
+					res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArray(passed)})
+					return res, true, err
+				}
 			}
 		}
 	}
@@ -8420,6 +8642,9 @@ func (vm *VM) runShutdownFunctions() {
 		return
 	}
 	vm.shutdownFnsDone = true
+	// Bailout снят: shutdown-функции должны выполниться (и напечатать своё)
+	// после фатальной ошибки основного скрипта.
+	vm.haltRequested = false
 	savedFile, savedFileID, savedLine := vm.curFile, vm.curFileID, vm.curLine
 	vm.noActiveFile = true
 	vm.curFile = "[no active file]"
@@ -8504,7 +8729,7 @@ func (vm *VM) runShutdownDestructors() {
 	vm.shutdownDone = true
 	vm.inShutdown = true
 	defer func() { vm.inShutdown = false }()
-	vm.flushResourceDrops()
+	vm.flushResourceDrops(nil, 0)
 	// Ошибки деструкторов/незавершённых файберов собираются и печатаются одной
 	// цепочкой (Zend: каждый следующий бросок связывает предыдущий как
 	// previous).

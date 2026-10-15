@@ -2608,6 +2608,16 @@ func defaultIniValues() map[string]string {
 		"serialize_precision":                 "-1",
 		"zend.exception_ignore_args":          "0",
 		"zend.exception_string_param_max_len": "15",
+		"docref_ext":                          "",
+		"url_rewriter.hosts":                  "",
+		"url_rewriter.tags":                   "form=",
+		"session.trans_sid_hosts":             "",
+		"session.trans_sid_tags":              "a=href,area=href,frame=src,form=",
+		"session.name":                        "PHPSESSID",
+		"session.use_trans_sid":               "0",
+		"session.use_only_cookies":            "1",
+		"session.use_cookies":                 "1",
+		"session.use_strict_mode":             "0",
 		"variables_order":                     "EGPCS",
 		"request_order":                       "",
 		"sys_temp_dir":                        "",
@@ -4631,15 +4641,31 @@ func debugZvalDumpFn(ctx *vm.Context) vm.Value {
 		_ = v.ArmHandles()
 	}
 	var b strings.Builder
-	st := &dumpState{vm: ctx.VM(), objIDs: map[*vm.Object]int{}, arrs: map[*vm.Array]bool{}, objs: map[*vm.Object]bool{}, refCount: map[*vm.Ref]int{}}
+	st := &dumpState{vm: ctx.VM(), objIDs: map[*vm.Object]int{}, arrs: map[*vm.Array]bool{}, objs: map[*vm.Object]bool{}, refCount: map[*vm.Ref]int{}, arrCount: map[*vm.Array]int{}}
 	args := ctx.Args()
 	seenA := map[*vm.Array]bool{}
 	seenO := map[*vm.Object]bool{}
 	for _, s := range args {
-		countRefs(ctx.VM(), s, st.refCount, seenA, seenO)
+		countRefs(ctx.VM(), s, st.refCount, st.arrCount, seenA, seenO)
+	}
+	// Zend печатает refcount ячейки-ссылки = число zval'ов, на неё
+	// указывающих: обход структуры аргумента плюс внешние держатели в
+	// таблице переменных/регистрах текущего кадра (debug_zval_dump_refs:
+	// $r остаётся держателем, пока не сделан unset).
+	for r := range st.refCount {
+		st.refCount[r] += ctx.VM().DebugRefHolders(r)
+	}
+	// Refcount массива: вхождения при обходе аргумента (обычно 1) или
+	// число внешних держателей-переменных — большее из них (для
+	// массива-аргумента внешних держателей два: сама переменная и
+	// регистр-копия аргумента — в Zend это и даёт refcount(2)).
+	for a, n := range st.arrCount {
+		if h := ctx.VM().DebugArrayHolders(a); h > n {
+			st.arrCount[a] = h
+		}
 	}
 	for _, s := range args {
-		zvalDump(&b, s, 0, st)
+		zvalDump(&b, s, 0, st, false)
 	}
 	ctx.Print(b.String())
 	return vm.MakeNull()
@@ -4658,8 +4684,11 @@ func debugObjRefCount(o *vm.Object) int {
 }
 
 // zvalDump печатает значение в формате debug_zval_dump. Для контейнеров
-// указывает refcount/interned; скаляры совпадают с var_dump.
-func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
+// указывает refcount/interned; скаляры совпадают с var_dump. arrElem — слот
+// является значением-элементом массива: Zend хранит элементы-литералы
+// (длиной > 1) копиями, поэтому такие interned-строки печатаются как
+// refcount(1) (debug_zval_dump_b: array("is_array") внутри массива).
+func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState, arrElem bool) {
 	if s.IsRef() {
 		n := st.refCount[s.Ref()]
 		if n < 1 {
@@ -4668,7 +4697,7 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		pad := strings.Repeat("  ", indent)
 		b.WriteString("reference refcount(" + strconv.Itoa(n) + ") {\n")
 		b.WriteString(pad + "  ")
-		zvalDump(b, vm.Deref(s), indent+1, st)
+		zvalDump(b, vm.Deref(s), indent+1, st, false)
 		b.WriteString(pad + "}\n")
 		return
 	}
@@ -4682,12 +4711,16 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if r.Closed {
 			b.WriteString("resource(" + strconv.FormatInt(r.ID, 10) + ") of type (Unknown) refcount(1)\n")
 		} else {
-			b.WriteString("resource(" + strconv.FormatInt(r.ID, 10) + ") of type (" + r.Kind + ") refcount(2)\n")
+			refc := 2
+			if sc, ok := r.Val.(*streamContext); ok {
+				refc += sc.holds
+			}
+			b.WriteString("resource(" + strconv.FormatInt(r.ID, 10) + ") of type (" + r.Kind + ") refcount(" + strconv.Itoa(refc) + ")\n")
 		}
 	case vm.StringType:
 		v := s.StringVal()
 		b.WriteString("string(" + strconv.Itoa(len(v)) + ") \"" + v + "\"")
-		if vm.StringSlotInterned(s) {
+		if vm.StringSlotInterned(s) && !(arrElem && len(v) > 1) {
 			b.WriteString(" interned\n")
 		} else {
 			b.WriteString(" refcount(1)\n")
@@ -4705,7 +4738,11 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			b.WriteString("array(0) interned {\n" + pad + "}\n")
 			return
 		}
-		b.WriteString("array(" + strconv.Itoa(a.Len()) + ") refcount(1){\n")
+		refc := st.arrCount[a]
+		if refc < 1 {
+			refc = 1
+		}
+		b.WriteString("array(" + strconv.Itoa(a.Len()) + ") refcount(" + strconv.Itoa(refc) + "){\n")
 		for k, v := range a.All() {
 			b.WriteString(pad + "  ")
 			if k.IsStr() {
@@ -4714,7 +4751,7 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 				b.WriteString("[" + strconv.FormatInt(k.IntVal(), 10) + "]=>\n")
 			}
 			b.WriteString(pad + "  ")
-			zvalDump(b, v, indent+1, st)
+			zvalDump(b, v, indent+1, st, true)
 		}
 		b.WriteString(pad + "}\n")
 	case vm.ObjectType:
@@ -4750,7 +4787,7 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 					b.WriteString("uninitialized(" + vm.TypeString(de.Type) + ")\n")
 					continue
 				}
-				zvalDump(b, de.Val, indent+1, st)
+				zvalDump(b, de.Val, indent+1, st, false)
 			}
 			b.WriteString(pad + "}\n")
 			return
@@ -4760,7 +4797,7 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		for _, en := range ents {
 			b.WriteString(pad + "  [\"" + en.key + "\"]=>\n")
 			b.WriteString(pad + "  ")
-			zvalDump(b, en.val, indent+1, st)
+			zvalDump(b, en.val, indent+1, st, false)
 		}
 		b.WriteString(pad + "}\n")
 	default:

@@ -526,6 +526,12 @@ func onlyFatalErrors(mask int64) bool { return mask&^eFatalErrors == 0 }
 // reportDiag печатает диагностику (Warning/Notice/Deprecated) в формате PHP,
 // если её уровень разрешён error_reporting и она не подавлена через `@`.
 func (vm *VM) reportDiag(kind string, level int64, msg string) {
+	// После фатальной диагностики Zend делает bailout: нативная функция
+	// прерывается, дальнейшие сообщения из неё не печатаются (gh8409 —
+	// второй Warning после E_USER_ERROR в обработчике).
+	if vm.haltRequested && vm.fatalDiag {
+		return
+	}
 	file := vm.curFileAt()
 	if file == "" {
 		file = "php"
@@ -559,6 +565,9 @@ func (vm *VM) reportDiag(kind string, level int64, msg string) {
 		// проверки `never`/неявного возврата после неё подавляются — иначе
 		// появляются ошибки, которых в PHP нет.
 		vm.fatalDiag = true
+		// Bailout: скрипт останавливается, shutdown-функции выполняются
+		// (haltRequested снимается перед их запуском).
+		vm.RequestHalt()
 	}
 	if vm.errReporting&level == 0 {
 		return
@@ -581,6 +590,10 @@ func (vm *VM) reportDiag(kind string, level int64, msg string) {
 		vm.inErrHandler = false
 		vm.errHandlerBusy = 0
 		if err != nil {
+			// Bailout (фатал в обработчике) — не оборачиваем в Throwable.
+			if IsExitSignal(err) {
+				return
+			}
 			// Исключение из пользовательского обработчика ошибок:
 			// фиксируем и возвращаемся (поднимет цикл VM/wrapper).
 			vm.ctx.Throw(toThrowable(err))
@@ -598,12 +611,51 @@ func (vm *VM) reportDiag(kind string, level int64, msg string) {
 	// html_errors=1: диагностика в HTML-формате (main.c php_error_cb).
 	if vm.iniLookup != nil {
 		if v, ok := vm.iniLookup("html_errors"); ok && iniBool(v) {
+			msgHTML := msg
+			if root, ok2 := vm.iniLookup("docref_root"); ok2 && root != "" {
+				// По умолчанию ext=.html (в php-src default докрефа):
+				// явное docref_ext перекрывает.
+				ext := ".html"
+				if e, ok3 := vm.iniLookup("docref_ext"); ok3 && e != "" {
+					ext = e
+				}
+				msgHTML = errHTMLDocref(msg, root, ext)
+			} else {
+				msgHTML = errHTML(msg)
+			}
 			vm.Write(fmt.Sprintf("<br />\n<b>%s</b>:  %s in <b>%s</b> on line <b>%d</b><br />\n",
-				kind, errHTML(msg), file, line))
+				kind, msgHTML, file, line))
 			return
 		}
 	}
 	vm.Write(fmt.Sprintf("\n%s: %s in %s on line %d\n", kind, msg, file, line))
+}
+
+// errHTMLDocref повторяет php_verror: если сообщение начинается с
+// `func(...)`, после закрывающей скобки вставляется ссылка на документацию
+// функции ([<a href='{docref_root}function.name.html'>function.name.html</a>]);
+// остальные части экранируются как HTML.
+func errHTMLDocref(msg, root, ext string) string {
+	open := strings.IndexByte(msg, '(')
+	if open <= 0 {
+		return errHTML(msg)
+	}
+	name := msg[:open]
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if !(c == '_' || c == '\\' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (i > 0 && c >= '0' && c <= '9')) {
+			return errHTML(msg)
+		}
+	}
+	rel := strings.IndexByte(msg[open:], ')')
+	if rel < 0 {
+		return errHTML(msg)
+	}
+	closeIdx := open + rel
+	origin := msg[:closeIdx+1]
+	rest := msg[closeIdx+1:]
+	doc := "function." + strings.ToLower(strings.ReplaceAll(name, "_", "-")) + ext
+	return errHTML(origin) + " [<a href='" + root + doc + "'>" + doc + "</a>]" + errHTML(rest)
 }
 
 // errHTML повторяет escape_html() для текста диагностики (кавычки-одиночки и

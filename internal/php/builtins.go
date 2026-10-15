@@ -1,6 +1,8 @@
 package php
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/base64"
@@ -632,9 +634,20 @@ func builtins() []*vm.Function {
 		}),
 		vm.Register("ob_list_handlers", obListHandlersFn),
 		vm.Register("ob_get_status", obGetStatusFn),
-		// ob_gzhandler — заглушка: в CLI без Accept-Encoding PHP отдаёт вывод
-		// без сжатия, поэтому возвращаем содержимое как есть.
-		vm.Register("ob_gzhandler", func(ctx *vm.Context) vm.Value { return vm.Str(arg0(ctx).ToString()) }),
+		// ob_gzhandler: при Accept-Encoding с gzip отдаём gzip-поток (ob_018),
+		// иначе — вывод без сжатия (PHP в этом случае возвращает false).
+		vm.Register("ob_gzhandler", func(ctx *vm.Context) vm.Value {
+			data := arg0(ctx).ToString()
+			ae := strings.ToLower(os.Getenv("HTTP_ACCEPT_ENCODING"))
+			if !strings.Contains(ae, "gzip") {
+				return vm.Str(data)
+			}
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			_, _ = zw.Write([]byte(data))
+			_ = zw.Close()
+			return vm.MakeString(buf.String())
+		}),
 		vm.Register("flush", func(ctx *vm.Context) vm.Value { return vm.MakeNull() }),
 		vm.Register("set_error_handler", func(ctx *vm.Context) vm.Value {
 			cb := vm.MakeNull()
@@ -707,7 +720,7 @@ func builtins() []*vm.Function {
 		vm.Register("proc_get_status", procGetStatusFn),
 		vm.Register("proc_terminate", procTerminateFn),
 		vm.Register("popen", popenFn),
-		vm.Register("pclose", func(ctx *vm.Context) vm.Value { return vm.Int(-1) }),
+		vm.Register("pclose", pcloseFn),
 		vm.Register("getopt", func(ctx *vm.Context) vm.Value { return vm.MakeArray(vm.NewArray()) }),
 		vm.Register("phpinfo", phpinfoFn),
 		vm.Register("get_browser", getBrowserFn),
@@ -722,6 +735,21 @@ func builtins() []*vm.Function {
 			// Сессия не поддерживается: как Zend при пустом хранилище —
 			// $_SESSION становится пустым массивом (unset_cv05/06).
 			ctx.VM().SetSuperglobalSynced("$_SESSION", vm.MakeArray(vm.NewArray()))
+			// trans-sid: SID добавляется сканером (session-канал) только при
+			// use_trans_sid && !use_only_cookies.
+			if iniBoolInt(iniValues["session.use_trans_sid"]) != 0 &&
+				iniBoolInt(iniValues["session.use_only_cookies"]) == 0 {
+				urlRewriterActivate(ctx, true)
+				name := iniValues["session.name"]
+				if name == "" {
+					name = "PHPSESSID"
+				}
+				id := sessionIDValue
+				if id == "" {
+					id = phpSessionGenerateID()
+				}
+				urlRewriteAddVar(&urlRewriteSess, name, id)
+			}
 			return vm.Bool(true)
 		}),
 		vm.Register("session_unset", func(ctx *vm.Context) vm.Value {
@@ -748,7 +776,30 @@ func builtins() []*vm.Function {
 			}
 			return vm.MakeArray(arr)
 		}),
-		vm.Register("output_add_rewrite_var", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("output_add_rewrite_var", func(ctx *vm.Context) vm.Value {
+			// Переменная url_rewriter'а: активирует собственный буфер-сканер
+			// (URL-Rewriter) и добавляет url-приложение/hidden-поле.
+			name := arg0(ctx).ToString()
+			value := arg(ctx, 1).ToString()
+			urlRewriterActivate(ctx, false)
+			urlRewriteAddVar(&urlRewriteOut, name, value)
+			return vm.Bool(true)
+		}),
+		vm.Register("output_reset_rewrite_vars", func(ctx *vm.Context) vm.Value {
+			urlRewriteOut.urlApp = ""
+			urlRewriteOut.formApp = ""
+			return vm.Bool(true)
+		}),
+		vm.Register("__php_url_rewriter_out", urlRewriterOutFn),
+		vm.Register("__php_url_rewriter_sess", urlRewriterSessFn),
+		vm.Register("session_commit", func(ctx *vm.Context) vm.Value {
+			urlRewriterDeactivate(ctx, true)
+			return vm.Bool(true)
+		}),
+		vm.Register("session_write_close", func(ctx *vm.Context) vm.Value {
+			urlRewriterDeactivate(ctx, true)
+			return vm.Bool(true)
+		}),
 		vm.Register("header_register_callback", headerRegisterCallbackFn),
 		vm.Register("phpcredits", phpcreditsFn),
 		vm.Register("uniqid", uniqidFn),
@@ -1238,6 +1289,7 @@ func builtins() []*vm.Function {
 		vm.Register("stream_get_line", streamGetLineFn),
 		vm.Register("stream_set_timeout", streamSetTimeoutFn),
 		vm.Register("stream_set_write_buffer", setFileBufferFn),
+		vm.Register("stream_set_read_buffer", setReadFileBufferFn),
 		vm.Register("stream_set_blocking", streamSetBlockingFn),
 		vm.Register("socket_set_timeout", streamSetTimeoutFn),
 		vm.Register("socket_set_blocking", streamSetBlockingFn),

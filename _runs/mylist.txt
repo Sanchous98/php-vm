@@ -1,0 +1,6 @@
+Zend/tests/bug45186
+Zend/tests/bug48533
+Zend/tests/bug42937
+Zend/tests/bug75220
+Zend/tests/bug29210
+ext/standard/tests/bug75220

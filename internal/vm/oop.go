@@ -2511,7 +2511,7 @@ func (vm *VM) CurrentFunctionName() string { return vm.currentFunctionName() }
 
 func (vm *VM) currentFunctionName() string {
 	if n := len(vm.callStack); n > 0 {
-		if f := vm.callStack[n-1].callee; f != nil && f.Name != "" {
+		if f := vm.callStack[n-1].callee; f != nil && f.Name != "" && !isIncludeFrameFn(f) {
 			return f.Name
 		}
 	}

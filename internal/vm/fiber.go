@@ -316,7 +316,11 @@ func includeFrameFn(name string) *Function {
 	if name == "" {
 		name = "include"
 	}
-	fn := &Function{Name: name}
+	// Executable — пустая нативная функция: кадр не должен считаться
+	// userland-вызовом при выравнивании кадров в markRoots.
+	fn := &Function{Name: name, Executable: &NativeFunction{fn: func(*Context, []Slot) (Slot, error) {
+		return Slot{}, nil
+	}}}
 	includeFrameFns[name] = fn
 	return fn
 }

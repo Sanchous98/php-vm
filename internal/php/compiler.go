@@ -341,6 +341,10 @@ type compiler struct {
 	// в теле функции): они компилируются как локальные переменные с
 	// инициализацией в точке объявления (ленивая семантика BIND_STATIC).
 	localStatics map[string]bool
+	// staticBound — имена безусловных static-переменных, объявление которых
+	// уже пройдено при компиляции: до объявления имя — локальная переменная,
+	// после — привязано к статической ячейке (см. useGlobal/bindStatic).
+	staticBound map[string]bool
 	// mainStaticSeen — имена static-переменных главной программы (для
 	// диагностики повторного объявления).
 	mainStaticSeen map[string]bool
@@ -1110,7 +1114,17 @@ func (c *compiler) useGlobal(name string) bool {
 		// — по-прежнему в VM.globals.
 		return !c.promote[name]
 	}
-	return c.globals[name] || c.staticKeys[name] != ""
+	return c.globals[name] || (c.staticKeys[name] != "" && c.staticBound[name])
+}
+
+// bindStatic отмечает, что объявление `static $name` пройдено: до него имя —
+// обычная локальная переменная, после — привязано к статической ячейке
+// (ZEND_BIND_STATIC; bug: локальная и статическая с одним именем).
+func (c *compiler) bindStatic(name string) {
+	if c.staticBound == nil {
+		c.staticBound = map[string]bool{}
+	}
+	c.staticBound[name] = true
 }
 
 // loadVar читает именованную переменную в регистр.
@@ -1211,7 +1225,6 @@ func (c *compiler) emitUndefCheck(name string, line int) {
 	nm := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nm, C: int32(c.chunk.AddConst(vm.StrConst(name)))})
 	c.emitCall("__php_warn_undef", []uint8{nm})
-	c.chunk.Emit(vm.Instruction{Op: vm.OpFalse, A: def})
 	c.setJump(jf, c.chunk.Len())
 }
 
@@ -1232,6 +1245,7 @@ func (c *compiler) setUndef(name string) {
 // storeVar пишет регистр в именованную переменную.
 func (c *compiler) storeVar(name string, reg uint8) {
 	if c.isRef(name) {
+		c.clearUndef(name)
 		if c.useGlobal(name) {
 			key := c.globalKey(name)
 			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalRefSet, A: reg, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
@@ -1317,7 +1331,10 @@ func (c *compiler) refCell(name string) uint8 {
 	if c.useGlobal(name) {
 		// Запоминаем, что переменная теперь участвует в ссылке, чтобы
 		// последующие чтения/записи шли через ячейку, а не переписывали
-		// глобальную запись значением.
+		// глобальную запись значением. Ячейка создаётся (null) — переменная
+		// определена, снимаем флаг «undefined» (passByReference_005:
+		// r($u2) определяет $u2).
+		c.clearUndef(name)
 		if !c.isRef(name) {
 			c.refs[name] = 0xFF
 		}
@@ -1329,6 +1346,7 @@ func (c *compiler) refCell(name string) uint8 {
 	if !ok {
 		reg = c.ensureRefReg(name)
 	}
+	c.clearUndef(name)
 	c.chunk.Emit(vm.Instruction{Op: vm.OpRefEnsure, A: reg})
 	return reg
 }
@@ -1834,6 +1852,33 @@ func (c *compiler) prescan(stmts []Stmt) {
 	sort.Strings(undefNames)
 	for _, name := range undefNames {
 		allocDef(name)
+	}
+	// Ссылочные переменные с чтением (main-скоуп): до первой записи Zend
+	// видит неопределённую CV и печатает «Undefined variable» — привязка
+	// по ссылке в *последующем* коде не делает ранние чтения определёнными
+	// (passByReference_005: v($u1) до rv($u1,...)).
+	if c.isMain {
+		refReads := make([]string, 0, 8)
+		for name := range readCnt {
+			if c.isRef(name) && !c.globals[name] && c.staticKeys[name] == "" {
+				refReads = append(refReads, name)
+			}
+		}
+		sort.Strings(refReads)
+		for _, name := range refReads {
+			if _, ok := c.defRegs[name]; ok {
+				continue
+			}
+			if c.nvars >= 240 {
+				continue
+			}
+			// Глобальные ссылочные переменные не попадают в c.vars — флаг
+			// выделяем отдельным регистром (защищён как именованные:
+			// AllocateRegisters получает mc.nvars).
+			c.defRegs[name] = c.nvars
+			c.nvars++
+			c.undefInit = append(c.undefInit, c.defRegs[name])
+		}
 	}
 	// Переменные с чтением до записи (и записью где-то в теле): в Zend такая
 	// CV в первой точке чтения находится в состоянии UNDEF и печатает
@@ -3746,6 +3791,17 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	}
 	require := flags&2 != 0
 	once := flags&1 != 0
+	// Zend: include/require — отдельный кадр вызова (между кадром main и
+	// кадрами подключаемого файла); виден в debug_print_backtrace и трейсах.
+	callName := "include"
+	if require {
+		callName = "require"
+	}
+	if once {
+		callName += "_once"
+	}
+	removeIncludeFrame := ctx.VM().PushIncludeFrame(callName)
+	defer removeIncludeFrame()
 	path := resolveIncludePath(p, file)
 	// Поиск по include_path (в т.ч. записи-пользовательские обёртки): для
 	// относительного имени пробуем include_path/скрипт/cwd по «сырому» пути,
@@ -3765,28 +3821,36 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 			if streamWrapperURL[strings.ToLower(scheme)] {
 				if !iniEnabled("allow_url_include") {
 					ctx.VM().Warning("include(): " + scheme + ":// wrapper is disabled in the server configuration by allow_url_include=0")
-					ctx.VM().Warning("include(" + p + "): Failed to open stream: no suitable wrapper could be found")
+					ctx.VM().Warning(callName + "(" + p + "): Failed to open stream: no suitable wrapper could be found")
 					if require {
+						// Кадр include/require не попадает в трейс исключения
+						// (Zend снимает его до throw, bug35176), но виден
+						// debug_print_backtrace из обработчика ошибок (bug28213).
+						removeIncludeFrame()
 						ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
 						if ctx.HasThrown() {
 							return *new(vm.Slot)
 						}
 						return vm.MakeBool(false)
 					}
-					ctx.VM().Warning(fmt.Sprintf("include(): Failed opening '%s' for inclusion (include_path='%s')", p, fsIncludePath))
+					ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
 					return vm.MakeBool(false)
 				}
 				if !iniEnabled("allow_url_fopen") {
 					ctx.VM().Warning("include(): " + scheme + ":// wrapper is disabled in the server configuration by allow_url_fopen=0")
-					ctx.VM().Warning("include(" + p + "): Failed to open stream: no suitable wrapper could be found")
+					ctx.VM().Warning(callName + "(" + p + "): Failed to open stream: no suitable wrapper could be found")
 					if require {
+						// Кадр include/require не попадает в трейс исключения
+						// (Zend снимает его до throw, bug35176), но виден
+						// debug_print_backtrace из обработчика ошибок (bug28213).
+						removeIncludeFrame()
 						ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
 						if ctx.HasThrown() {
 							return *new(vm.Slot)
 						}
 						return vm.MakeBool(false)
 					}
-					ctx.VM().Warning(fmt.Sprintf("include(): Failed opening '%s' for inclusion (include_path='%s')", p, fsIncludePath))
+					ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
 					return vm.MakeBool(false)
 				}
 			}
@@ -3801,8 +3865,8 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 				if reason == "" {
 					reason = "operation failed"
 				}
-				ctx.VM().Warning(fmt.Sprintf("include(%s): Failed to open stream: %s", path, reason))
-				ctx.VM().Warning(fmt.Sprintf("include(): Failed opening '%s' for inclusion (include_path='%s')", p, fsIncludePath))
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, path, reason))
+				ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
 				return vm.MakeBool(false)
 			}
 			if !once {
@@ -3828,14 +3892,15 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 		if require {
 			// Zend: сначала Warning о потоке, затем Error (include_path в
 			// тексте исключения).
-			ctx.VM().Warning(fmt.Sprintf("require(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
+			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+			removeIncludeFrame()
 			ctx.Throw(vm.NewThrowable("Error", fmt.Sprintf("Failed opening required '%s' (include_path='%s')", p, fsIncludePath)))
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
 			}
 		} else {
-			ctx.VM().Warning(fmt.Sprintf("include(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
-			ctx.VM().Warning(fmt.Sprintf("include(): Failed opening '%s' for inclusion (include_path='%s')", p, fsIncludePath))
+			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)
 	}
@@ -4400,6 +4465,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			ByRefArgs: byrefMask(ci.params), ByRefReturn: ci.byrefRet,
 			ParamNames: paramNames(ci.params), ParamTypes: paramTypes(ci.params),
 			NumRequired: numRequired(ci.params), DefLine: ci.line,
+			DefFile:     base.file,
 			RetType:     normalizedType(ci.retType),
 			NumCaptures: ncap, IsStatic: ci.static,
 			CaptureNames:    capNames,
@@ -4801,7 +4867,15 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 					base.strict = cd.Strict
 					savedTicks := base.ticks
 					base.ticks = m.Ticks
+					// Тело метода из подключаемого файла компилируется в
+					// контексте своего файла (__FILE__/__DIR__).
+					methodFile := cd.DefFile
+					if methodFile == "" {
+						methodFile = file
+					}
+					base.pushFile(methodFile)
 					cf, err := base.compileFuncBody(ci.Name()+"::"+m.MName, m.Params, m.Body, m.ByRefReturn, m.RetType, m.Line)
+					base.popFile()
 					base.strict = savedStrict
 					base.ticks = savedTicks
 					if err != nil {
@@ -5912,7 +5986,16 @@ compatLoop:
 		base.strict = fd.Strict
 		savedTicks := base.ticks
 		base.ticks = fd.Ticks
+		// Тело функции из подключаемого файла компилируется в контексте
+		// своего файла: __FILE__/__DIR__ и диагностики указывают на него
+		// (inlined include, DefFile).
+		bodyFile := fd.DefFile
+		if bodyFile == "" {
+			bodyFile = file
+		}
+		base.pushFile(bodyFile)
 		cf, err := base.compileFuncBody(fd.Name, fd.Params, fd.Body, fd.ByRefReturn, fd.RetType, base.curLine)
+		base.popFile()
 		base.strict = savedStrict
 		base.ticks = savedTicks
 		if err != nil {
@@ -5964,6 +6047,11 @@ compatLoop:
 		delete(mc.promote, sv.Name)
 	}
 	mc.prescan(prog.Stmts)
+	// Пролог main: флаги «переменная определена» ссылочных переменных,
+	// читаемых до первой записи, стартуют как undefined (см. prescan).
+	for _, reg := range mc.undefInit {
+		mc.chunk.Emit(vm.Instruction{Op: vm.OpTrue, A: reg})
+	}
 	for _, st := range prog.Stmts {
 		switch s := st.(type) {
 		case *FuncDecl:
@@ -10381,7 +10469,12 @@ func (c *compiler) compileConstThunk(cls vm.ClassInfo, e Expr) (*vm.Function, er
 	cc.chunk.Optimize()
 	cc.chunk.AllocateRegisters(0, cc.allocEnv())
 	cf := vm.NewCompiledFunction(cc.chunk)
-	return &vm.Function{Name: "[constant expression]", DisplayName: "[constant expression]", NumArgs: 0, Executable: cf, Scope: cls}, nil
+	defLine := c.curLine
+	if l := c.exprLine(e); l > 0 {
+		defLine = l
+	}
+	return &vm.Function{Name: "[constant expression]", DisplayName: "[constant expression]",
+		NumArgs: 0, Executable: cf, Scope: cls, DefFile: c.file, DefLine: defLine}, nil
 }
 
 // makeConstValue вычисляет константное выражение немедленно, если это
@@ -10895,6 +10988,9 @@ func (c *compiler) stmt(st Stmt) error {
 				}
 				if v.NameExpr == nil && c.useGlobal(v.Name) {
 					c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalUnset, C: int32(c.chunk.AddConst(vm.StrConst(c.globalKey(v.Name))))})
+					// Глобальная ссылочная переменная с флагом «определена»:
+					// unset снова делает её неопределённой (passByReference_005).
+					c.setUndef(v.Name)
 					break
 				}
 				// unset локальной переменной-ссылки разрывает alias: регистр
@@ -10925,6 +11021,9 @@ func (c *compiler) stmt(st Stmt) error {
 		// объявления (ленивое связывание, как ZEND_BIND_STATIC).
 		for i, n := range s.Names {
 			if !c.localStatics[n] {
+				// Безусловная static-переменная: после объявления обращения
+				// идут к статической ячейке (пролог уже её инициализировал).
+				c.bindStatic(n)
 				continue
 			}
 			var def Expr = &NullLit{}
@@ -16136,6 +16235,7 @@ func (c *compiler) bindRefTarget(name string, target Expr, srcCell uint8) error 
 }
 
 func (c *compiler) bindRefCell(name string, srcCell uint8) {
+	c.clearUndef(name)
 	if c.isMain {
 		if c.useGlobal(name) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalRefBind, A: srcCell, C: int32(c.chunk.AddConst(vm.StrConst(c.globalKey(name))))})

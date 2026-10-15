@@ -277,18 +277,11 @@ var builtinFilters = map[string]func([]byte) []byte{
 		return out
 	},
 	"convert.quoted-printable-decode": func(b []byte) []byte {
-		var out []byte
-		for i := 0; i < len(b); i++ {
-			if b[i] == '=' && i+2 < len(b) {
-				hi := qpHex(b[i+1])
-				lo := qpHex(b[i+2])
-				if hi >= 0 && lo >= 0 {
-					out = append(out, byte(hi<<4|lo))
-					i += 2
-					continue
-				}
-			}
-			out = append(out, b[i])
+		out, ok := qpDecode(b)
+		if !ok {
+			// Невалидная последовательность: Zend отдаёт пустой результат
+			// (Warning печатает вызывающая сторона php://filter).
+			return nil
 		}
 		return out
 	},
@@ -297,6 +290,12 @@ var builtinFilters = map[string]func([]byte) []byte{
 		return b
 	},
 	"zlib.deflate": func(b []byte) []byte {
+		// Короткие несжимаемые входы zlib кодирует одним финальным
+		// fixed-Huffman блоком литералов (bug81294 сравнивает байты);
+		// Go-flate на таких данных отдаёт stored-блоки.
+		if len(b) <= 64 {
+			return deflateFixedBlock(b)
+		}
 		var buf bytes.Buffer
 		w, err := flate.NewWriter(&buf, flate.DefaultCompression)
 		if err != nil {
@@ -438,28 +437,117 @@ func newBase64EncodeFilter(params vm.Slot) func([]byte) []byte {
 // последовательность после '=' порождает Warning (php_conv_qp_decode).
 func newQPDecodeFilter(v *vm.VM) func([]byte) []byte {
 	return func(b []byte) []byte {
-		var out []byte
-		warned := false
-		for i := 0; i < len(b); i++ {
-			if b[i] == '=' && i+2 < len(b) {
-				hi := qpHex(b[i+1])
-				lo := qpHex(b[i+2])
-				if hi >= 0 && lo >= 0 {
-					out = append(out, byte(hi<<4|lo))
-					i += 2
-					continue
-				}
-				if !warned {
-					v.Warning(v.CurrentFunctionName() + "(): Stream filter (convert.quoted-printable-decode): invalid byte sequence")
-					warned = true
-				}
-			}
-			out = append(out, b[i])
+		out, ok := qpDecodeMode(b, true)
+		if !ok {
+			// php_conv_qp_decode: Warning; буфер остаётся как есть
+			// (bug74267 — запись продолжается).
+			v.Warning(v.CurrentFunctionName() + "(): Stream filter (convert.quoted-printable-decode): invalid byte sequence")
+			return b
 		}
 		return out
 	}
 }
 
+// qpDecode декодирует quoted-printable (php_conv_qp_decode):
+//   - "=" + "\r" ["\n"] / "\n" — мягкий перенос, отбрасывается;
+//   - "=" + две hex-цифры — байт;
+//   - "=" в конце или без полной hex-пары — хвост отбрасывается без ошибки;
+//   - прочее после "=" — невалидная последовательность (ok=false).
+//
+// strictTail повторяет проверку write-фильтра `in + lb_len < in_end`:
+// мягкий перенос в самом конце буфера считается невалидным (bug74267).
+func qpDecode(b []byte) (out []byte, ok bool) { return qpDecodeMode(b, false) }
+
+func qpDecodeMode(b []byte, strictTail bool) (out []byte, ok bool) {
+	for i := 0; i < len(b); {
+		c := b[i]
+		if c != '=' {
+			out = append(out, c)
+			i++
+			continue
+		}
+		if i+1 >= len(b) {
+			break
+		}
+		switch b[i+1] {
+		case '\r':
+			if strictTail {
+				end := i + 2
+				if end < len(b) && b[end] == '\n' {
+					end++
+				}
+				if end >= len(b) {
+					return nil, false
+				}
+				i = end
+				continue
+			}
+			i += 2
+			if i < len(b) && b[i] == '\n' {
+				i++
+			}
+			continue
+		case '\n':
+			if strictTail && i+2 >= len(b) {
+				return nil, false
+			}
+			i += 2
+			continue
+		}
+		if i+2 >= len(b) {
+			break
+		}
+		hi, lo := qpHex(b[i+1]), qpHex(b[i+2])
+		if hi < 0 || lo < 0 {
+			return nil, false
+		}
+		out = append(out, byte(hi<<4|lo))
+		i += 3
+	}
+	return out, true
+}
+
+// deflateFixedBlock кодирует данные одним финальным fixed-Huffman блоком
+// (литералы + EOB): совпадает с выводом zlib для коротких несжимаемых входов.
+func deflateFixedBlock(data []byte) []byte {
+	var out []byte
+	var acc uint32
+	var nbits uint
+
+	put := func(v uint32, n uint) {
+		acc |= v << nbits
+		nbits += n
+		for nbits >= 8 {
+			out = append(out, byte(acc))
+			acc >>= 8
+			nbits -= 8
+		}
+	}
+	putHuff := func(code uint32, n uint) {
+		// Huffman-коды упаковываются старшим битом вперёд.
+		for i := int(n) - 1; i >= 0; i-- {
+			put((code>>uint(i))&1, 1)
+		}
+	}
+
+	put(1, 1) // BFINAL
+	put(1, 2) // BTYPE = fixed Huffman
+	for _, c := range data {
+		switch {
+		case c <= 143:
+			putHuff(uint32(0x30)+uint32(c), 8)
+		default:
+			putHuff(uint32(0x190)+uint32(c-144), 9)
+		}
+	}
+	putHuff(0, 7) // EOB (256)
+	if nbits > 0 {
+		out = append(out, byte(acc))
+	}
+	return out
+}
+
+// qpHex возвращает значение hex-цифры или -1.
 func qpHex(c byte) int {
 	switch {
 	case c >= '0' && c <= '9':
@@ -523,6 +611,19 @@ func (h *fsHandle) applyWriteFilters(data []byte) []byte {
 	return data
 }
 
+// flushWriteFilters сбрасывает буфер записи: пишущие фильтры получают пустую
+// бригаду (Zend: php_stream_flush перед seek/rewind — gh20370). Их выход
+// дописывается в поток.
+func (h *fsHandle) flushWriteFilters() {
+	if !h.hasWriteFilters() || h.f == nil || h.us != nil {
+		return
+	}
+	out := h.applyWriteFilters(nil)
+	if len(out) > 0 {
+		_, _ = h.f.Write(out)
+	}
+}
+
 // resetFilterState сбрасывает состояние буферизации читающих фильтров.
 func (h *fsHandle) resetFilterState() {
 	h.filterBuf = nil
@@ -537,7 +638,20 @@ func (h *fsHandle) filteredRead(p []byte) (int, error) {
 		}
 		buf := make([]byte, 8192)
 		n, err := h.f.Read(buf)
-		eof := err != nil || n < len(buf)
+		eof := err != nil
+		if !eof && n < len(buf) && !h.isPhpMemory && h.us == nil {
+			// php://temp/файлы (stdio): короткое чтение у конца потока —
+			// EOF в том же вызове (Zend: feof после неполного чтения).
+			// php://memory сообщает конец только следующим чтением.
+			if pos, perr := h.f.Seek(0, io.SeekCurrent); perr == nil {
+				if fi, serr := h.f.Stat(); serr == nil && pos >= fi.Size() {
+					eof = true
+				}
+			}
+		}
+		if !eof && n < len(buf) && h.us != nil {
+			eof = true
+		}
 		if eof {
 			// feof($this->stream) внутри пользовательского фильтра должен
 			// видеть конец потока: обновляем признак EOF у обёртки, иначе
@@ -552,10 +666,30 @@ func (h *fsHandle) filteredRead(p []byte) (int, error) {
 		data := buf[:n]
 		for _, f := range h.filters {
 			if f.read {
-				data = f.applyClosing(data, eof)
-				if eof {
+				if eof && !h.isPhpMemory {
+					// php://temp/файлы: конец потока в этом же вызове —
+					// filter() получает данные и closing=true (bug79984).
+					data = f.applyClosing(data, true)
 					f.closed = true
 					f.eofClosing = true
+				} else {
+					// php://memory: данные (closing=false), затем отдельный
+					// завершающий вызов с пустой бригадой (gh20370).
+					if len(data) > 0 {
+						data = f.apply(data)
+						if f.fatal {
+							h.filterEOF = true
+							return 0, errStreamReadFailed
+						}
+					}
+					if eof {
+						f.closed = true
+						f.eofClosing = true
+						tail := f.applyClosing(nil, true)
+						if len(tail) > 0 {
+							data = append(data, tail...)
+						}
+					}
 				}
 				if f.fatal {
 					h.filterEOF = true
@@ -586,16 +720,45 @@ type bucketBrigade struct {
 	pos     int
 }
 
-// makeBucket создаёт объект-bucket (stdClass) с полями data/datalen.
+// makeBucket создаёт объект-bucket: stdClass с полями bucket/data/datalen
+// (как php-src: bucket — ресурс userfilter.bucket, clone объекта делит с
+// оригиналом один и тот же ресурс).
 func makeBucket(v *vm.VM, data string) vm.Slot {
 	ci := v.FindClass("stdClass")
 	if ci == nil {
 		return vm.MakeNull()
 	}
 	slot, o := v.NewObjectOf(ci)
+	id := fsNextID
+	fsNextID++
+	ci.SetProp(o, "bucket", vm.MakeResource(id, "userfilter.bucket", &bucketHandle{id: id}))
 	ci.SetProp(o, "data", vm.MakeString(data))
 	ci.SetProp(o, "datalen", vm.MakeInt(int64(len(data))))
 	return slot
+}
+
+// bucketHandle — полезная нагрузка ресурса bucket (только идентичность).
+type bucketHandle struct{ id int64 }
+
+// bucketIdentity возвращает ресурс bucket из объекта-обёртки (для дедупликации
+// attach: clone делит ресурс с оригиналом).
+func bucketIdentity(v *vm.VM, b vm.Slot) int64 {
+	o := v.SlotObject(b)
+	if o == nil {
+		return -1
+	}
+	ci := v.FindClass(o.ClassName())
+	if ci == nil {
+		return -1
+	}
+	if res, ok := ci.GetProp(o, "bucket"); ok {
+		var s vm.Slot
+		vm.SlotOf(&s, res)
+		if r := vm.AsResource(s); r != nil && r.Kind == "userfilter.bucket" {
+			return r.ID
+		}
+	}
+	return -1
 }
 
 // newBrigade оборачивает список bucket-ов в ресурс.
@@ -842,16 +1005,18 @@ func streamBucketAppendFn(ctx *vm.Context) vm.Value {
 	if br == nil {
 		return vm.MakeNull()
 	}
-	// Повторное добавление той же корзины в ту же бригаду игнорируется:
-	// Zend помечает корзину владельцем-бригадой, и второй append не создаёт
-	// дубликат (bug35916: ожидается один THANK YOU, а не два).
+	// Zend (GH-17345): корзина с тем же ресурсом bucket уже в бригаде —
+	// сначала отвязывается, затем добавляется в конец.
 	b := arg(ctx, 1)
+	id := bucketIdentity(ctx.VMInstance(), b)
+	kept := br.buckets[:0]
 	for _, x := range br.buckets {
-		if x == b {
-			return vm.MakeNull()
+		if x == b || (id >= 0 && bucketIdentity(ctx.VMInstance(), x) == id) {
+			continue
 		}
+		kept = append(kept, x)
 	}
-	br.buckets = append(br.buckets, b)
+	br.buckets = append(kept, b)
 	return vm.MakeNull()
 }
 
@@ -865,7 +1030,16 @@ func streamBucketPrependFn(ctx *vm.Context) vm.Value {
 	if br == nil {
 		return vm.MakeNull()
 	}
-	br.buckets = append([]vm.Slot{arg(ctx, 1)}, br.buckets...)
+	b := arg(ctx, 1)
+	id := bucketIdentity(ctx.VMInstance(), b)
+	kept := br.buckets[:0]
+	for _, x := range br.buckets {
+		if x == b || (id >= 0 && bucketIdentity(ctx.VMInstance(), x) == id) {
+			continue
+		}
+		kept = append(kept, x)
+	}
+	br.buckets = append([]vm.Slot{b}, kept...)
 	return vm.MakeNull()
 }
 

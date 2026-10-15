@@ -1266,6 +1266,32 @@ func stdConst(name string) (vm.Slot, bool) {
 		return vm.MakeInt(1), true
 	case "STREAM_SHUT_RDWR":
 		return vm.MakeInt(2), true
+	case "STREAM_NOTIFY_RESOLVE":
+		return vm.MakeInt(1), true
+	case "STREAM_NOTIFY_CONNECT":
+		return vm.MakeInt(2), true
+	case "STREAM_NOTIFY_AUTH_REQUIRED":
+		return vm.MakeInt(3), true
+	case "STREAM_NOTIFY_MIME_TYPE_IS":
+		return vm.MakeInt(4), true
+	case "STREAM_NOTIFY_FILE_SIZE_IS":
+		return vm.MakeInt(5), true
+	case "STREAM_NOTIFY_REDIRECTED":
+		return vm.MakeInt(6), true
+	case "STREAM_NOTIFY_PROGRESS":
+		return vm.MakeInt(7), true
+	case "STREAM_NOTIFY_COMPLETED":
+		return vm.MakeInt(8), true
+	case "STREAM_NOTIFY_FAILURE":
+		return vm.MakeInt(9), true
+	case "STREAM_NOTIFY_AUTH_RESULT":
+		return vm.MakeInt(10), true
+	case "STREAM_NOTIFY_SEVERITY_INFO":
+		return vm.MakeInt(0), true
+	case "STREAM_NOTIFY_SEVERITY_WARN":
+		return vm.MakeInt(1), true
+	case "STREAM_NOTIFY_SEVERITY_ERR":
+		return vm.MakeInt(2), true
 	case "LOCK_SH":
 		return vm.MakeInt(1), true
 	case "LOCK_EX":
@@ -1966,6 +1992,13 @@ func phpFormatFloat(f float64, zeroFraction bool) string {
 	if gen == 0 {
 		gen = 1
 	}
+	// var_export (zeroFraction) моделирует snprintf: precise 0 трактуется как
+	// 1 (smart_str_append_double: zend_gcvt(num, precision ? precision : 1)),
+	// включая решение о научной записи; serialize зовёт gcvt с сырым 0.
+	decision := ndigit
+	if zeroFraction && decision == 0 {
+		decision = 1
+	}
 	s := strconv.FormatFloat(math.Abs(f), 'e', gen-1, 64)
 	ei := strings.IndexByte(s, 'e')
 	exp10, _ := strconv.Atoi(s[ei+1:])
@@ -1974,7 +2007,7 @@ func phpFormatFloat(f float64, zeroFraction bool) string {
 	if digits == "" {
 		digits = "0"
 	}
-	return gcvtFormat(digits, exp10+1, neg, ndigit, zeroFraction)
+	return gcvtFormat(digits, exp10+1, neg, decision, zeroFraction)
 }
 
 // serializePrecisionDigits возвращает значение serialize_precision (-1 по

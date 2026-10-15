@@ -1228,6 +1228,13 @@ func (vm *VM) indexSetOverload(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 			}
 			if m := ci.lookupMethod("offsetGet"); m != nil {
 				if !m.ByRefReturn {
+					if !share && deref(regs[in.C]).typ == ObjectType {
+						// Writeback временного значения-объекта: запись уже
+						// применена собственным handler'ом объекта, повторный
+						// offsetSet Zend не делает и Notice не печатает
+						// (array_access_009).
+						return execResult{}
+					}
 					// offsetGet без ссылки: косвенная модификация не имеет
 					// эффекта (Zend печатает Notice).
 					vm.Notice("Indirect modification of overloaded element of " + classDisplayName(ci) + " has no effect")

@@ -182,7 +182,7 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	}
 	// Динамический вызов scope-introspection функций запрещён.
 	if sn, ok := scopeIntrospectionName(regs[base]); ok {
-		err := NewThrowable("Error", "Cannot call "+sn+"() dynamically")
+		err := vm.IntrospectionCallError(sn, args)
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}

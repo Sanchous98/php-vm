@@ -1,6 +1,8 @@
 package php
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/base64"
@@ -597,9 +599,20 @@ func builtins() []*vm.Function {
 		}),
 		vm.Register("ob_list_handlers", obListHandlersFn),
 		vm.Register("ob_get_status", obGetStatusFn),
-		// ob_gzhandler — заглушка: в CLI без Accept-Encoding PHP отдаёт вывод
-		// без сжатия, поэтому возвращаем содержимое как есть.
-		vm.Register("ob_gzhandler", func(ctx *vm.Context) vm.Value { return vm.Str(arg0(ctx).ToString()) }),
+		// ob_gzhandler: при Accept-Encoding с gzip отдаём gzip-поток (ob_018),
+		// иначе — вывод без сжатия (PHP в этом случае возвращает false).
+		vm.Register("ob_gzhandler", func(ctx *vm.Context) vm.Value {
+			data := arg0(ctx).ToString()
+			ae := strings.ToLower(os.Getenv("HTTP_ACCEPT_ENCODING"))
+			if !strings.Contains(ae, "gzip") {
+				return vm.Str(data)
+			}
+			var buf bytes.Buffer
+			zw := gzip.NewWriter(&buf)
+			_, _ = zw.Write([]byte(data))
+			_ = zw.Close()
+			return vm.MakeString(buf.String())
+		}),
 		vm.Register("flush", func(ctx *vm.Context) vm.Value { return vm.MakeNull() }),
 		vm.Register("set_error_handler", func(ctx *vm.Context) vm.Value {
 			cb := vm.MakeNull()
@@ -647,7 +660,7 @@ func builtins() []*vm.Function {
 		vm.Register("proc_get_status", procGetStatusFn),
 		vm.Register("proc_terminate", procTerminateFn),
 		vm.Register("popen", popenFn),
-		vm.Register("pclose", func(ctx *vm.Context) vm.Value { return vm.Int(-1) }),
+		vm.Register("pclose", pcloseFn),
 		vm.Register("getopt", func(ctx *vm.Context) vm.Value { return vm.MakeArray(vm.NewArray()) }),
 		vm.Register("phpinfo", phpinfoFn),
 		vm.Register("get_browser", getBrowserFn),
@@ -1178,6 +1191,7 @@ func builtins() []*vm.Function {
 		vm.Register("stream_get_line", streamGetLineFn),
 		vm.Register("stream_set_timeout", streamSetTimeoutFn),
 		vm.Register("stream_set_write_buffer", setFileBufferFn),
+		vm.Register("stream_set_read_buffer", setReadFileBufferFn),
 		vm.Register("stream_set_blocking", streamSetBlockingFn),
 		vm.Register("socket_set_timeout", streamSetTimeoutFn),
 		vm.Register("socket_set_blocking", streamSetBlockingFn),

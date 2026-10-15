@@ -775,7 +775,7 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 	// "Cannot call %s() dynamically") — проверяем до маршалинга аргументов,
 	// чтобы не печатать предупреждения о by-ref параметрах.
 	if name, ok := scopeIntrospectionName(c); ok {
-		return Slot{}, NewThrowable("Error", "Cannot call "+name+"() dynamically")
+		return Slot{}, vm.IntrospectionCallError(name, args)
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedMarkInternal := vm.markNextFrameInternal

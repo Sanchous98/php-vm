@@ -54,7 +54,14 @@ func (vm *VM) lifetimeAllowed() bool {
 // могло потерять ссылки на объекты. Уменьшает оценки ссылок; при обнулении
 // ставит кандидата на проверку достижимости.
 func (vm *VM) noteDropped(old Slot) {
-	if old.typ < ObjectType || old.typ == ResourceType {
+	if old.typ < ObjectType {
+		return
+	}
+	if old.typ == ResourceType {
+		// Место хранения больше не владеет ресурсом с OnDrop (процесс
+		// proc_open): кандидат на финализацию (точную проверку делает
+		// flushResourceDrops).
+		vm.dropResourceRef(old)
 		return
 	}
 	if d := deref(old); d.typ == ObjectType {
@@ -67,7 +74,11 @@ func (vm *VM) noteDropped(old Slot) {
 // noteStored вызывается при записи значения в контейнер (свойство, элемент
 // массива, статическое свойство, ячейку-ссылку): увеличивает оценку ссылок.
 func (vm *VM) noteStored(v Slot) {
-	if v.typ < ObjectType || v.typ == ResourceType {
+	if v.typ < ObjectType {
+		return
+	}
+	if v.typ == ResourceType {
+		vm.resourceHold(v)
 		return
 	}
 	vm.incRefs(v, 0)
@@ -131,11 +142,11 @@ func (vm *VM) decRefsSeen(s Slot, depth int, seenA map[*Array]bool, seenC map[*C
 		o.refs--
 		vm.afterDecObject(o)
 	case ResourceType:
-		// Только верхний уровень: элементы массивов/захваты владельцами
-		// ресурсов не считаются (noteStored пропускает ресурсы).
-		if depth == 0 {
-			vm.dropResourceRef(s)
-		}
+		// Владельцы-контейнеры (элементы массивов/свойства) учтены
+		// noteStored: при освобождении контейнера списываем их на любой
+		// глубине. Возможный переучёт (COW) безопасен: финализатор выполняет
+		// flushResourceDrops только после точной проверки достижимости.
+		vm.dropResourceRef(s)
 	case ClosureType:
 		cl := s.asClosure()
 		if cl == nil {
@@ -298,16 +309,53 @@ func (vm *VM) dropResourceRef(s Slot) {
 	}
 }
 
-// flushResourceDrops выполняет отложенные финализаторы ресурсов.
-func (vm *VM) flushResourceDrops() {
+// reachableResources помечает ресурсы с OnDrop, достижимые от корней VM.
+// ok=false — стек содержит нативные кадры, точная проверка невозможна
+// (финализатор откладывается).
+func (vm *VM) reachableResources(chunk *Chunk, pc int) (map[*Resource]bool, bool) {
+	if !vm.lifetimeAllowed() {
+		return nil, false
+	}
+	m := newLifeVisit(vm)
+	vm.markRoots(m, chunk, pc)
+	m.finishWeakMaps()
+	return m.ress, true
+}
+
+// flushResourceDrops выполняет отложенные финализаторы ресурсов. Перед
+// вызовом OnDrop ресурс обязан быть недостижим от корней: счётчик Refs
+// отслеживает только регистры, поэтому контейнер (свойство/элемент массива),
+// удерживающий proc_open-ресурс, обязан отложить закрытие пайпов.
+// Достижимый ресурс остаётся в очереди-триггере: следующий dropResourceRef
+// (потеря контейнера) снова поставит его кандидатом.
+func (vm *VM) flushResourceDrops(chunk *Chunk, pc int) {
 	if !vm.resDropPending {
 		return
 	}
 	vm.resDropPending = false
 	drops := vm.resDrops
 	vm.resDrops = vm.resDrops[:0]
+	var reach map[*Resource]bool
+	haveReach := false
 	for _, r := range drops {
 		if r == nil || !r.dropped || r.Refs > 0 {
+			continue
+		}
+		if !haveReach {
+			var ok bool
+			reach, ok = vm.reachableResources(chunk, pc)
+			if !ok {
+				// Точная проверка невозможна (нативный кадр): откладываем
+				// весь список до ближайшего чистого прохода.
+				vm.resDrops = append(vm.resDrops, drops...)
+				vm.resDropPending = true
+				return
+			}
+			haveReach = true
+		}
+		if reach[r] {
+			// Ресурс ещё виден из графа: разрешаем повторную постановку.
+			r.dropped = false
 			continue
 		}
 		if f := r.OnDrop; f != nil {
@@ -651,6 +699,11 @@ type lifeVisit struct {
 	// refs — уже учтённые ячейки-ссылки: алиасы одной ячейки (переменная и
 	// захват `use (&$x)`) не должны считаться разными владельцами объекта.
 	refs map[*Ref]bool
+	// ress — ресурсы с OnDrop, достижимые от корней (процессы proc_open).
+	// Счётчик Refs — только «подсказка»: финализатор нельзя выполнять, пока
+	// ресурс виден из пользовательского графа (контейнеры не считаются
+	// владельцами, см. flushResourceDrops).
+	ress map[*Resource]bool
 	// inRefs — сколько ссылок на объект найдено в живом графе (корни +
 	// достижимые контейнеры). После прохода refs выживших синхронизируются с
 	// этим числом, чтобы оценка не «забывала» ссылки и не плодила ложных
@@ -687,6 +740,7 @@ func newLifeVisit(vm *VM) *lifeVisit {
 		clos:   map[*Closure]bool{},
 		refs:   map[*Ref]bool{},
 		inRefs: map[*Object]int32{},
+		ress:   map[*Resource]bool{},
 	}
 }
 
@@ -722,6 +776,10 @@ func (m *lifeVisit) slot(s Slot) {
 		m.closure(s.asClosure())
 	case ArrayType:
 		m.array(s.AsArray())
+	case ResourceType:
+		if r := AsResource(s); r != nil && r.OnDrop != nil {
+			m.ress[r] = true
+		}
 	}
 }
 
@@ -753,6 +811,10 @@ func (m *lifeVisit) slotMirror(s Slot) {
 		for _, v := range a.All() {
 			m.slotMirror(v)
 		}
+	case ResourceType:
+		if r := AsResource(s); r != nil && r.OnDrop != nil {
+			m.ress[r] = true
+		}
 	}
 }
 
@@ -773,6 +835,10 @@ func (m *lifeVisit) slotBare(s Slot) {
 		m.closure(s.asClosure())
 	case ArrayType:
 		m.array(s.AsArray())
+	case ResourceType:
+		if r := AsResource(s); r != nil && r.OnDrop != nil {
+			m.ress[r] = true
+		}
 	}
 }
 
@@ -1046,9 +1112,9 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 		return sweepOutcome{}
 	}
 	// Финализаторы ресурсов (процесс proc_open, потерявший владельца)
-	// выполняются до марк-фазы.
+	// выполняются до марк-фазы (с точной проверкой достижимости).
 	if vm.resDropPending {
-		vm.flushResourceDrops()
+		vm.flushResourceDrops(chunk, pc)
 	}
 	// Флаги относятся к текущему проходу; новые кандидаты, найденные во время
 	// уничтожения (например, значение удалённой записи WeakMap), выставят их

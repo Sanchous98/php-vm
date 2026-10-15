@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"phpvm/internal/vm"
 	"sort"
@@ -1042,6 +1043,10 @@ type fsHandle struct {
 	// isMemory — поток php://memory/php://temp: чтение всегда доступно,
 	// отказ записи не сопровождается Notice.
 	isMemory bool
+	// isPhpMemory — поток php://memory (в отличие от php://temp): короткое
+	// чтение НЕ означает EOF — Zend отдаёт конец потока только следующим
+	// чтением (разное поведение фильтров, bug79984 vs gh20370).
+	isPhpMemory bool
 	// appendMode — режим 'a': каждая запись идёт в конец (для ин-мемори
 	// буферов эмулируем вручную).
 	appendMode bool
@@ -1082,6 +1087,11 @@ type fsHandle struct {
 	writeTimeout time.Duration
 	// uri — исходная строка, переданная в fopen (для stream_get_meta_data).
 	uri string
+	// popenProc — процесс popen-потока: fclose/pclose дожидаются его.
+	popenProc *procHandle
+	// noWrapper — у потока нет обёртки (popen): stream_get_meta_data без
+	// wrapper_type/uri.
+	noWrapper bool
 	// outVM — VM для маршрутизации записи в php://stdout/php://stderr.
 	outVM *vm.VM
 }
@@ -1398,6 +1408,18 @@ func readFilterURL(path string, ctxs ...*vm.Context) ([]byte, bool) {
 	}
 	for _, fn := range strings.Split(chain, "|") {
 		name := filterPercentDecode(fn)
+		if name == "convert.quoted-printable-decode" && ctx != nil {
+			// Невалидная последовательность: Warning от имени вызывающей
+			// функции, результат пуст (php_conv_qp_decode).
+			out, ok2 := qpDecode(data)
+			if !ok2 {
+				ctx.VM().Warning(ctx.VM().CurrentFunctionName() + "(): Stream filter (convert.quoted-printable-decode): invalid byte sequence")
+				data = nil
+				continue
+			}
+			data = out
+			continue
+		}
 		if f, ok := builtinFilterFunc(name); ok {
 			data = f(data)
 			continue
@@ -2092,7 +2114,9 @@ func fsOpen(ctx *vm.Context, name, mode string) (*fsHandle, bool) {
 			return nil, false
 		}
 		// Ин-мемори буфер: чтение всегда доступно, запись — по режиму.
-		h := &fsHandle{f: f, path: name, mode: mode, push: -1, tmp: true, canRead: true, canWrite: canWrite, isMemory: true, appendMode: mode != "" && mode[0] == 'a'}
+		// php://memory сообщает EOF только следующим чтением (не коротким),
+		// php://temp ведёт себя как файл.
+		h := &fsHandle{f: f, path: name, mode: mode, push: -1, tmp: true, canRead: true, canWrite: canWrite, isMemory: true, isPhpMemory: strings.HasPrefix(name, "php://memory"), appendMode: mode != "" && mode[0] == 'a'}
 		h.meta = map[string]vm.Slot{"wrapper_type": vm.MakeString("PHP")}
 		return h, true
 	case name == "php://input" || name == "php://stdin":
@@ -2227,6 +2251,10 @@ func fcloseFn(ctx *vm.Context) vm.Value {
 			h.res.Closed = true
 		}
 		return vm.Bool(false)
+	}
+	// popen-поток: fclose ждёт процесс (pclose-семантика дтора потока).
+	if h.popenProc != nil {
+		h.popenProc.finish(true)
 	}
 	closeFilters(h)
 	h.Close()
@@ -2425,6 +2453,10 @@ func fseekFn(ctx *vm.Context) vm.Value {
 		return fseekUser(ctx, h, off, whence)
 	}
 	h.push = -1
+	// Zend перед позиционированием сбрасывает буфер записи: пишущие
+	// фильтры получают пустую бригаду (gh20370 — дополнительный вызов
+	// filter() при rewind/fseek).
+	h.flushWriteFilters()
 	if _, err := h.Seek(off, whence); err != nil {
 		return vm.Int(-1)
 	}
@@ -2521,6 +2553,7 @@ func rewindFn(ctx *vm.Context) vm.Value {
 		return vm.Bool(true)
 	}
 	h.push = -1
+	h.flushWriteFilters()
 	h.Seek(0, io.SeekStart)
 	h.resetFilterState()
 	h.eof = false
@@ -4527,10 +4560,28 @@ func splitBrace(s string) []string {
 	return parts
 }
 
+// pcloseFn — pclose(): дожидается popen-процесса, возвращает код выхода.
+func pcloseFn(ctx *vm.Context) vm.Value {
+	h := streamArg(ctx, 0, "pclose")
+	if ctx.HasThrown() {
+		return *new(vm.Value)
+	}
+	if h.popenProc == nil {
+		ctx.VM().Warning("pclose(): supplied resource is not a valid stream resource")
+		return vm.Int(-1)
+	}
+	ph := h.popenProc
+	ph.finish(true)
+	return vm.Int(ph.closeCode)
+}
+
 func popenFn(ctx *vm.Context) vm.Value {
 	mode := arg(ctx, 1).ToString()
+	reading := false
 	switch mode {
-	case "r", "rb", "w", "wb":
+	case "r", "rb":
+		reading = true
+	case "w", "wb":
 	default:
 		ctx.Throw(vm.NewThrowable("ValueError",
 			`popen(): Argument #2 ($mode) must be one of "r", "rb", "w", or "wb"`))
@@ -4539,7 +4590,73 @@ func popenFn(ctx *vm.Context) vm.Value {
 		}
 		return vm.Bool(false)
 	}
-	return vm.Bool(false)
+	cmdStr := arg0(ctx).ToString()
+	c := exec.Command("/bin/sh", "-c", cmdStr)
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return vm.Bool(false)
+	}
+	ph := &procHandle{cmd: c, cmdStr: cmdStr, closeCode: -1, sink: ctx.VM()}
+	// Стандартные fd, не занятые пайпом, направляем в файлы сбора: вывод
+	// ребёнка не должен уходить в stdout процесса-хоста (харнесс).
+	for fd := 0; fd <= 2; fd++ {
+		var f *os.File
+		switch {
+		case fd == 1 && reading:
+			f = pw
+		case fd == 0 && !reading:
+			f = pr
+		default:
+			var ferr error
+			f, ferr = os.CreateTemp("", "popen-inherit")
+			if ferr != nil {
+				_ = pr.Close()
+				_ = pw.Close()
+				return vm.Bool(false)
+			}
+			ph.collect = append(ph.collect, f.Name())
+			ph.files = append(ph.files, f)
+		}
+		switch fd {
+		case 0:
+			c.Stdin = f
+		case 1:
+			c.Stdout = f
+		case 2:
+			c.Stderr = f
+		}
+	}
+	if serr := c.Start(); serr != nil {
+		for _, f := range ph.files {
+			_ = f.Close()
+		}
+		_ = pr.Close()
+		_ = pw.Close()
+		return vm.Bool(false)
+	}
+	ph.pid = c.Process.Pid
+	// Закрываем в родителе конец, отданный ребёнку.
+	if reading {
+		_ = pw.Close()
+	} else {
+		_ = pr.Close()
+	}
+	parent := pw
+	if reading {
+		parent = pr
+	}
+	h := &fsHandle{f: parent, mode: mode, push: -1, canRead: reading, canWrite: !reading,
+		singleRead: true, popenProc: ph, noWrapper: true}
+	ph.pipes = append(ph.pipes, h)
+	ph.files = append(ph.files, parent)
+	id := fsNextID
+	fsNextID++
+	ph.id = id
+	procHandles[id] = ph
+	res := vm.MakeResource(id, "process", ph)
+	ph.res = vm.AsResource(res)
+	return fsNewResource(h, "stream")
 }
 
 func symlinkFn(ctx *vm.Context) vm.Value {
@@ -4692,6 +4809,36 @@ func opendirFn(ctx *vm.Context) vm.Value {
 // dirFn — dir(): возвращает объект с открытым каталогом (свойство handle).
 func dirFn(ctx *vm.Context) vm.Value {
 	ensureDefaultStreamContext()
+	raw := arg0(ctx).ToString()
+	if scheme, ok := userScheme(raw); ok {
+		if _, reg := streamWrappers[strings.ToLower(scheme)]; reg {
+			u, uok := openUserDir(ctx, raw)
+			if ctx.HasThrown() {
+				return *new(vm.Value)
+			}
+			if !uok {
+				reason := lastUserOpenErr
+				lastUserOpenErr = ""
+				if reason == "" {
+					reason = "No such file or directory"
+				}
+				ctx.VM().Warning("dir(" + raw + "): Failed to open directory: " + reason)
+				return vm.Bool(false)
+			}
+			h := &fsHandle{path: raw, mode: "r", dir: true, push: -1, canRead: true, us: u}
+			fsLastDir = h
+			res := fsNewResource(h, "stream")
+			vmi := ctx.VMInstance()
+			ci := vmi.FindClass("Directory")
+			if ci == nil {
+				return res
+			}
+			slot, o := vmi.NewObjectOf(ci)
+			ci.SetProp(o, "path", vm.MakeString(raw))
+			ci.SetProp(o, "handle", res)
+			return slot
+		}
+	}
 	path := pathString(ctx, 0)
 	if !checkOpenBasedir(ctx.VM(), "dir", arg0(ctx).ToString(), arg0(ctx).ToString()) {
 		ctx.VM().Warning("dir(" + arg0(ctx).ToString() + "): Failed to open directory: Operation not permitted")

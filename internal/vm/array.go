@@ -514,6 +514,13 @@ func (a *Array) noteVal(v Slot) {
 		switch v.typ {
 		case ObjectType, ClosureType, RefType, ArrayType:
 			a.objRefs = true
+		case ResourceType:
+			// Ресурс с OnDrop (процесс proc_open) должен быть виден
+			// марк-фазе: иначе финализатор закрыл бы пайпы, пока ресурс
+			// удерживается элементом массива.
+			if r := AsResource(v); r != nil && r.OnDrop != nil {
+				a.objRefs = true
+			}
 		}
 	}
 }

@@ -36,6 +36,9 @@ type ClassInfo interface {
 	MethodFunction(name string) (*Function, bool)
 	// AliasMethod регистрирует псевдоним метода (trait `as`).
 	AliasMethod(alias string, fn *Function, vis Visibility) ClassInfo
+	// AliasMethodBefore регистрирует псевдоним перед исходным методом трейта
+	// (порядок get_class_methods как в Zend, bug64239_1).
+	AliasMethodBefore(alias string, fn *Function, vis Visibility) ClassInfo
 	// SetMethodVis меняет видимость существующего метода (trait `as`).
 	SetMethodVis(name string, vis Visibility) ClassInfo
 	// IsEnum/EnumBacking — поддержка перечислений.

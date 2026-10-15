@@ -76,6 +76,33 @@ func methodNameForProto(m *Function, name string) string {
 	return name
 }
 
+// protectedSigProtoAccess — protected-доступ по корневому прототипу-сигнатуре:
+// метод реализует абстрактную сигнатуру (или метод интерфейса), объявленную в
+// классе-предке/интерфейсе, родственном области видимости (bug61782).
+func protectedSigProtoAccess(ci ClassInfo, name string, scope ClassInfo) bool {
+	rc, ok := ci.(*runtimeClass)
+	if !ok || rc == nil || scope == nil {
+		return false
+	}
+	for k := rc; k != nil; k = k.parent {
+		if sig, ok := k.sigs[name]; ok && sig != Private {
+			if scope.IsA(k) || k.IsA(scope) {
+				return true
+			}
+		}
+		for _, i := range k.ifaces {
+			if r, ok2 := i.(*runtimeClass); ok2 && r != nil {
+				if sig, ok3 := r.sigs[name]; ok3 && sig != Private {
+					if scope.IsA(i) || i.IsA(scope) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // methodAccessibleFromProto — как methodAccessibleFrom, но для protected
 // дополнительно учитывает корневой прототип метода (GH-14009:
 // zend_get_function_root_class): доступ разрешён области, связанной с классом

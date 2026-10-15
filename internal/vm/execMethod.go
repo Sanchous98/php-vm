@@ -780,7 +780,11 @@ func (vm *VM) opClone(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 	// readonly-свойства можно переинициализировать по одному разу.
 	if m := ci.lookupMethod("__clone"); m != nil {
 		_, cmDecl, cmVis := ci.methodInfo("__clone")
-		if !canAccess(cmVis, cmDecl, vm.ctx.self) {
+		// Как Zend: protected-__clone доступен области, связанной с корневым
+		// прототипом метода (bug61782: LatchkeyKid и MommasBoy — «сёстры»,
+		// но прототип объявлен в BaseClass).
+		if !vm.methodAccessibleFromProto(ci, cmDecl, "__clone", cmVis, vm.ctx.self) &&
+			!(cmVis == Protected && protectedSigProtoAccess(ci, "__clone", vm.ctx.self)) {
 			err := vm.ctorAccessError(cmVis, classDisplayName(cmDecl), "__clone")
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}

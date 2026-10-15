@@ -426,6 +426,10 @@ type VM struct {
 	// отложенных выражений (0 вне них).
 	constFetchPath []string
 	thunkEvalDepth int
+	// cmpFatal — фатал «Nesting level too deep - recursive dependency?»,
+	// поднятый переполнением глубины сравнения (ops.cmpDepth); снимается
+	// обработчиком опкода сравнения.
+	cmpFatal *Throwable
 	// lifeUrgent — среди кандидатов есть объект, требующий немедленного
 	// уничтожения (__destruct, незавершённый генератор/файбер).
 	lifeUrgent bool
@@ -1959,7 +1963,24 @@ func (vm *VM) PushIncludeFrame(name string, args []Slot) func() {
 	}
 	vm.pushCallAt(fn, file, nil, 0, line, args)
 	vm.callStack[len(vm.callStack)-1].isIncludeFrame = true
-	return vm.popCall
+	return func() {
+		if n := len(vm.callStack); n > 0 {
+			if e := &vm.callStack[n-1]; e.isIncludeFrame && e.callee == fn {
+				vm.callStack = vm.callStack[:n-1]
+			}
+		}
+	}
+}
+
+// DropTopIncludeFrame снимает верхний синтетический кадр include/require,
+// если он ещё на стеке: ошибка, поднятая самой конструкцией (Failed opening
+// required), в трейсе Zend кадра require() не имеет (include_stat_is_quiet).
+func (vm *VM) DropTopIncludeFrame() {
+	if n := len(vm.callStack); n > 0 {
+		if e := &vm.callStack[n-1]; e.isIncludeFrame {
+			vm.callStack = vm.callStack[:n-1]
+		}
+	}
 }
 
 // SetTopIncludeFrameArgs заполняет аргументы верхнего синтетического кадра
@@ -4055,6 +4076,11 @@ func (vm *VM) exec(chunk *Chunk) error {
 						return t
 					}
 					continue
+				}
+				// Переполнение глубины сравнения циклических структур —
+				// фатал «Nesting level too deep» (bug63882).
+				if t := vm.cmpFatalError(); t != nil {
+					return t
 				}
 			}
 		case OpSpaceship:

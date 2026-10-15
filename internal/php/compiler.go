@@ -4050,6 +4050,7 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 					ctx.VM().Warning("include(): " + scheme + ":// wrapper is disabled in the server configuration by allow_url_include=0")
 					ctx.VM().Warning("include(" + p + "): Failed to open stream: no suitable wrapper could be found")
 					if require {
+						ctx.VM().DropTopIncludeFrame()
 						ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
 						if ctx.HasThrown() {
 							return *new(vm.Slot)
@@ -4063,6 +4064,7 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 					ctx.VM().Warning("include(): " + scheme + ":// wrapper is disabled in the server configuration by allow_url_fopen=0")
 					ctx.VM().Warning("include(" + p + "): Failed to open stream: no suitable wrapper could be found")
 					if require {
+						ctx.VM().DropTopIncludeFrame()
 						ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
 						if ctx.HasThrown() {
 							return *new(vm.Slot)
@@ -4123,6 +4125,10 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 			// Zend: сначала Warning о потоке, затем Error (include_path в
 			// тексте исключения).
 			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
+			// Ошибку поднимает сама конструкция require: в трейсе Zend кадра
+			// require() нет (include_stat_is_quiet), в отличие от ошибок,
+			// поднятых кодом подключаемого файла или из обработчика warning.
+			ctx.VM().DropTopIncludeFrame()
 			ctx.Throw(vm.NewThrowable("Error", fmt.Sprintf("Failed opening required '%s' (include_path='%s')", p, fsIncludePath)))
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
@@ -5785,8 +5791,7 @@ classLoop:
 					}
 				}
 				// Псевдоним не перекрывает метод, объявленный в самом классе.
-				if fn != nil && !classDeclaresMethod(cd, ta.AliasName) {
-					// Коллизия псевдонима с методом другого трейта.
+				if fn != nil && !classDeclaresMethod(cd, ta.AliasName) { // Коллизия псевдонима с методом другого трейта.
 					if srcName != "" {
 						if other := traitProvidingMethod(classDecls, cd, ta.AliasName, srcName); other != "" {
 							posSrc, posOther := usePos(cd.Uses, srcName), usePos(cd.Uses, other)
@@ -5799,7 +5804,11 @@ classLoop:
 								other, ta.AliasName, cd.Name, ta.AliasName, srcName, ta.AliasName))
 						}
 					}
-					ci.AliasMethod(ta.AliasName, fn, vis)
+					if classDeclaresMethod(cd, ta.Method) {
+						ci.AliasMethod(ta.AliasName, fn, vis)
+					} else {
+						ci.AliasMethodBefore(ta.AliasName, fn, vis)
+					}
 				}
 			} else if ta.Vis != "" {
 				if !classDeclaresMethod(cd, ta.Method) {

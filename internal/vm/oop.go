@@ -663,10 +663,22 @@ func (c *runtimeClass) MethodFunction(name string) (*Function, bool) {
 }
 
 // AliasMethod регистрирует псевдоним метода (копия с новым именем).
-// Zend применяет псевдоним раньше оригинального имени, поэтому в таблице
-// методов псевдоним встаёт непосредственно перед источником (bug64239_1:
-// get_class_methods даёт [Bmethod, t2method]).
 func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) ClassInfo {
+	nf := *fn
+	nf.Name = alias
+	nf.Scope = c
+	c.methods[alias] = &nf
+	appendUnique(&c.methodOrder, alias)
+	c.setMethodVis(alias, vis)
+	return c
+}
+
+// AliasMethodBefore регистрирует псевдоним непосредственно перед исходным
+// методом трейта: Zend применяет `as`-псевдонимы раньше копирования методов
+// трейта, поэтому в get_class_methods псевдоним идёт первым (bug64239_1:
+// [Bmethod, t2method]). Если класс объявляет собственный метод с тем же
+// именем, применяется обычный AliasMethod (порядок bug65579).
+func (c *runtimeClass) AliasMethodBefore(alias string, fn *Function, vis Visibility) ClassInfo {
 	nf := *fn
 	orig := fn.Name
 	nf.Name = alias
@@ -675,7 +687,7 @@ func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) C
 	idx := -1
 	for i, n := range c.methodOrder {
 		if n == alias {
-			idx = -2
+			idx = -2 // уже есть
 			break
 		}
 		if idx < 0 && n == orig {

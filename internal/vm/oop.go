@@ -2501,11 +2501,9 @@ func (vm *VM) MaybeDeprecateDynamicProp(ci ClassInfo, o *Object, name string) {
 	if ci.Name() == "stdClass" || ci.Name() == "__PHP_Incomplete_Class" {
 		return
 	}
-	if !classIsUserDefined(ci) {
-		// Встроенные классы не проверяем: у части из них (Exception и т.п.)
-		// свойства моделируются как «динамические» внутри VM.
-		return
-	}
+	// Встроенные классы: Zend тоже депрецирует создание динамических свойств
+	// (bug64960: Exception::$_trace), кроме свойств, объявленных в модели
+	// класса/внутренним хендлером (HasProperty их знает).
 	if ci.HasProperty(name) {
 		return
 	}

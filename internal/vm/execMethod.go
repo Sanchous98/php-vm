@@ -51,6 +51,16 @@ func (vm *VM) closureMethodCall(cl *Closure, mname string, args []Slot) (Slot, b
 	return Slot{}, false, nil
 }
 
+// methodNameCString обрезает динамическое имя метода по первому NUL-байту:
+// Zend передаёт имя в __call/__callStatic как C-строку, поэтому `$m = "\0"`
+// даёт пустое имя (bug46238: string(0) "").
+func methodNameCString(name string) string {
+	if i := strings.IndexByte(name, 0); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
 func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	// Имя метода обязано быть строкой: Zend бросает Error даже при наличии
 	// __call (objects_025: $a->$b() с $b = NULL).
@@ -98,7 +108,7 @@ func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 		}
 		return execResult{next: true}
 	}
-	mname := deref(regs[in.C&0xFF]).ToString()
+	mname := methodNameCString(deref(regs[in.C&0xFF]).ToString())
 	if cls, ok := incompleteObjName(vm.objectOf(recv)); ok {
 		err := incompleteMethodErr(cls)
 		if !vm.handleThrow(chunk, err) {
@@ -439,7 +449,7 @@ func (vm *VM) opStaticCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 		}
 		return execResult{next: true}
 	}
-	mname := deref(regs[in.C&0xFF]).ToString()
+	mname := methodNameCString(deref(regs[in.C&0xFF]).ToString())
 	if cls.IsTrait() {
 		vm.Deprecated("Calling static trait method " + cls.Name() + "::" + mname + " is deprecated, it should only be called on a class using the trait")
 	}

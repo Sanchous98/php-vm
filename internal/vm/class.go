@@ -403,6 +403,45 @@ func (vm *VM) SetDisabledClasses(names []string) {
 	vm.disabledClasses = m
 }
 
+// SetDisabledFunctions применяет INI disable_functions: Zend удаляет такие
+// внутренние функции из таблицы (вызов даёт Error "Call to undefined
+// function", function_exists/is_callable — false). Пользовательские функции с
+// теми же именами не затрагиваются.
+func (vm *VM) SetDisabledFunctions(names []string) {
+	if len(names) == 0 {
+		return
+	}
+	set := map[string]bool{}
+	for _, n := range names {
+		if n = strings.ToLower(strings.TrimSpace(n)); n != "" {
+			set[n] = true
+		}
+	}
+	if len(set) == 0 {
+		return
+	}
+	for _, f := range vm.functions {
+		if f == nil || f.Disabled {
+			continue
+		}
+		name := strings.ToLower(f.Name)
+		if !set[name] {
+			continue
+		}
+		if _, isNative := f.Executable.(*NativeFunction); !isNative {
+			// Пользовательская функция с именем отключённой встроенной.
+			continue
+		}
+		f.Disabled = true
+		display := f.Name
+		f.NumArgs = 0
+		f.Executable = &NativeFunction{fn: func(ctx *Context, args []Slot) (Slot, error) {
+			return Slot{}, NewThrowable("Error", "Call to undefined function "+display+"()")
+		}}
+	}
+	vm.funcIndex = nil
+}
+
 // classDisabled сообщает, что класс (или его предок) в disable_classes.
 func (vm *VM) classDisabled(ci ClassInfo) bool {
 	if len(vm.disabledClasses) == 0 || ci == nil {

@@ -613,6 +613,12 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	} else {
 		m.SetDisabledClasses(nil)
 	}
+	// disable_functions: отключённые встроенные исчезают из таблицы функций.
+	if v, ok := iniValues["disable_functions"]; ok {
+		m.SetDisabledFunctions(strings.Split(v, ","))
+	} else {
+		m.SetDisabledFunctions(nil)
+	}
 	// fiber.stack_size из --INI-- действует на start() (gh20483).
 	if v, ok := iniValues["fiber.stack_size"]; ok {
 		m.SetFiberStackSize(v)

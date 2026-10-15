@@ -26,8 +26,13 @@ func NewRef(v Slot) Slot { return MakeRef(&Ref{v: v}) }
 func CompareSlots(a, b Slot) int { return compareSlots(nil, a, b) }
 
 // functionByName ищет зарегистрированную функцию по имени.
+// functionByName возвращает userland/встроенную функцию по имени (без учёта
+// регистра), пропуская отключённые через disable_functions.
 func (vm *VM) functionByName(name string) *Function {
 	for _, f := range vm.functions {
+		if f.Disabled {
+			continue
+		}
 		if strings.EqualFold(f.Name, name) {
 			return f
 		}
@@ -621,6 +626,29 @@ func (vm *VM) CallCallable(ctx *Context, c Slot, args []Slot) (Slot, error) {
 	return vm.callCallableMode(ctx, c, args, false)
 }
 
+// scopeIntrospectionNames — функции, которые Zend запрещает вызывать динамически
+// ("Cannot call %s() dynamically"): они работают с таблицей символов
+// вызывающего кадра.
+var scopeIntrospectionNames = map[string]bool{
+	"extract": true, "compact": true, "get_defined_vars": true,
+	"func_get_arg": true, "func_get_args": true, "func_num_args": true,
+}
+
+// scopeIntrospectionName возвращает каноническое имя функции, если callable —
+// строковое имя scope-introspection функции (используется для запрета
+// динамических вызовов).
+func scopeIntrospectionName(c Slot) (string, bool) {
+	d := deref(c)
+	if d.typ != StringType {
+		return "", false
+	}
+	n := strings.ToLower(strings.TrimPrefix(d.ToString(), "\\"))
+	if scopeIntrospectionNames[n] {
+		return n, true
+	}
+	return "", false
+}
+
 // CallCallableAt — CallCallable с явной позицией вызывающего для кадра
 // callable (обработчик ошибок: в трейсе Zend место — точка генерации ошибки).
 func (vm *VM) CallCallableAt(ctx *Context, c Slot, args []Slot, file string, chunk *Chunk, pc, line int) (Slot, error) {
@@ -737,6 +765,12 @@ func (vm *VM) CallCallableNamedDirectScope(ctx *Context, c Slot, arr *Array, sel
 }
 
 func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (Slot, error) {
+	// Динамический вызов scope-introspection функций запрещён (Zend:
+	// "Cannot call %s() dynamically") — проверяем до маршалинга аргументов,
+	// чтобы не печатать предупреждения о by-ref параметрах.
+	if name, ok := scopeIntrospectionName(c); ok {
+		return Slot{}, NewThrowable("Error", "Cannot call "+name+"() dynamically")
+	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedMarkInternal := vm.markNextFrameInternal
 	if !direct {
@@ -1659,34 +1693,96 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
 	}
 
 	if recv.typ == StringType {
-		clsName := strings.TrimLeft(recv.StringVal(), "\\")
-		ci := vm.resolveCallableNameToClass(clsName)
-		if ci == nil {
-			return Slot{}, NewThrowable("Error", fmt.Sprintf("Class \"%s\" not found", clsName))
-		}
-		called := ci
-		if vm.forwardCalled != nil && vm.forwardCalled.IsA(ci) {
-			called = vm.forwardCalled
-		} else if (strings.EqualFold(clsName, "self") || strings.EqualFold(clsName, "parent") || strings.EqualFold(clsName, "static")) && vm.ctx.called != nil {
-			called = vm.ctx.called
-		}
-		if strings.Contains(mname, "::") {
-			if tci, meth, _ := vm.resolveQualifiedMethod(ci, mname); tci != nil {
-				if m := methodOrCtor(tci, meth); m != nil {
-					return vm.invokeMethod(m, Slot{}, tci, args)
-				}
-			}
-		}
-		if m := methodOrCtor(ci, mname); m != nil {
-			return vm.invokeMethod(m, Slot{}, called, args)
-		}
-		if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArray(args)}); ok {
-			return res, err
-		}
-		return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined method %s::%s()", ci.Name(), mname))
+		return vm.callStaticStringCallable(recv.StringVal(), mname, args)
 	}
 
 	return Slot{}, NewThrowable("Error", "Value is not callable")
+}
+
+// callStaticStringCallable — динамический вызов "Class::method" (строкой или
+// массивом [Class, method]). Zend: существующий нестатический метод в такой
+// позиции — ошибка "Non-static method ... cannot be called statically"; если
+// метода нет, но есть instance-__call и активный $this — та же ошибка,
+// иначе "Call to undefined method". __callStatic имеет приоритет, но только
+// для отсутствующих (не для нестатических) методов.
+func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot) (Slot, error) {
+	clsName = strings.TrimLeft(clsName, "\\")
+	ci := vm.resolveCallableNameToClass(clsName)
+	if ci == nil {
+		return Slot{}, NewThrowable("Error", fmt.Sprintf("Class \"%s\" not found", clsName))
+	}
+	called := ci
+	if vm.forwardCalled != nil && vm.forwardCalled.IsA(ci) {
+		called = vm.forwardCalled
+	} else if (strings.EqualFold(clsName, "self") || strings.EqualFold(clsName, "parent") || strings.EqualFold(clsName, "static")) && vm.ctx.called != nil {
+		called = vm.ctx.called
+	}
+	if strings.Contains(mname, "::") {
+		if tci, meth, _ := vm.resolveQualifiedMethod(ci, mname); tci != nil {
+			if m := methodOrCtor(tci, meth); m != nil {
+				if !m.IsStatic && meth != "__construct" {
+					if recv := vm.staticCallRecv(tci); deref(recv).typ == ObjectType {
+						return vm.invokeMethod(m, recv, tci, args)
+					}
+					return Slot{}, NewThrowable("Error", "Non-static method "+tci.Name()+"::"+m.Name+"() cannot be called statically")
+				}
+				return vm.invokeMethod(m, Slot{}, tci, args)
+			}
+		}
+	}
+	if m := methodOrCtor(ci, mname); m != nil {
+		if !m.IsStatic && mname != "__construct" {
+			// Как checkStaticCall: вызов допустим, если есть активный $this
+			// совместимого класса (Zend биндит метод на него).
+			if recv := vm.staticCallRecv(ci); deref(recv).typ == ObjectType {
+				return vm.invokeMethod(m, recv, called, args)
+			}
+			return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+m.Name+"() cannot be called statically")
+		}
+		return vm.invokeMethod(m, Slot{}, called, args)
+	}
+	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArray(args)}); ok {
+		return res, err
+	}
+	// В объектном контексте с instance-__call Zend разрешает C::m как
+	// нестатический вызов — и сообщает об ошибке "cannot be called statically".
+	if t := deref(vm.ctx.this); t.typ == ObjectType && ci.lookupMethod("__call") != nil {
+		if tci := vm.classInfo(t); tci != nil && tci.IsA(ci) {
+			return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
+		}
+	}
+	return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined method %s::%s()", ci.Name(), mname))
+}
+
+// callableTypeName — имя типа для "Value of type %s is not callable"
+// (bool без true/false, как get_debug_type).
+func callableTypeName(vm *VM, s Slot) string {
+	switch s.typ {
+	case NullType:
+		return "null"
+	case BoolType:
+		return "bool"
+	case IntType:
+		return "int"
+	case FloatType:
+		return "float"
+	case StringType:
+		return "string"
+	case ArrayType:
+		return "array"
+	case ObjectType:
+		if ci := vm.classInfo(s); ci != nil {
+			return ClassDisplayName(ci.Name())
+		}
+		return "object"
+	case ClosureType:
+		return "Closure"
+	case ResourceType:
+		return "resource"
+	case RefType:
+		return callableTypeName(vm, deref(s))
+	}
+	return "unknown"
 }
 
 // ClassHasMethod сообщает, есть ли у класса метод (включая унаследованные и

@@ -185,6 +185,14 @@ func (vm *VM) opGlobalSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 		vm.globals = map[string]Slot{}
 	}
 	name := "$" + deref(regs[in.C]).ToString()
+	if name == "$this" {
+		// `$$a = ...` с $a == "this": Zend запрещает переприсваивать $this.
+		err := NewThrowable("Error", "Cannot re-assign $this")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	v := deref(regs[in.A])
 	{
 		old := regs[in.A]

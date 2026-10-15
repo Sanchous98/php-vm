@@ -787,6 +787,9 @@ func (vm *VM) Const(name string) (Slot, bool) {
 // HasFunction сообщает, есть ли функция с таким именем.
 func (vm *VM) HasFunction(name string) bool {
 	for _, f := range vm.functions {
+		if f.Disabled {
+			continue
+		}
 		if f.Name == name {
 			return true
 		}

@@ -12,6 +12,11 @@ type Function struct {
 	NumArgs    int
 	NumRegs    int
 	Executable Executable
+	// Disabled — внутренняя функция, отключённая через INI disable_functions:
+	// Zend удаляет её из таблицы функций (function_exists — false, вызов —
+	// "Call to undefined function"). Пользовательская функция с тем же именем
+	// не блокируется.
+	Disabled bool
 	// Scope — класс объявления (self). Позже заполнится для методов.
 	Scope ClassInfo
 	// AcceptsExtraNamed — функция принимает extra named params (Zend

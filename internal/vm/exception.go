@@ -54,7 +54,6 @@ func NewExceptionClasses() []ClassInfo {
 	closedGenErr := NewClass("ClosedGeneratorException", runtimeErr)
 	fiberErr := NewClass("FiberError", errClass)
 	errExc := NewClass("ErrorException", exClass)
-	errExc.SetFinal()
 
 	all := []ClassInfo{
 		throwable, errClass, arithErr, divZero, typeErr, argErr, valueErr,
@@ -70,6 +69,25 @@ func NewExceptionClasses() []ClassInfo {
 		registerExceptionMembers(ci)
 	}
 	return append(all, stdClass, directory)
+}
+
+// exceptionCtorDecl — конструктор Throwable с проверкой типа message.
+// declName — класс, объявивший конструктор: у наследников без своего
+// конструктора в диагностике стоит исходный класс (Exception/Error/...).
+func exceptionCtorDecl(ctx *Context, args []Slot, declName string) (Slot, error) {
+	if len(args) > 0 {
+		// Первый параметр — string $message: объекты/массивы/ресурсы дают
+		// TypeError (int/float/bool приводятся к строке, как в coercive-режиме).
+		switch a := deref(args[0]); a.typ {
+		case ObjectType, ArrayType, ResourceType:
+			ctx.Throw(NewThrowable("TypeError", declName+"::__construct(): Argument #1 ($message) must be of type string, "+
+				valueTypeName(ctx.vm, a)+" given"))
+			if ctx.HasThrown() {
+				return *new(Slot), nil
+			}
+		}
+	}
+	return exceptionCtor(ctx, args)
 }
 
 // exceptionCtor — базовый конструктор Throwable: сохраняет message/code/previous
@@ -131,13 +149,18 @@ func registerExceptionMembers(ci ClassInfo) {
 			rc.SetPropTypeOnly(p.name, p.typ, Protected)
 		}
 	}
-	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{fn: exceptionCtor}})
+	declName := ci.Name()
+	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			return exceptionCtorDecl(ctx, args, declName)
+		},
+	}})
 	// errorExceptionCtor — конструктор ErrorException: как базовый, но с
 	// дополнительными severity/filename/line.
 	if rc, ok := ci.(*runtimeClass); ok && rc != nil && rc.name == "ErrorException" {
-		rc.ctor = &Function{Name: "__construct", NumArgs: 6, Executable: &NativeFunction{
+		rc.ctor = &Function{Name: "__construct", NumArgs: 6, Scope: ci, Executable: &NativeFunction{
 			fn: func(ctx *Context, args []Slot) (Slot, error) {
-				if _, err := exceptionCtor(ctx, args); err != nil {
+				if _, err := exceptionCtorDecl(ctx, args, "ErrorException"); err != nil {
 					return Slot{}, err
 				}
 				o := ctx.ThisObj()

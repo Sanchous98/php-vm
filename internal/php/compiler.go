@@ -2795,6 +2795,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_dyn_static_ref", dynStaticRefBuiltin),
 		vm.Register("__php_dyn_class_const", dynClassConstBuiltin),
 		vm.Register("__php_dyn_static_call", dynStaticCallBuiltin),
+		vm.Register("__php_check_dyn_class", checkDynClassBuiltin),
 		vm.Register("__php_method_call_named", methodCallNamedBuiltin),
 		vm.Register("__php_static_call_named", staticCallNamedBuiltin),
 		vm.Register("__php_new_named", newNamedBuiltin),
@@ -3189,10 +3190,30 @@ func dynClassConstBuiltin(ctx *vm.Context) vm.Slot {
 
 // dynStaticCallBuiltin — вызов статического метода класса, заданного
 // динамически: `$cls::m(args)`.
+// checkDynClassBuiltin — проверка типа динамического класса для `$a::$b(...)`:
+// Zend резолвит класс до вычисления имени метода.
+func checkDynClassBuiltin(ctx *vm.Context) vm.Slot {
+	args := ctx.Args()
+	if len(args) < 1 {
+		return vm.MakeNull()
+	}
+	if s := derefSlot(args[0]); s.Type() != vm.StringType && s.Type() != vm.ObjectType {
+		return throwErr(ctx, vm.NewThrowable("Error", "Class name must be a valid object or a string"))
+	}
+	return vm.MakeNull()
+}
+
 func dynStaticCallBuiltin(ctx *vm.Context) vm.Slot {
 	args := ctx.Args()
 	if len(args) < 3 {
 		return vm.MakeNull()
+	}
+	// Zend сначала резолвит класс и лишь затем проверяет тип имени метода.
+	if m := derefSlot(args[1]); m.Type() != vm.StringType {
+		if cs := derefSlot(args[0]); cs.Type() != vm.StringType && cs.Type() != vm.ObjectType {
+			return throwErr(ctx, vm.NewThrowable("Error", "Class name must be a valid object or a string"))
+		}
+		return throwErr(ctx, vm.NewThrowable("Error", "Method name must be a string"))
 	}
 	var callArgs []vm.Slot
 	if a := derefSlot(args[2]); a.Type() == vm.ArrayType {
@@ -3916,6 +3937,25 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		if err := base.reservedClassName(cd.Name); err != nil {
 			return nil, err
 		}
+		if err := reservedClassRefFatal(cd); err != nil {
+			return nil, err
+		}
+		if !cd.IsInterface {
+			for _, n := range cd.Interfaces {
+				if strings.EqualFold(strings.TrimLeft(n, "\\"), "Throwable") {
+					noun := "Class"
+					tail := ", extend Exception or Error instead"
+					if cd.IsEnum {
+						noun = "Enum"
+						tail = ""
+					}
+					return nil, &fatalError{
+						msg:  fmt.Sprintf("%s %s cannot implement interface Throwable%s", noun, cd.Name, tail),
+						line: cd.Line,
+					}
+				}
+			}
+		}
 		kind := "class"
 		if cd.IsInterface {
 			kind = "interface"
@@ -4548,6 +4588,12 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						ci.DefineConst(m.ConstName, v)
 					}
 				case "signature":
+					if !m.Abstract && !cd.IsAbstract && !cd.IsInterface {
+						// `function f();` без abstract в неабстрактном классе
+						// (Zend: Non-abstract method ... must contain body).
+						base.curLine = m.Line
+						return nil, base.newFatal(fmt.Sprintf("Non-abstract method %s::%s() must contain body", ci.Name(), m.MName))
+					}
 					if m.Readonly {
 						return nil, base.newFatal("Cannot use the readonly modifier on a method")
 					}
@@ -8034,6 +8080,49 @@ func (c *compiler) reservedClassName(name string) error {
 	}
 	if reservedTypeNames[strings.ToLower(short)] {
 		return c.newFatal(fmt.Sprintf("Cannot use '%s' as class name as it is reserved", short))
+	}
+	return nil
+}
+
+// reservedClassRefFatal — Zend запрещает self/parent/static в роли родителя,
+// интерфейса и трейта (fatal на строке объявления).
+func reservedClassRefFatal(cd *ClassDecl) error {
+	bad := func(n string) bool {
+		switch strings.ToLower(n) {
+		case "self", "parent", "static":
+			return true
+		}
+		return false
+	}
+	if bad(cd.Parent) {
+		return &fatalError{msg: fmt.Sprintf("Cannot use '%s' as class name, as it is reserved", cd.Parent), line: cd.Line}
+	}
+	for _, n := range cd.Interfaces {
+		if bad(n) {
+			return &fatalError{msg: fmt.Sprintf("Cannot use '%s' as interface name, as it is reserved", n), line: cd.Line}
+		}
+	}
+	traitFatal := func(n string) error {
+		line := cd.UsesLine
+		if line == 0 {
+			line = cd.Line
+		}
+		return &fatalError{msg: fmt.Sprintf("Cannot use '%s' as trait name, as it is reserved", n), line: line}
+	}
+	for _, n := range cd.Uses {
+		if bad(n) {
+			return traitFatal(n)
+		}
+	}
+	for _, ta := range cd.TraitAdapt {
+		if bad(ta.Trait) {
+			return traitFatal(ta.Trait)
+		}
+		for _, n := range ta.Insteadof {
+			if bad(n) {
+				return traitFatal(n)
+			}
+		}
 	}
 	return nil
 }
@@ -12010,6 +12099,10 @@ func (c *compiler) yieldExpr(x *YieldExpr) (uint8, error) {
 	// иначе Zend выдаёт Notice (значение всё равно yield-ится как обычно).
 	// Голый `yield;` (null-значение без выражения) notice не даёт.
 	explicit := val != nil
+	if c.byrefReturn && explicit && containsNullsafe(val) {
+		// `yield $obj?->x` в by-ref генераторе: цепочку нельзя взять по ссылке.
+		return 0, c.newFatal("Cannot take reference of a nullsafe chain")
+	}
 	if val == nil {
 		val = &NullLit{}
 	}
@@ -13542,6 +13635,9 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 		return d, nil
 	case *MethodCallExpr:
 		if isFCCArgs(x.Args) {
+			if containsNullsafe(x.Recv) {
+				return 0, c.newFatal("Cannot combine nullsafe operator with Closure creation")
+			}
 			if x.NameExpr == nil {
 				return c.memberFCCCall(2, x.Recv, x.Name)
 			}
@@ -13980,6 +14076,14 @@ func (c *compiler) anonNew(x *NewAnonClassExpr) (uint8, error) {
 		c.chunk.SetLine(x.Decl.Line)
 		c.chunk.Emit(vm.Instruction{Op: vm.OpFatal, C: int32(c.chunk.AddConst(vm.StrConst(x.Decl.RuntimeFatal)))})
 	}
+	if x.Decl != nil && x.Decl.IsReadonly {
+		for _, at := range x.Decl.Attrs {
+			if strings.EqualFold(strings.TrimLeft(at.Name, "\\"), "AllowDynamicProperties") {
+				c.chunk.SetLine(x.Decl.Line)
+				c.chunk.Emit(vm.Instruction{Op: vm.OpFatal, C: int32(c.chunk.AddConst(vm.StrConst("Cannot apply #[AllowDynamicProperties] to readonly class class@anonymous")))})
+			}
+		}
+	}
 	return c.newNamed(name, x.Args)
 }
 
@@ -14369,6 +14473,12 @@ func (c *compiler) staticCallExpr(classExpr Expr, name string, nameExpr Expr, ar
 	if err != nil {
 		return 0, err
 	}
+	// Zend проверяет тип класса до вычисления имени метода: невалидный
+	// класс (`$a::$b()` с неопределённым $a) — ошибка "Class name must be
+	// a valid object or a string" без побочных эффектов от $b.
+	if nameExpr != nil {
+		c.emitCall("__php_check_dyn_class", []uint8{clsReg})
+	}
 	if hasNamedArg(args) {
 		if msg := argOrderError(args); msg != "" {
 			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
@@ -14446,6 +14556,12 @@ func (c *compiler) staticCall(cls, name string, nameExpr Expr, args []Expr) (uin
 		clsReg, err := c.expr(&VarExpr{Name: dyn})
 		if err != nil {
 			return 0, err
+		}
+		// Zend проверяет тип класса до вычисления имени метода: невалидный
+		// класс (`$a::$b()` с неопределённым $a) — ошибка "Class name must be
+		// a valid object or a string" без побочных эффектов от $b.
+		if nameExpr != nil {
+			c.emitCall("__php_check_dyn_class", []uint8{clsReg})
 		}
 		if hasNamedArg(args) {
 			if msg := argOrderError(args); msg != "" {
@@ -14708,6 +14824,10 @@ func (c *compiler) matchExpr(x *MatchExpr) (uint8, error) {
 // результатом становится null и цепочка Body не выполняется.
 func (c *compiler) nullsafeExpr(x *NullsafeExpr) (uint8, error) {
 	c.emitLine(c.exprLine(x))
+	// `$a?->b(...)` / `$a?->b->c(...)` — FCC в nullsafe-цепочке запрещён.
+	if fccInChain(x.Body) {
+		return 0, c.newFatal("Cannot combine nullsafe operator with Closure creation")
+	}
 	recv, err := c.expr(x.Recv)
 	if err != nil {
 		return 0, err
@@ -14811,6 +14931,30 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: r, B: k, C: int32(v)})
 	}
 	return r, nil
+}
+
+// fccInChain ищет first-class callable `f(...)` в цепочке приёмников
+// (`$a?->b(...)`, `$a?->b->c(...)`): Zend запрещает Closure-создание в
+// nullsafe-цепочке.
+func fccInChain(e Expr) bool {
+	for e != nil {
+		switch v := e.(type) {
+		case *MethodCallExpr:
+			if isFCCArgs(v.Args) {
+				return true
+			}
+			e = v.Recv
+		case *IndexExpr:
+			e = v.Arr
+		case *PropExpr:
+			e = v.Recv
+		case *NullsafeExpr:
+			e = v.Body
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // containsNullsafe сообщает, что выражение содержит nullsafe-цепочку (`?->`).
@@ -15437,11 +15581,11 @@ func (c *compiler) assignListW(t *ListExpr, value Expr, listWB func(uint8)) (uin
 	}
 	hasRefs := listHasRefsDeep(t)
 	if hasRefs {
-		if !isListRefRHS(value) {
-			return 0, &fatalError{msg: "Cannot assign reference to non referenceable value", line: c.exprLine(value)}
-		}
 		if containsNullsafe(value) {
 			return 0, &fatalError{msg: "Cannot take reference of a nullsafe chain", line: c.exprLine(value)}
+		}
+		if !isListRefRHS(value) {
+			return 0, &fatalError{msg: "Cannot assign reference to non referenceable value", line: c.exprLine(value)}
 		}
 		base, err := c.listRefBase(value)
 		if err != nil {

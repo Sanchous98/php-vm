@@ -149,10 +149,13 @@ type AttrArg struct {
 
 // ClassDecl — объявление класса/интерфейса/трейта.
 type ClassDecl struct {
-	Name        string
-	Parent      string   // extends (для класса)
-	Interfaces  []string // implements (класс) / extends (интерфейс)
-	Uses        []string // use TraitA, TraitB;
+	Name       string
+	Parent     string   // extends (для класса)
+	Interfaces []string // implements (класс) / extends (интерфейс)
+	Uses       []string // use TraitA, TraitB;
+	// UsesLine — строка первого `use Trait` в теле класса (для диагностик
+	// «Cannot use 'static' as trait name»: Zend указывает на `use`).
+	UsesLine    int
 	Attrs       []AttrDecl
 	IsInterface bool
 	IsTrait     bool
@@ -374,7 +377,14 @@ type AssignExpr struct {
 	Value  Expr
 	ByRef  bool // $a = &$b
 }
-type TernaryExpr struct{ Cond, Then, Else Expr }
+
+// TernaryExpr — `cond ? then : else` (Then == nil для короткой формы `?:`).
+// Paren — выражение было в скобках: `(a ? b : c) ? d : e` допустимо, а
+// непарентетизированное правое вложение тернарников — компиляторный фатал.
+type TernaryExpr struct {
+	Cond, Then, Else Expr
+	Paren            bool
+}
 type CoalesceExpr struct{ L, R Expr }
 type CallExpr struct {
 	Name string
@@ -640,6 +650,21 @@ type Parser struct {
 	anyStmt  bool
 	declared bool
 
+	// pendingClassUses — импорты классов в файле (для отложенной проверки
+	// коллизий с объявлениями классов), seenClassLine/seenClassName — верхние
+	// объявления классов (нижний регистр FQ-имени → строка/имя).
+	pendingClassUses []pendingClassUse
+	seenClassLine    map[string]int
+	seenClassName    map[string]string
+
+	// Состояние объявлений namespace: nsMode 0 — объявлений ещё не было,
+	// 1 — bracketed (`namespace X {`), 2 — unbracketed (`namespace X;`).
+	// nsDepth > 0 — разбор внутри bracketed-блока; nsBlockClosed — блок
+	// namespace {} уже закрыт (код вне блоков после него запрещён).
+	nsMode        int
+	nsDepth       int
+	nsBlockClosed bool
+
 	// strictTypes — файл объявил declare(strict_types=1).
 	strictTypes bool
 
@@ -665,6 +690,14 @@ func literalTruthy(e Expr) bool {
 		return x.V
 	}
 	return false
+}
+
+// pendingClassUse — импорт класса, отложенный до конца разбора файла.
+type pendingClassUse struct {
+	full  string
+	alias string
+	key   string
+	line  int
 }
 
 // maxParseDepth ограничивает рекурсию парсера, чтобы глубоко вложенный вход
@@ -970,7 +1003,22 @@ func (p *Parser) parseAttrs(raws []AttrRaw) []AttrDecl {
 						return out
 					}
 					if strings.HasPrefix(a, "...") {
-						p.attrErr = &fatalError{msg: "Cannot use unpacking in attribute argument list", line: raw.Line}
+						if strings.TrimSpace(a[3:]) == "" {
+							// `F(...)` — first-class callable в атрибуте.
+							// Zend сообщает строку объявления, к которому
+							// прикреплён атрибут.
+							line := raw.Line
+							if p.pos < len(p.toks) {
+								line = p.lineAt(p.cur().Pos)
+							}
+							p.attrErr = &fatalError{msg: "Cannot create Closure as attribute argument", line: line}
+						} else {
+							line := raw.Line
+							if p.pos < len(p.toks) {
+								line = p.lineAt(p.cur().Pos)
+							}
+							p.attrErr = &fatalError{msg: "Cannot use unpacking in attribute argument list", line: line}
+						}
 						return out
 					}
 					if e, err := p.parseAttrExpr(a); err == nil {
@@ -1288,23 +1336,32 @@ func (p *Parser) syntaxErrExpect(t Token, what string) error {
 func (p *Parser) program() (*Program, error) {
 	prog := &Program{}
 	for !p.is(TEOF, "") {
-		if p.kw("namespace") {
+		if p.kw("namespace") && !p.nsRelativeStmtAhead() {
 			stmts, err := p.namespaceDecl()
 			if err != nil {
 				return nil, err
 			}
 			prog.Stmts = append(prog.Stmts, stmts...)
 			p.anyStmt = true
+			if p.nsMode == 1 {
+				p.nsBlockClosed = true
+			}
 			continue
 		}
+		startLine := p.lineAt(p.cur().Pos)
 		st, err := p.statement()
 		if err != nil {
 			return nil, err
 		}
+		if p.nsMode == 1 && p.nsBlockClosed && !p.declared && st != nil {
+			// Файл с bracketed-namespace: код допускается только внутри `{}`.
+			return nil, &fatalError{msg: "No code may exist outside of namespace {}", line: startLine}
+		}
 		if st != nil {
 			prog.Stmts = append(prog.Stmts, st)
 		}
-		if !p.declared {
+		if st != nil && !p.declared {
+			// Пустой оператор `;` — nop: он не мешает объявлению namespace.
 			p.anyStmt = true
 		}
 		p.declared = false
@@ -1313,16 +1370,118 @@ func (p *Parser) program() (*Program, error) {
 	prog.ExprLines = p.exprLines
 	prog.StrictTypes = p.strictTypes
 	prog.TypeWarnings = p.typeWarnings
+	if err := p.checkUseClassConflicts(); err != nil {
+		return nil, err
+	}
 	return prog, nil
+}
+
+// checkUseClassConflicts повторяет проверку Zend «the name is already in use»
+// для импортов классов и объявлений классов в одном файле: ошибка сообщается
+// на том из двух мест, которое идёт позже.
+func (p *Parser) checkUseClassConflicts() error {
+	for _, u := range p.pendingClassUses {
+		cline, ok := p.seenClassLine[u.key]
+		if !ok {
+			continue
+		}
+		// Импорт самого объявленного класса (совпадающие FQ-имена) — не
+		// конфликт: `namespace Test; use Test\Foo; class Foo {}` корректен.
+		if strings.EqualFold(strings.TrimLeft(u.full, "\\"), strings.TrimLeft(p.seenClassName[u.key], "\\")) {
+			continue
+		}
+		if u.line > cline {
+			return &fatalError{msg: fmt.Sprintf("Cannot use %s as %s because the name is already in use", u.full, u.alias), line: u.line}
+		}
+		return &fatalError{msg: fmt.Sprintf("Cannot declare class %s because the name is already in use", p.seenClassName[u.key]), line: cline}
+	}
+	return nil
+}
+
+// nsRelativeStmtAhead сообщает, что `namespace` в начале оператора — не
+// объявление, а namespace-relative имя `namespace\Foo` (лексер Zend отдаёт
+// T_NAME_RELATIVE, когда `\` идёт сразу за ключевым словом).
+func (p *Parser) nsRelativeStmtAhead() bool {
+	t := p.cur()
+	n := p.peekAt(1)
+	return n.Kind == TOp && n.Val == "\\" && n.Pos == t.Pos+len("namespace")
+}
+
+// nsBracketedForm сообщает, что текущее объявление namespace — bracketed
+// (`namespace X { ... }`), а не `namespace X;`. Просматривает токены имени.
+func (p *Parser) nsBracketedForm() bool {
+	for i := 1; i < 64; i++ {
+		t := p.peekAt(i)
+		if t.Kind == TOp && t.Val == "{" {
+			return true
+		}
+		if t.Kind == TEOF || (t.Kind == TOp && t.Val == ";") {
+			return false
+		}
+	}
+	return false
 }
 
 // namespaceDecl разбирает `namespace Name;` или `namespace Name { ... }`.
 // Для блочной формы возвращает операторы тела (они вливаются в программу —
 // объявления должны hoist'иться), для точечной — nil.
 func (p *Parser) namespaceDecl() ([]Stmt, error) {
+	nsLine := p.lineAt(p.cur().Pos)
+	bracketed := p.nsBracketedForm()
 	p.next() // namespace
+	// Правила размещения объявлений namespace (Zend, compile-time fatal):
+	// вложенным считается только bracketed-объявление внутри блока;
+	// unbracketed внутри блока — смешение форм.
+	if p.nsDepth > 0 && bracketed {
+		return nil, &fatalError{msg: "Namespace declarations cannot be nested", line: nsLine}
+	}
+	first := p.nsMode == 0
+	if bracketed {
+		if p.nsMode == 2 {
+			return nil, &fatalError{msg: "Cannot mix bracketed namespace declarations with unbracketed namespace declarations", line: nsLine}
+		}
+		p.nsMode = 1
+	} else {
+		if p.nsMode == 1 {
+			return nil, &fatalError{msg: "Cannot mix bracketed namespace declarations with unbracketed namespace declarations", line: nsLine}
+		}
+		p.nsMode = 2
+	}
+	if first && p.anyStmt {
+		return nil, &fatalError{msg: "Namespace declaration statement has to be the very first statement or after any declare call in the script", line: nsLine}
+	}
 	name := ""
 	if !p.is(TOp, "{") {
+		if p.is(TKeyword, "namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "\\" {
+			// `namespace NAMEspace\xyz;`: имя лексер Zend отдаёт единым
+			// токеном T_NAME_RELATIVE, недопустимым в объявлении namespace.
+			pos := p.cur().Pos
+			raw := p.rawNameFromHere()
+			return nil, &parseError{
+				msg:  fmt.Sprintf("syntax error, unexpected namespace-relative name \"%s\", expecting \"{\"", raw),
+				line: p.lineAt(pos),
+			}
+		}
+		if p.is(TKeyword, "namespace") {
+			// `namespace namespace;` / `namespace Namespace {}` — компиляторная
+			// ошибка Zend (имя не может называться namespace).
+			return nil, &fatalError{
+				msg:  fmt.Sprintf("Cannot use '%s' as namespace name", tokName(p.cur())),
+				line: p.lineAt(p.cur().Pos),
+			}
+		}
+		if p.is(TOp, "\\") {
+			// Ведущий `\` в имени объявления запрещён (namespace_declaration_name).
+			pos := p.cur().Pos
+			raw := p.rawNameFromHere()
+			return nil, &parseError{
+				msg:  fmt.Sprintf("syntax error, unexpected fully qualified name \"%s\", expecting \"{\"", raw),
+				line: p.lineAt(pos),
+			}
+		}
+		if !isNameTok(p.cur()) {
+			return nil, p.syntaxErrExpect(p.cur(), `"{"`)
+		}
 		name = strings.Trim(p.rawQualifiedName(), "\\")
 	}
 	if p.is(TOp, "{") {
@@ -1333,7 +1492,9 @@ func (p *Parser) namespaceDecl() ([]Stmt, error) {
 		p.ns = name
 		p.classUses, p.funcUses, p.constUses = nil, nil, nil
 		p.constImports = nil
+		p.nsDepth++
 		body, err := p.stmtsUntil("}")
+		p.nsDepth--
 		p.ns = savedNS
 		p.classUses, p.funcUses, p.constUses = savedCU, savedFU, savedConU
 		p.constImports = savedCI
@@ -1582,9 +1743,13 @@ func (p *Parser) statementInner() (Stmt, error) {
 		}
 		var args []Expr
 		for !p.is(TOp, ")") {
+			argLine := p.lineAt(p.cur().Pos)
 			x, err := p.expr()
 			if err != nil {
 				return nil, err
+			}
+			if isThisExpr(x) {
+				return nil, &fatalError{msg: "Cannot unset $this", line: argLine}
 			}
 			args = append(args, x)
 			if !p.accept(TOp, ",") {
@@ -1624,6 +1789,9 @@ func (p *Parser) statementInner() (Stmt, error) {
 				dyn = append(dyn, e)
 			} else {
 				t = p.next()
+				if t.Val == "$this" {
+					return nil, &fatalError{msg: "Cannot use $this as global variable", line: p.lineAt(t.Pos)}
+				}
 				names = append(names, t.Val)
 			}
 			if !p.accept(TOp, ",") {
@@ -1641,7 +1809,11 @@ func (p *Parser) statementInner() (Stmt, error) {
 			p.next()
 			st := &StaticVarStmt{}
 			for {
-				name := p.next().Val
+				tok := p.next()
+				if tok.Val == "$this" {
+					return nil, &fatalError{msg: "Cannot use $this as static variable", line: p.lineAt(tok.Pos)}
+				}
+				name := tok.Val
 				st.Names = append(st.Names, name)
 				if p.accept(TOp, "=") {
 					x, err := p.expr()
@@ -1680,6 +1852,12 @@ func (p *Parser) statementInner() (Stmt, error) {
 				return nil, err
 			}
 			// PHP регистрирует `const NAME` в текущем пространстве имён.
+			// true/false/null — предопределённые константы, их переобъявление
+			// запрещено (Zend: "Cannot redeclare constant 'NULL'").
+			switch strings.ToLower(name) {
+			case "true", "false", "null":
+				return nil, &fatalError{msg: fmt.Sprintf("Cannot redeclare constant '%s'", name), line: p.lineAt(namePos)}
+			}
 			if tgt, ok := p.constImports[name]; ok && tgt != p.qualifyDecl(name) {
 				return nil, &fatalError{msg: fmt.Sprintf("Cannot declare const %s because the name is already in use", p.qualifyDecl(name)), line: p.lineAt(namePos)}
 			}
@@ -1854,33 +2032,57 @@ func (p *Parser) useStmt() (Stmt, error) {
 		if p.is(TOp, "{") {
 			p.next() // {
 			prefix := strings.Trim(raw, "\\")
-			expectItem := func() error {
-				// Позиция элемента группы: `}` и `,` недопустимы. Zend в этом
-				// месте сообщает ожидаемый набор (после `use function` —
-				// без "function"/"const").
-				if p.is(TOp, "}") || p.is(TOp, ",") {
-					what := "identifier or namespaced name"
-					if kind == "class" {
-						what += ` or "function" or "const"`
-					}
-					return p.syntaxErrExpect(p.cur(), what)
+			first := true
+			// Ожидаемый набор для позиции элемента группы. У первого элемента
+			// он полный; после запятой (из-за default-сокращений LALR) Zend
+			// сообщает только `}`.
+			groupWhat := func() string {
+				if !first {
+					return `"}"`
 				}
-				return nil
+				what := "identifier or namespaced name"
+				if kind == "class" {
+					what += ` or "function" or "const"`
+				}
+				return what
 			}
 			for {
-				if err := expectItem(); err != nil {
-					return nil, err
+				t := p.cur()
+				// Полностью определённое имя (`\Baz`) в группе недопустимо.
+				if p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+					rawName := p.rawNameFromHere()
+					return nil, &parseError{
+						msg:  fmt.Sprintf("syntax error, unexpected fully qualified name \"%s\", expecting %s", rawName, groupWhat()),
+						line: p.lineAt(t.Pos),
+					}
 				}
-				if p.is(TOp, "}") {
+				// Namespace-relative имя (`namespace\Baz`) в группе недопустимо.
+				if p.is(TKeyword, "namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "\\" {
+					rawName := p.rawNameFromHere()
+					return nil, &parseError{
+						msg:  fmt.Sprintf("syntax error, unexpected namespace-relative name \"%s\", expecting %s", rawName, groupWhat()),
+						line: p.lineAt(t.Pos),
+					}
+				}
+				// Хвостовая запятая: `Foo\{A,}`.
+				if !first && p.is(TOp, "}") {
 					break
 				}
 				gkind := kind
-				if p.kw("function") {
-					gkind = "function"
+				if p.kw("function") || p.kw("const") {
+					// В `use const/function Foo\{...}` ключевые слова у
+					// элементов группы запрещены (unprefixed_use_declaration).
+					if kind != "class" {
+						return nil, p.syntaxErrExpect(t, groupWhat())
+					}
+					gkind = t.Val
 					p.next()
-				} else if p.kw("const") {
-					gkind = "const"
-					p.next()
+					// После ключевого слова обязано идти имя.
+					if p.cur().Kind != TIdent {
+						return nil, p.syntaxErrExpect(p.cur(), "identifier or namespaced name")
+					}
+				} else if p.cur().Kind != TIdent {
+					return nil, p.syntaxErrExpect(t, groupWhat())
 				}
 				item := p.rawQualifiedName()
 				alias := p.useAlias(item)
@@ -1891,12 +2093,9 @@ func (p *Parser) useStmt() (Stmt, error) {
 				if err := p.addUse(gkind, full, alias); err != nil {
 					return nil, err
 				}
+				first = false
 				if !p.accept(TOp, ",") {
 					break
-				}
-				if p.is(TOp, ",") {
-					// `Foo,,` — запятая после запятой: Zend ждёт `}`.
-					return nil, p.syntaxErrExpect(p.cur(), `"}"`)
 				}
 			}
 			if err := p.expect(TOp, "}"); err != nil {
@@ -1989,6 +2188,14 @@ func (p *Parser) addUse(kind, full, alias string) error {
 			p.classUses = map[string]string{}
 		}
 		p.classUses[key] = full
+		// Конфликт с классом, объявленным в этом же файле, проверяется после
+		// разбора всего файла: класс может стоять и выше, и ниже импорта.
+		p.pendingClassUses = append(p.pendingClassUses, pendingClassUse{
+			full:  full,
+			alias: alias,
+			key:   strings.ToLower(p.qualifyDecl(alias)),
+			line:  p.lineAt(p.cur().Pos),
+		})
 	}
 	return nil
 }
@@ -2167,7 +2374,23 @@ modsDone:
 	if kind == "enum" {
 		cd.IsEnum = true
 	}
-	cd.Name = p.className()
+	// Имя объявляемого класса не проходит через таблицу use-алиасов (Zend
+	// резолвит только ссылки на классы, не объявления).
+	rawDeclName := p.rawQualifiedName()
+	if strings.HasPrefix(rawDeclName, "\\") {
+		cd.Name = strings.TrimLeft(rawDeclName, "\\")
+	} else {
+		cd.Name = p.qualifyDecl(strings.TrimLeft(rawDeclName, "\\"))
+	}
+	if p.seenClassLine == nil {
+		p.seenClassLine = map[string]int{}
+		p.seenClassName = map[string]string{}
+	}
+	classKey := strings.ToLower(cd.Name)
+	if _, dup := p.seenClassLine[classKey]; !dup {
+		p.seenClassLine[classKey] = classLine
+		p.seenClassName[classKey] = cd.Name
+	}
 	if kind == "enum" && p.accept(TOp, ":") {
 		tb, terr := p.typeNameErr()
 		if terr != nil {
@@ -2182,6 +2405,10 @@ modsDone:
 			line: p.lineAt(p.cur().Pos),
 		}
 	}
+	if p.kw("extends") && p.kwAdjacentBackslash() {
+		// `extends\A` — в Zend это единый T_NAME_QUALIFIED.
+		return nil, p.errAdjacentNamespacedName("{")
+	}
 	if p.accept(TKeyword, "extends") {
 		if cd.IsInterface {
 			for {
@@ -2193,6 +2420,10 @@ modsDone:
 		} else {
 			cd.Parent = p.className()
 		}
+	}
+	if p.kw("implements") && p.kwAdjacentBackslash() {
+		// `implements\A` — в Zend это единый T_NAME_QUALIFIED.
+		return nil, p.errAdjacentNamespacedName("{")
 	}
 	if p.accept(TKeyword, "implements") {
 		for {
@@ -2213,6 +2444,9 @@ modsDone:
 			continue
 		}
 		if p.kw("use") {
+			if cd.UsesLine == 0 {
+				cd.UsesLine = p.lineAt(p.cur().Pos)
+			}
 			p.next()
 			for {
 				cd.Uses = append(cd.Uses, p.className())
@@ -2958,6 +3192,9 @@ func (p *Parser) tryStmt() (Stmt, error) {
 			}
 		}
 		if p.is(TVar, "") {
+			if p.cur().Val == "$this" {
+				return nil, &fatalError{msg: "Cannot re-assign $this", line: p.lineAt(p.cur().Pos)}
+			}
 			cc.Var = p.next().Val
 		}
 		if err := p.expect(TOp, ")"); err != nil {
@@ -3324,6 +3561,10 @@ func (p *Parser) closureExpr(static bool) (Expr, error) {
 			if p.accept(TOp, "&") {
 				u.ByRef = true
 			}
+			useTok := p.cur()
+			if useTok.Kind == TVar && useTok.Val == "$this" {
+				return nil, &fatalError{msg: "Cannot use $this as lexical variable", line: p.lineAt(useTok.Pos)}
+			}
 			u.Name = p.next().Val
 			uses = append(uses, u)
 			if !p.accept(TOp, ",") {
@@ -3513,6 +3754,27 @@ func hasNullsafe(e Expr) bool {
 	return false
 }
 
+// isThisExpr сообщает, что выражение — переменная $this.
+func isThisExpr(e Expr) bool {
+	if v, ok := e.(*VarExpr); ok {
+		return v.Name == "$this" && v.NameExpr == nil
+	}
+	return false
+}
+
+// isIssetTarget сообщает, что выражение допустимо в isset(): переменная,
+// элемент массива, свойство (в том числе статическое) или nullsafe-цепочка,
+// оканчивающаяся ими.
+func isIssetTarget(e Expr) bool {
+	switch x := e.(type) {
+	case *VarExpr, *IndexExpr, *PropExpr, *StaticPropExpr:
+		return true
+	case *NullsafeExpr:
+		return isIssetTarget(x.Recv)
+	}
+	return false
+}
+
 // isAssignTarget сообщает, может ли выражение быть целью присваивания.
 // Соответствует множеству типов, которые принимает компилятор (см. assign).
 func isAssignTarget(e Expr) bool {
@@ -3543,7 +3805,9 @@ func (p *Parser) ternaryExpr() (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.accept(TOp, "?") {
+	if p.is(TOp, "?") {
+		qLine := p.lineAt(p.cur().Pos)
+		p.next()
 		var then Expr
 		if !p.is(TOp, ":") {
 			then, err = p.expr()
@@ -3557,6 +3821,30 @@ func (p *Parser) ternaryExpr() (Expr, error) {
 		els, err := p.ternaryExpr()
 		if err != nil {
 			return nil, err
+		}
+		if inner, ok := els.(*TernaryExpr); ok && !inner.Paren {
+			outerShort := then == nil
+			innerShort := inner.Then == nil
+			// Короткие тернарники можно вкладывать друг в друга, остальные
+			// комбинации требуют скобок (как в Zend zend_compile_conditional).
+			if !(outerShort && innerShort) {
+				var pat, fix string
+				switch {
+				case outerShort:
+					pat = "a ?: b ? c : d"
+					fix = "either `(a ?: b) ? c : d` or `a ?: (b ? c : d)`"
+				case innerShort:
+					pat = "a ? b : c ?: d"
+					fix = "either `(a ? b : c) ?: d` or `a ? b : (c ?: d)`"
+				default:
+					pat = "a ? b : c ? d : e"
+					fix = "either `(a ? b : c) ? d : e` or `a ? b : (c ? d : e)`"
+				}
+				return nil, &fatalError{
+					msg:  fmt.Sprintf("Unparenthesized `%s` is not supported. Use %s", pat, fix),
+					line: qLine,
+				}
+			}
 		}
 		return &TernaryExpr{Cond: cond, Then: then, Else: els}, nil
 	}
@@ -3774,6 +4062,46 @@ func (p *Parser) rawQualifiedName() string {
 			return "\\" + p.ns + "\\" + b.String()
 		}
 		return "\\" + b.String()
+	}
+	return b.String()
+}
+
+// kwAdjacentBackslash сообщает, что текущий ключевой токен сразу (без
+// пробела) переходит в `\` — в Zend такой текст лексится единым
+// T_NAME_QUALIFIED (`extends\A`, `implements\A`, `namespace\X`).
+func (p *Parser) kwAdjacentBackslash() bool {
+	t := p.cur()
+	n := p.peekAt(1)
+	return t.Kind == TKeyword && n.Kind == TOp && n.Val == "\\" && n.Pos == t.Pos+len(t.Val)
+}
+
+// errAdjacentNamespacedName строит "unexpected namespaced name ...".
+func (p *Parser) errAdjacentNamespacedName(what string) error {
+	pos := p.cur().Pos
+	raw := p.rawNameFromHere()
+	return &parseError{
+		msg:  fmt.Sprintf("syntax error, unexpected namespaced name \"%s\", expecting %q", raw, what),
+		line: p.lineAt(pos),
+	}
+}
+
+// rawNameFromHere читает имя `[\]seg(\seg)*` (как rawQualifiedName), но
+// возвращает исходный текст токенов, включая ведущий `\`, без разыменования
+// namespace-relative имён: используется только для текстов ошибок.
+func (p *Parser) rawNameFromHere() string {
+	var b strings.Builder
+	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+		p.next() // \
+		b.WriteByte('\\')
+		b.WriteString(tokName(p.next()))
+	}
+	if b.Len() == 0 {
+		b.WriteString(tokName(p.next()))
+	}
+	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+		p.next() // \
+		b.WriteByte('\\')
+		b.WriteString(tokName(p.next()))
 	}
 	return b.String()
 }
@@ -4168,9 +4496,14 @@ func (p *Parser) unaryExpr() (Expr, error) {
 		}
 		var args []Expr
 		for !p.is(TOp, ")") {
+			argLine := p.lineAt(p.cur().Pos)
 			a, err := p.expr()
 			if err != nil {
 				return nil, err
+			}
+			if !isIssetTarget(a) {
+				// Zend допускает в isset() только выборку переменной.
+				return nil, &fatalError{msg: `Cannot use isset() on the result of an expression (you can use "null !== expression" instead)`, line: argLine}
 			}
 			args = append(args, a)
 			if !p.accept(TOp, ",") {
@@ -4219,6 +4552,9 @@ func (p *Parser) unaryExpr() (Expr, error) {
 		p.next() // )
 		if typ == "real" {
 			return nil, &parseError{msg: "The (real) cast has been removed, use (float) instead", line: p.lineAt(castTok.Pos)}
+		}
+		if typ == "unset" {
+			return nil, &fatalError{msg: "The (unset) cast is no longer supported", line: p.lineAt(castTok.Pos)}
 		}
 		x, err := p.unaryExpr()
 		if err != nil {
@@ -4603,6 +4939,10 @@ func (p *Parser) argList() ([]Expr, error) {
 
 func (p *Parser) newExpr() (Expr, error) {
 	p.next() // new
+	// new [attrs] [abstract|final|readonly]* class { ... } — анонимный класс.
+	if p.anonClassAhead() {
+		return p.anonClass()
+	}
 	// new class [(args)] [extends X] [implements Y] { ... }
 	if p.kw("class") {
 		return p.anonClass()
@@ -4712,10 +5052,71 @@ func (p *Parser) newExpr() (Expr, error) {
 	return &NewExpr{Class: name, Args: args}, nil
 }
 
-// anonClass разбирает `class [(args)] [extends X] [implements Y] { ... }` после
-// уже съеденного `new`.
+// isAnonClassModifier — модификатор анонимного класса (abstract/final —
+// ключевые слова, readonly лексер отдаёт как идентификатор).
+func isAnonClassModifier(t Token) bool {
+	if t.Kind != TKeyword && t.Kind != TIdent {
+		return false
+	}
+	return t.Val == "abstract" || t.Val == "final" || t.Val == "readonly"
+}
+
+// anonClassAhead — после `new` идут атрибуты и/или модификаторы, а затем
+// `class` (анонимный класс). Без модификаторов/атрибутов возвращает false,
+// чтобы `new class` обрабатывался обычным путём.
+func (p *Parser) anonClassAhead() bool {
+	attrs := p.pos < len(p.toks) && len(p.toks[p.pos].Attrs) > 0
+	mods := 0
+	for i := 0; i < 16; i++ {
+		t := p.peekAt(i)
+		if isAnonClassModifier(t) {
+			mods++
+			continue
+		}
+		if t.Kind == TKeyword && t.Val == "class" {
+			return attrs || mods > 0
+		}
+		return false
+	}
+	return false
+}
+
+// anonClass разбирает `[attrs] [modifiers] class [(args)] [extends X] [implements Y] { ... }`
+// после уже съеденного `new`.
 func (p *Parser) anonClass() (Expr, error) {
 	anonAttrs := p.parseAttrs(p.takeAttrs())
+	abstractLine, finalLine := 0, 0
+	readonlyCount := 0
+mods:
+	for isAnonClassModifier(p.cur()) {
+		switch p.cur().Val {
+		case "abstract":
+			if abstractLine == 0 {
+				abstractLine = p.lineAt(p.cur().Pos)
+			}
+		case "final":
+			if finalLine == 0 {
+				finalLine = p.lineAt(p.cur().Pos)
+			}
+		case "readonly":
+			readonlyCount++
+		default:
+			break mods
+		}
+		if extra := p.parseAttrs(p.takeAttrs()); len(extra) > 0 {
+			anonAttrs = append(anonAttrs, extra...)
+		}
+		p.next()
+	}
+	if abstractLine > 0 {
+		return nil, &fatalError{msg: "Cannot use the abstract modifier on an anonymous class", line: abstractLine}
+	}
+	if finalLine > 0 {
+		return nil, &fatalError{msg: "Cannot use the final modifier on an anonymous class", line: finalLine}
+	}
+	if readonlyCount > 1 {
+		return nil, &fatalError{msg: "Multiple readonly modifiers are not allowed", line: p.lineAt(p.cur().Pos)}
+	}
 	p.next() // class
 	var args []Expr
 	if p.accept(TOp, "(") {
@@ -4725,7 +5126,7 @@ func (p *Parser) anonClass() (Expr, error) {
 		}
 		args = a
 	}
-	cd := &ClassDecl{Line: p.lineAt(p.cur().Pos), Attrs: anonAttrs}
+	cd := &ClassDecl{Line: p.lineAt(p.cur().Pos), Attrs: anonAttrs, IsReadonly: readonlyCount > 0}
 	if p.accept(TKeyword, "extends") {
 		cd.Parent = p.className()
 	}
@@ -4748,6 +5149,9 @@ func (p *Parser) anonClass() (Expr, error) {
 			continue
 		}
 		if p.kw("use") {
+			if cd.UsesLine == 0 {
+				cd.UsesLine = p.lineAt(p.cur().Pos)
+			}
 			p.next()
 			for {
 				cd.Uses = append(cd.Uses, p.className())
@@ -4877,6 +5281,11 @@ func (p *Parser) primary() (Expr, error) {
 			}
 			if err := p.expect(TOp, ")"); err != nil {
 				return nil, err
+			}
+			// Тернарник в скобках — «парентетизированный»: правое вложение
+			// без скобок запрещено (см. ternaryExpr).
+			if te, ok := x.(*TernaryExpr); ok {
+				te.Paren = true
 			}
 			return x, nil
 		case "[":

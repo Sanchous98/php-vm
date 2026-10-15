@@ -144,6 +144,11 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 				shareSlot(res)
 				return execResult{}
 			}
+			err := NewThrowable("Error", "Object of type "+ClassDisplayName(ci.Name())+" is not callable")
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
 		}
 	}
 	// Массив-вызываемое ([obj, method] / [class, method]).
@@ -175,7 +180,42 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 		return execResult{next: true}
 	}
+	// Динамический вызов scope-introspection функций запрещён.
+	if sn, ok := scopeIntrospectionName(regs[base]); ok {
+		err := NewThrowable("Error", "Cannot call "+sn+"() dynamically")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
+	if d := deref(regs[base]); d.typ != StringType {
+		err := NewThrowable("Error", "Value of type "+callableTypeName(vm, d)+" is not callable")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	name := regs[base].ToString()
+	// "Class::method" строкой — статический вызов метода.
+	if i := strings.Index(name, "::"); i >= 0 {
+		res, err := vm.callStaticStringCallable(name[:i], name[i+2:], args)
+		if err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		{
+			old := regs[in.A]
+			wv := res
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		shareSlot(res)
+		return execResult{}
+	}
 	// PHP допускает ведущий "\" в строковом имени функции: '\id' — это id.
 	// Снимается ровно один обратный слэш; в диагностике имя остаётся исходным.
 	lookup := name
@@ -191,6 +231,9 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		if vm.funcIndex == nil {
 			idx := make(map[string]*Function, len(vm.functions))
 			for _, f := range vm.functions {
+				if f.Disabled {
+					continue
+				}
 				k := strings.ToLower(f.Name)
 				if _, ok := idx[k]; !ok {
 					idx[k] = f

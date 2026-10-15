@@ -403,11 +403,12 @@ func (l *Lexer) runPHP() error {
 			}
 			l.emit(Token{Kind: k, Val: w, Raw: w, Pos: start})
 		default:
+			start := l.pos
 			op := l.operator()
 			if op == "" {
 				return l.parseErrf("syntax error, unexpected character 0x%02X", c)
 			}
-			l.emit(Token{Kind: TOp, Val: op, Pos: l.pos})
+			l.emit(Token{Kind: TOp, Val: op, Pos: start})
 		}
 	}
 	return nil

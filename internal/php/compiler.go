@@ -495,6 +495,7 @@ type closureInfo struct {
 	expr     Expr         // тело стрелочной функции
 	attrs    []AttrDecl   // атрибуты замыкания
 	line     int          // строка объявления
+	ticks    int          // declare(ticks=N) в точке объявления замыкания
 }
 
 func newCompiler(funcs []*vm.Function, idx map[string]int) *compiler {
@@ -8799,7 +8800,11 @@ func (c *compiler) compileClosureBody(ci *closureInfo) (*vm.CompiledFunction, er
 		captures = ci.uses
 		body = ci.body
 	}
-	return c.compileBody(fmt.Sprintf("{closure#%d}", ci.idx), ci.params, captures, body, ci.byrefRet, ci.retType, ci.line)
+	savedTicks, savedCount := c.ticks, c.tickCount
+	c.ticks, c.tickCount = ci.ticks, 0
+	fn, err := c.compileBody(fmt.Sprintf("{closure#%d}", ci.idx), ci.params, captures, body, ci.byrefRet, ci.retType, ci.line)
+	c.ticks, c.tickCount = savedTicks, savedCount
+	return fn, err
 }
 
 // collectClosures рекурсивно собирает анонимные и стрелочные функции всех тел
@@ -8829,6 +8834,7 @@ func collectClosures(prog *Program, classes []vm.ClassInfo, classIdx map[string]
 			ci.body = x.Body
 			ci.attrs = x.Attrs
 			ci.line = x.Line
+			ci.ticks = x.Ticks
 		case *ArrowFnExpr:
 			ci.params = x.Params
 			ci.isArrow = true
@@ -8838,6 +8844,7 @@ func collectClosures(prog *Program, classes []vm.ClassInfo, classIdx map[string]
 			ci.attrs = x.Attrs
 			ci.free = arrowFreeVars(x.Body, x.Params)
 			ci.line = x.Line
+			ci.ticks = x.Ticks
 		}
 		infos = append(infos, ci)
 		cmap[e] = ci

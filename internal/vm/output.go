@@ -712,10 +712,13 @@ func (vm *VM) SetExceptionHandler(cb Slot) Slot {
 // ErrorReportingGet возвращает текущий уровень error_reporting.
 func (vm *VM) ErrorReportingGet() int64 { return vm.errReporting }
 
-// ErrorReportingSet устанавливает уровень error_reporting и возвращает прежний.
+// ErrorReportingSet устанавливает уровень error_reporting (INI-старт запроса)
+// и возвращает прежний. Значение запоминается и как INI-директива: с него
+// начинают файберы.
 func (vm *VM) ErrorReportingSet(level int64) int64 {
 	old := vm.errReporting
 	vm.errReporting = level
+	vm.errReportingIni = level
 	return old
 }
 
@@ -752,6 +755,9 @@ func ErrorReportingBuiltin(ctx *Context) Slot {
 	}
 	old := ctx.vm.errReporting
 	ctx.vm.errReporting = ctx.args[0].ToInt()
+	// Zend: error_reporting($n) меняет и INI-директиву (PHP_INI_USER) —
+	// файберы, стартующие позже, видят новое значение.
+	ctx.vm.errReportingIni = ctx.vm.errReporting
 	return MakeInt(old)
 }
 

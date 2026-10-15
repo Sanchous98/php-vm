@@ -2,6 +2,8 @@ package vm
 
 import (
 	"fmt"
+	"math/bits"
+	"reflect"
 	"strconv"
 	"strings"
 )
@@ -63,6 +65,10 @@ type fiberExecState struct {
 	curLine   int
 
 	suppress int
+	// errReporting/suppressStack — состояние `@`-подавления стороны: `@`
+	// меняет EG(error_reporting) в Zend, а он часть VM-состояния файбера.
+	errReporting  int64
+	suppressStack []int64
 
 	retVal      Slot
 	retImplicit bool
@@ -152,6 +158,8 @@ func (vm *VM) saveExecState(s *fiberExecState) {
 
 	s.curFile, s.curFileID, s.curLine = vm.curFile, vm.curFileID, vm.curLine
 	s.suppress = vm.suppress
+	s.errReporting = vm.errReporting
+	s.suppressStack = append(s.suppressStack[:0], vm.suppressStack...)
 
 	s.retVal = vm.retVal
 	s.retImplicit = vm.retImplicit
@@ -227,6 +235,8 @@ func (vm *VM) restoreExecState(s *fiberExecState) {
 
 	vm.curFile, vm.curFileID, vm.curLine = s.curFile, s.curFileID, s.curLine
 	vm.suppress = s.suppress
+	vm.errReporting = s.errReporting
+	vm.suppressStack = append(vm.suppressStack[:0], s.suppressStack...)
 
 	vm.retVal = s.retVal
 	vm.retImplicit = s.retImplicit
@@ -411,6 +421,21 @@ func (vm *VM) fiberMain(f *Fiber, args []Slot) {
 	f.terminated = true
 	f.suspended = false
 	f.ret = res
+
+	// Стек файбера разрушается в его собственном контексте (Zend:
+	// zend_vm_stack_destroy перед финальным переключением). Отложенные
+	// деструкторы локальных объектов обязаны выполниться здесь, пока
+	// vm.currentFiber == f: иначе __destruct увидел бы главный контекст, и
+	// Fiber::suspend() дал бы "Cannot suspend outside of a fiber" вместо
+	// "Cannot switch fibers in current execution context"
+	// (Zend/tests/fibers/no-switch-dtor-suspend).
+	// Возвращаемое значение уже сохранено в f.ret (корень через объект
+	// файбера): снятые кадры не должны уронить его раньше времени
+	// (gc-cycle-result).
+	if ferr := vm.flushFiberTeardown(); ferr != nil && err == nil {
+		err = ferr
+	}
+
 	if err != nil {
 		if th, ok := asThrowable(err); ok {
 			f.wasThrew = true
@@ -421,6 +446,76 @@ func (vm *VM) fiberMain(f *Fiber, args []Slot) {
 		return
 	}
 	f.yieldCh <- fiberMsg{kind: fbDone, val: res}
+}
+
+// walkFiberExecStateOwned обходит слоты состояния исполнения файбера, которые
+// оно удерживает как владелец. Регистры кадров берутся по карте учёта
+// (tracked): незанятые слоты буфера кадра содержат остатки предыдущего
+// использования (restore перезаписывает регистры целиком) и владением не
+// являются — иначе файбер видел бы ложную входящую ссылку на себя
+// (Zend/tests/fibers/suspend-in-force-close-fiber-catching-exception).
+// Остальные поля обходятся консервативно, как в walkReflect.
+func walkFiberExecStateOwned(s *fiberExecState, fn func(Slot)) {
+	for i := range s.frames {
+		sf := &s.frames[i]
+		for w := range sf.tracked {
+			mask := sf.tracked[w]
+			for mask != 0 {
+				j := w*64 + bits.TrailingZeros64(mask)
+				mask &= mask - 1
+				if j < len(sf.regs) {
+					fn(sf.regs[j])
+				}
+			}
+		}
+		for _, v := range sf.dynLocals {
+			fn(v)
+		}
+		fn(sf.this)
+	}
+	fn(s.ctxThis)
+	for _, v := range s.ctxArgs {
+		fn(v)
+	}
+	fn(s.retVal)
+	fn(s.pendingThis)
+	for _, v := range s.curFuncArgs {
+		fn(v)
+	}
+	for _, v := range s.pendingFuncArgs {
+		fn(v)
+	}
+	for i := range s.callStack {
+		e := &s.callStack[i]
+		fn(e.this)
+		for _, a := range e.args {
+			fn(a)
+		}
+	}
+	walkReflect(reflect.ValueOf(&s.tries).Elem(), 0, fn)
+	walkReflect(reflect.ValueOf(&s.pendingDefaultErr).Elem(), 0, fn)
+	walkReflect(reflect.ValueOf(&s.unserState).Elem(), 0, fn)
+	walkReflect(reflect.ValueOf(&s.serState).Elem(), 0, fn)
+}
+
+// flushFiberTeardown выполняет отложенные потери ссылок в контексте
+// завершающегося файбера. Вызывается из fiberMain, пока vm.currentFiber == f и
+// стек файбера ещё «текущий»: Zend разрушает кадры файбера (и запускает
+// __destruct его локальных объектов) до финального переключения контекста.
+func (vm *VM) flushFiberTeardown() error {
+	if vm.sweepBusy {
+		return nil
+	}
+	if !vm.lifeCandidate && vm.zeroObjs <= 0 && !vm.resDropPending {
+		return nil
+	}
+	// Кадры __destruct, запущенных разрушением стека файбера, не имеют
+	// позиции в коде (Zend: zend_fiber_cleanup → zend_vm_stack_destroy).
+	savedInternal := vm.dtorInternal
+	vm.dtorInternal = true
+	out := vm.sweepLifetime(false, vm.chunk, vm.ip-1)
+	vm.dtorInternal = savedInternal
+	return out.err
 }
 
 // freshExecState сбрасывает изменяемое состояние VM в «чистое» (для старта
@@ -437,7 +532,12 @@ func (vm *VM) freshExecState() {
 	vm.ctx.self = nil
 	vm.ctx.called = nil
 	vm.ctx.args = nil
+	// Файбер стартует с уровнем INI-директивы error_reporting, а не с
+	// текущим: `@` и error_reporting() вызывающего в него не протекают
+	// (Zend: zend_fiber_execute).
 	vm.suppress = 0
+	vm.suppressStack = nil
+	vm.errReporting = vm.errReportingIni
 	vm.retVal = Slot{}
 	vm.retImplicit = false
 	vm.retLine = 0

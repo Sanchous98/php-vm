@@ -634,6 +634,18 @@ func (vm *VM) CallCallableAt(ctx *Context, c Slot, args []Slot, file string, chu
 	return res, err
 }
 
+// CallTickCallback вызывает tick-обработчик из кадра, исполняющего
+// ZEND_TICKS: кадр обработчика в трейсе получает файл/строку текущего опкода
+// (fibers/ticks: tick-функция вызывается «из» оператора, после которого
+// сработал тик), а не "[internal function]".
+func (vm *VM) CallTickCallback(ctx *Context, cb Slot, args []Slot) (Slot, error) {
+	pc := 0
+	if vm.ip > 0 {
+		pc = vm.ip - 1
+	}
+	return vm.CallCallableAt(ctx, cb, args, vm.curFile, vm.chunk, pc, vm.line())
+}
+
 // CallCallableUser — вызов callable с семантикой прямого вызова из
 // userland-кода. Zend спец-обрабатывает call_user_func/call_user_func_array
 // в компиляторе (zend_compile.c), поэтому внутренний кадр не создаётся:

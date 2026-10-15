@@ -1108,6 +1108,7 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 	}
 	var decr func(Slot)
 	seenDec := map[*Array]bool{}
+	seenDecClos := map[*Closure]bool{}
 	decr = func(s Slot) {
 		for i := 0; s.typ == RefType && i < 100; i++ {
 			r := s.Ref()
@@ -1124,8 +1125,17 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 				}
 			}
 		case ClosureType:
-			// ссылки из недостижимых замыканий не учитываем: хендлы замыканий
-			// не отслеживаются.
+			// Захваты недостижимого замыкания считаются входящими ссылками:
+			// цикл «объект ↔ замыкание в его свойстве/файбере» обязан
+			// дожидаться gc_collect_cycles, а не разрываться в обычном
+			// проходе (fibers/gc-cycle-callback).
+			if c := s.asClosure(); c != nil && !seenDecClos[c] {
+				seenDecClos[c] = true
+				for _, cs := range c.Captures {
+					decr(cs)
+				}
+				decr(c.BoundThis)
+			}
 		case ArrayType:
 			if a := s.AsArray(); a != nil {
 				if _, ok := uArrs[a]; ok && !seenDec[a] {
@@ -1138,7 +1148,7 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 		}
 	}
 	for _, o := range uObjs {
-		vm.walkObjectRefs(o, decr)
+		vm.walkObjectRefsOwned(o, decr)
 	}
 	for a := range uArrs {
 		// Массивы, уже пройденные через слот объекта (seenDec), учтены выше:
@@ -1526,6 +1536,48 @@ func (vm *VM) walkObjectRefs(o *Object, f func(Slot)) {
 	walkReflect(vv, 0, f)
 }
 
+// walkObjectRefsOwned — как walkObjectRefs, но для файбера пропускает снимок
+// возобновителя (resumer) и кэш его трейса (resumerTrace): это копии состояния
+// живой стороны, а не владение файбера. Учёт ссылок из них создавал бы ложный
+// цикл «файбер → resumer.frames/resumerTrace → файбер» и откладывал
+// уничтожение (и принудительное закрытие) файбера до gc_collect_cycles
+// (Zend/tests/fibers/suspend-in-force-close-fiber-catching-exception).
+// Марк-фаза по-прежнему обходит их консервативно.
+func (vm *VM) walkObjectRefsOwned(o *Object, fn func(Slot)) {
+	if o == nil || o.class == nil {
+		return
+	}
+	if vm.fiberClass != nil && o.class.isA(vm.fiberClass) {
+		f := objectAs[Fiber](o, vm.fiberClass)
+		for _, v := range o.props {
+			if s, ok := v.(Slot); ok {
+				fn(s)
+			}
+		}
+		rc, ok := o.class.(*runtimeClass)
+		if !ok || rc == nil || rc.nativeType == nil {
+			return
+		}
+		vv := reflect.NewAt(rc.nativeType, unsafe.Pointer(o)).Elem()
+		t := vv.Type()
+		for i := 0; i < t.NumField(); i++ {
+			fname := t.Field(i).Name
+			switch fname {
+			case "resumer", "resumerTrace":
+				continue
+			case "saved":
+				if f != nil {
+					walkFiberExecStateOwned(&f.saved, fn)
+				}
+				continue
+			}
+			walkReflect(vv.Field(i), 0, fn)
+		}
+		return
+	}
+	vm.walkObjectRefs(o, fn)
+}
+
 // walkReflect обходит Go-значение и вызывает f на каждом Slot.
 func walkReflect(v reflect.Value, depth int, f func(Slot)) {
 	if !v.IsValid() || depth > 12 {
@@ -1782,13 +1834,17 @@ func (vm *VM) runObjectDestructor(o *Object, ci ClassInfo) error {
 	slot := vm.slotOf(o)
 	// Деструктор, вызванный движком в точке выполнения (потеря ссылки,
 	// сборщик), в трейсе получает позицию текущего опкода (bug78973);
-	// кадр "[internal function]" выставляется только для shutdown-цикла
-	// (см. runShutdownDestructors).
+	// кадр "[internal function]" выставляется для проходов вне точки кода
+	// (gc_collect_cycles, разрушение стека файбера) и shutdown-цикла
+	// (см. dtorInternal и runShutdownDestructors).
 	// Переключение файберов в деструкторе запрещено (dd1/dd2, Zend
 	// zend_fiber_switch_block): Fiber::suspend/resume/start внутри __destruct
 	// дают FiberError "Cannot switch fibers in current execution context".
 	savedNoSwitch := vm.noSwitch
 	vm.noSwitch = true
+	if vm.dtorInternal {
+		vm.markNextFrameInternal = true
+	}
 	defer func() { vm.noSwitch = savedNoSwitch }()
 	_, err := vm.invokeMethod(m, slot, ci, nil)
 	return err
@@ -1844,15 +1900,22 @@ func (vm *VM) notifyWeakDestroyed(o *Object) {
 }
 
 // CollectCycles выполняет принудительный сбор (gc_collect_cycles): уничтожает
-// в том числе циклический мусор. Возвращает число собранных объектов.
-func (vm *VM) CollectCycles() int {
+// в том числе циклический мусор. Возвращает число собранных объектов и ошибку
+// деструктора (Zend: ошибка из __destruct внутри сборщика поднимается как
+// непойманная — fibers/no-switch-gc).
+func (vm *VM) CollectCycles() (int, error) {
 	if vm.sweepBusy {
-		return 0
+		return 0, nil
 	}
 	vm.lifeCandidate = false
 	vm.lifeUrgent = false
+	// Деструкторы, вызванные сборщиком циклов, в трейсе не имеют позиции в
+	// коде (Zend: gc_call_destructors → zend_objects_destroy_object).
+	savedInternal := vm.dtorInternal
+	vm.dtorInternal = true
 	out := vm.sweepLifetime(true, vm.chunk, vm.ip-1)
-	return out.count
+	vm.dtorInternal = savedInternal
+	return out.count, out.err
 }
 
 // noteSelfRefArray регистрирует массив с прямой само-ссылкой

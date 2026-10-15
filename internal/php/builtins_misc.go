@@ -1426,21 +1426,28 @@ func ticksBuiltin(ctx *vm.Context) vm.Value {
 		return vm.MakeNull()
 	}
 	v.SetTicksExecuting(true)
+	// Zend: ZEND_TICKS оборачивает вызов tick-функции в
+	// zend_fiber_switch_block/unblock — переключение файберов внутри
+	// обработчика запрещено (fibers/ticks).
+	savedNoSwitch := v.SetNoSwitch(true)
 	funcs := v.TickFuncs()
 	for i := 0; i < len(funcs); i++ {
 		f := funcs[i]
-		_, err := v.CallCallable(ctx, f.Cb, f.Args)
+		_, err := v.CallTickCallback(ctx, f.Cb, f.Args)
 		if err != nil {
 			v.SetTicksExecuting(false)
+			v.SetNoSwitch(savedNoSwitch)
 			throwCallable(ctx, err)
 			return *new(vm.Value)
 		}
 		if ctx.HasThrown() {
 			v.SetTicksExecuting(false)
+			v.SetNoSwitch(savedNoSwitch)
 			return *new(vm.Value)
 		}
 	}
 	v.SetTicksExecuting(false)
+	v.SetNoSwitch(savedNoSwitch)
 	return vm.MakeNull()
 }
 
@@ -2983,7 +2990,15 @@ func gcEnabledFn(ctx *vm.Context) vm.Value { return vm.Bool(gcEnabled) }
 func gcCollectCyclesFn(ctx *vm.Context) vm.Value {
 	gcRuns++
 	if v := ctx.VM(); v != nil {
-		return vm.MakeInt(int64(v.CollectCycles()))
+		n, err := v.CollectCycles()
+		if err != nil {
+			// Ошибка из __destruct, вызванного сборщиком (в т.ч. FiberError
+			// "Cannot switch fibers..."): как в Zend — непойманная, поднимается
+			// из gc_collect_cycles() (fibers/no-switch-gc).
+			throwCallable(ctx, err)
+			return vm.MakeInt(0)
+		}
+		return vm.MakeInt(int64(n))
 	}
 	return vm.MakeInt(0)
 }

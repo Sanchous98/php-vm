@@ -117,7 +117,13 @@ type VM struct {
 	curFileID    int32
 	fileNames    []string
 	errReporting int64
-	suppress     int
+	// errReportingIni — значение INI-директивы error_reporting. Отличается от
+	// errReporting (EG(error_reporting) в Zend): error_reporting($n) меняет
+	// обе, оператор `@` — только errReporting. Файбер стартует со значением
+	// INI-директивы (Zend: zend_fiber_execute читает INI_INT), поэтому `@`
+	// вызывающего в него не протекает (fibers/silence-operator-outside-fiber).
+	errReportingIni int64
+	suppress        int
 	// suppressStack — сохранённые значения error_reporting для активных
 	// операторов `@` (Zend BEGIN_SILENCE/END_SILENCE).
 	suppressStack []int64
@@ -309,6 +315,15 @@ type VM struct {
 	// noSwitch — переключение файберов запрещено (деструкторы, GC, tick-
 	// обработчики): start/resume/throw/suspend дают FiberError.
 	noSwitch bool
+	// bailoutShutdown — в запросе печаталась фатальная диагностика (bailout
+	// Zend): незавершённые файберы не принудительно закрываются, их finally не
+	// выполняется (см. runShutdownDestructors).
+	bailoutShutdown bool
+	// dtorInternal — деструкторы текущего прохода вызываются вне точки кода
+	// (сборщик циклов, разрушение стека файбера): кадр __destruct в трейсе
+	// печатается как "[internal function]" (Zend: zend_gc_call_destructors,
+	// zend_fiber_cleanup), а не с позицией последнего опкода.
+	dtorInternal bool
 	// fiberStackSize — значение INI fiber.stack_size (если задано). Пустая
 	// строка допустима как «задано, но некорректно».
 	fiberStackSize    string
@@ -484,6 +499,17 @@ func (vm *VM) TicksExecuting() bool { return vm.tickExecuting }
 // SetTicksExecuting переключает флаг выполнения tick-функций.
 func (vm *VM) SetTicksExecuting(v bool) { vm.tickExecuting = v }
 
+// SetNoSwitch устанавливает запрет переключения файберов и возвращает прежнее
+// значение (Zend: zend_fiber_switch_block/unblock вокруг tick-функций,
+// сигналов и деструкторов). Переключение внутри tick-обработчика даёт
+// FiberError "Cannot switch fibers in current execution context"
+// (Zend/tests/fibers/ticks).
+func (vm *VM) SetNoSwitch(v bool) bool {
+	old := vm.noSwitch
+	vm.noSwitch = v
+	return old
+}
+
 // shutdownHandler — зарегистрированный обработчик завершения скрипта.
 type shutdownHandler struct {
 	cb   Slot
@@ -582,6 +608,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.haltRequested = false
 	vm.destructed = nil
 	vm.shutdownDone = false
+	vm.bailoutShutdown = false
 	vm.requestEndDone = false
 	vm.freeObjIDs = nil
 	vm.lifeCandidate = false
@@ -620,6 +647,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.RecordIncluded(vm.curFile)
 	vm.curLine = 0
 	vm.errReporting = E_ALL
+	vm.errReportingIni = E_ALL
 	vm.suppress = 0
 	vm.suppressStack = nil
 	vm.argNoLoc = 0
@@ -2266,6 +2294,85 @@ func (vm *VM) reportUncaught(err error) {
 		tailFile = "Unknown"
 	}
 	vm.Write("  thrown in " + tailFile + " on line " + strconv.Itoa(line) + "\n")
+}
+
+// reportUncaughtChain печатает непойманное исключение вместе с цепочкой
+// previous: Zend (zend_exception_error) печатает голову цепочки как Uncaught,
+// каждое previous — как "Next", а хвостовую строку "thrown in" — по последнему
+// звену. Голова — исключение, брошенное ПОСЛЕДНИМ (Zend связывает предыдущее
+// как previous нового: zend_exception_set_previous).
+// Используется завершением запроса, где несколько незавершённых файберов
+// бросают из finally: все они образуют одну непойманную цепочку
+// (Zend/tests/fibers/throw-in-multiple-destroyed-fibers-after-shutdown).
+func (vm *VM) reportUncaughtChain(list []*Throwable) {
+	if len(list) == 0 {
+		return
+	}
+	if len(list) == 1 {
+		vm.reportUncaught(list[0])
+		return
+	}
+	// Связываем объекты: голова — последнее брошенное, у него previous —
+	// предыдущее, и так до первого.
+	for i := len(list) - 1; i > 0; i-- {
+		vm.chainPrevious(list[i], list[i-1])
+	}
+	head := list[len(list)-1]
+	tail := list[0]
+	headFile, headLine := vm.throwableSite(head)
+	class := head.Class
+	if class == "" {
+		class = "Error"
+	}
+	vm.Write("\nFatal error: Uncaught " + class + ": " + head.Message + " in " + headFile + ":" + strconv.Itoa(headLine) + "\n")
+	vm.Write("Stack trace:\n")
+	vm.Write(vm.traceString(head.Trace, headFile, headLine) + "\n")
+	for i := len(list) - 2; i >= 0; i-- {
+		th := list[i]
+		c := th.Class
+		if c == "" {
+			c = "Error"
+		}
+		file, line := vm.throwableSite(th)
+		vm.Write("\nNext " + c + ": " + th.Message + " in " + file + ":" + strconv.Itoa(line) + "\n")
+		vm.Write("Stack trace:\n")
+		vm.Write(vm.traceString(th.Trace, file, line) + "\n")
+	}
+	tailFile, tailLine := vm.throwableSite(tail)
+	if tailFile == "" {
+		tailFile = "Unknown"
+	}
+	vm.Write("  thrown in " + tailFile + " on line " + strconv.Itoa(tailLine) + "\n")
+}
+
+// throwableSite возвращает файл/строку, в которых Zend печатает исключение:
+// явная локация Throwable, иначе текущая позиция VM.
+func (vm *VM) throwableSite(th *Throwable) (string, int) {
+	file := vm.curFile
+	if vm.noActiveFile {
+		file = "[no active file]"
+	}
+	if file == "" {
+		file = "php"
+	}
+	line := vm.curLine
+	if th.LocLine > 0 || th.LocOverridden {
+		if th.LocFile != "" || th.LocOverridden {
+			file = th.LocFile
+		}
+		line = th.LocLine
+	} else if len(th.Trace) == 0 {
+		if l := vm.line(); l > 0 {
+			line = l
+		}
+	}
+	if vm.noActiveFile {
+		line = 0
+	}
+	if line <= 0 && !vm.noActiveFile && !th.LocOverridden {
+		line = 1
+	}
+	return file, line
 }
 
 // traceArgs рендерит аргументы кадра стека в формате Zend (напр. `foo(123)`).
@@ -7421,8 +7528,23 @@ func (vm *VM) runShutdownDestructors() {
 	}
 	vm.shutdownDone = true
 	vm.flushResourceDrops()
+	// Ошибки деструкторов/незавершённых файберов собираются и печатаются одной
+	// цепочкой (Zend: каждый следующий бросок связывает предыдущий как
+	// previous).
+	var shutdownErrs []*Throwable
+	defer func() {
+		if len(shutdownErrs) > 0 {
+			vm.reportUncaughtChain(shutdownErrs)
+		}
+	}()
 	if vm.destructed == nil {
 		vm.destructed = map[*Object]bool{}
+	}
+	// Фатальная диагностика (E_ERROR/E_USER_ERROR) в Zend — bailout: до
+	// деструкторов объектов дело не доходит, и finally незавершённых файберов
+	// не выполняется (Zend/tests/fibers/fatal-error-with-multiple-fibers).
+	if vm.fatalDiag {
+		vm.bailoutShutdown = true
 	}
 	// Во время выполнения деструкторов переключение файберов запрещено.
 	savedNoSwitch := vm.noSwitch
@@ -7452,19 +7574,21 @@ func (vm *VM) runShutdownDestructors() {
 		if vm.genClass != nil {
 			if g := objectAs[Generator](o, vm.genClass); g != nil {
 				if err := vm.closeGenerator(g, true); err != nil {
-					if _, ok := asThrowable(err); ok {
-						vm.reportUncaught(err)
+					if th, ok := asThrowable(err); ok {
+						shutdownErrs = append(shutdownErrs, th)
 					}
 				}
 				continue
 			}
 		}
 		// Незавершённый файбер при уничтожении прогоняет свои finally.
-		if vm.fiberClass != nil {
+		// После фатальной ошибки (bailout) Zend не доходит до деструкторов и
+		// finally файберов не выполняется (fatal-error-with-multiple-fibers).
+		if vm.fiberClass != nil && !vm.bailoutShutdown {
 			if f := objectAs[Fiber](o, vm.fiberClass); f != nil {
 				if err := vm.closeFiber(f, true); err != nil {
-					if _, ok := asThrowable(err); ok {
-						vm.reportUncaught(err)
+					if th, ok := asThrowable(err); ok {
+						shutdownErrs = append(shutdownErrs, th)
 					}
 				}
 				continue
@@ -7490,8 +7614,8 @@ func (vm *VM) runShutdownDestructors() {
 			// Исключение из __destruct при завершении скрипта — фатальная
 			// ошибка (weakmap_dtor_exception): Zend печатает её как
 			// непойманную, а не глотает.
-			if _, ok := asThrowable(err); ok {
-				vm.reportUncaught(err)
+			if th, ok := asThrowable(err); ok {
+				shutdownErrs = append(shutdownErrs, th)
 			}
 		}
 	}

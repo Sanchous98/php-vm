@@ -547,6 +547,10 @@ type ClosureExpr struct {
 	// Line — строка объявления (`function ...`), для диагностик неявных
 	// преобразований аргументов (Zend приписывает их объявлению функции).
 	Line int
+	// Ticks — declare(ticks=N), действующее в точке объявления замыкания:
+	// Zend эмитит ZEND_TICKS в op_array, скомпилированном при активной
+	// директиве (фикс: тики в теле замыкания, fibers/ticks).
+	Ticks int
 }
 
 // ArrowFnExpr — стрелочная функция: fn (params) => expr. Захватывает внешние
@@ -560,6 +564,8 @@ type ArrowFnExpr struct {
 	Attrs []AttrDecl
 	// Line — строка объявления `fn ...`.
 	Line int
+	// Ticks — declare(ticks=N) в точке объявления (как у ClosureExpr).
+	Ticks int
 }
 
 // YieldExpr — выражение генератора:
@@ -3328,11 +3334,14 @@ func (p *Parser) closureExpr(static bool) (Expr, error) {
 		}
 		retType = rt
 	}
+	declTicks := p.ticks
+	savedTicks := p.ticks
 	body, err := p.block()
+	p.ticks = savedTicks
 	if err != nil {
 		return nil, err
 	}
-	return &ClosureExpr{Params: params, Uses: uses, ByRefReturn: byref, Static: static, RetType: retType, Body: body, Attrs: attrs, Line: line}, nil
+	return &ClosureExpr{Params: params, Uses: uses, ByRefReturn: byref, Static: static, RetType: retType, Body: body, Attrs: attrs, Line: line, Ticks: declTicks}, nil
 }
 
 // arrowFnExpr разбирает `fn (params) => expr`; `fn` ещё не съеден.
@@ -3360,7 +3369,7 @@ func (p *Parser) arrowFnExpr(static bool) (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ArrowFnExpr{Params: params, Body: body, Static: static, RetType: retType, Attrs: attrs, Line: line}, nil
+	return &ArrowFnExpr{Params: params, Body: body, Static: static, RetType: retType, Attrs: attrs, Line: line, Ticks: p.ticks}, nil
 }
 
 // --- Выражения: приоритетный подъём ---

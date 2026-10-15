@@ -620,6 +620,7 @@ func (h *fsHandle) flushWriteFilters() {
 	}
 	out := h.applyWriteFilters(nil)
 	if len(out) > 0 {
+		h.syncFbufForWrite()
 		_, _ = h.f.Write(out)
 	}
 }
@@ -637,14 +638,14 @@ func (h *fsHandle) filteredRead(p []byte) (int, error) {
 			return 0, io.EOF
 		}
 		buf := make([]byte, 8192)
-		n, err := h.f.Read(buf)
+		n, err := h.fileRead(buf)
 		eof := err != nil
 		if !eof && n < len(buf) && !h.isPhpMemory && h.us == nil {
 			// php://temp/файлы (stdio): короткое чтение у конца потока —
 			// EOF в том же вызове (Zend: feof после неполного чтения).
 			// php://memory сообщает конец только следующим чтением.
 			if pos, perr := h.f.Seek(0, io.SeekCurrent); perr == nil {
-				if fi, serr := h.f.Stat(); serr == nil && pos >= fi.Size() {
+				if fi, serr := h.f.Stat(); serr == nil && pos-int64(len(h.fbuf)) >= fi.Size() {
 					eof = true
 				}
 			}
@@ -790,6 +791,19 @@ func (f *streamFilter) applyUser(data []byte, closing bool) []byte {
 	return out
 }
 
+// userFilterCallerName — имя функции для диагностик пользовательского фильтра:
+// нативный вызывающий, иначе имя read-пути, иначе "stream".
+func userFilterCallerName(v *vm.VM) string {
+	fn := v.NativeCallerName()
+	if fn == "" {
+		fn = FilterReadCaller()
+	}
+	if fn == "" {
+		fn = "stream"
+	}
+	return fn
+}
+
 // hasUserFilterMethod сообщает, что класс фильтра определяет filter()
 // (в php_user_filter метода нет — Zend не подставляет реализацию).
 func (f *streamFilter) hasUserFilterMethod(v *vm.VM) bool {
@@ -810,14 +824,7 @@ func (f *streamFilter) applyUserCode(data []byte, closing bool) ([]byte, int64) 
 		// необработанной и чтение завершается ошибкой (include_fail_during_read:
 		// Warning "Unprocessed filter buckets remaining on input brigade",
 		// затем "Failed opening ... for inclusion").
-		fn := v.NativeCallerName()
-		if fn == "" {
-			fn = FilterReadCaller()
-		}
-		if fn == "" {
-			fn = "stream"
-		}
-		f.userCtx.VM().Warning(fn + "(): Unprocessed filter buckets remaining on input brigade")
+		f.userCtx.VM().Warning(userFilterCallerName(v) + "(): Unprocessed filter buckets remaining on input brigade")
 		f.fatal = true
 		return nil, 2
 	}
@@ -825,11 +832,7 @@ func (f *streamFilter) applyUserCode(data []byte, closing bool) ([]byte, int64) 
 		// Zend: ошибка установки $this->stream прерывает фильтр до вызова
 		// filter(); входная бригада остаётся необработанной (gh20370).
 		if !closing {
-			fn := v.NativeCallerName()
-			if fn == "" {
-				fn = "stream"
-			}
-			f.userCtx.VM().Warning(fn + "(): Unprocessed filter buckets remaining on input brigade")
+			f.userCtx.VM().Warning(userFilterCallerName(v) + "(): Unprocessed filter buckets remaining on input brigade")
 		}
 		throwCallable(f.userCtx, f.streamPropErr)
 		return data, 1
@@ -854,6 +857,12 @@ func (f *streamFilter) applyUserCode(data []byte, closing bool) ([]byte, int64) 
 	}
 	if res.ToInt() == 2 { // PSFS_ERR_FATAL
 		f.fatal = true
+	}
+	// Zend (userfilter_filter): если во входной бригаде остались корзины,
+	// печатается предупреждение от имени текущей функции (stream_filter_append
+	// при пред-буфере, stream_get_contents при чтении и т.п.).
+	if brIn, ok := vm.AsResource(in).Val.(*bucketBrigade); ok && brIn != nil && brIn.pos < len(brIn.buckets) {
+		f.userCtx.VM().Warning(userFilterCallerName(v) + "(): Unprocessed filter buckets remaining on input brigade")
 	}
 	br, _ := vm.AsResource(out).Val.(*bucketBrigade)
 	if br == nil {
@@ -932,6 +941,35 @@ func streamFilterAttach(ctx *vm.Context, prepend bool) vm.Value {
 		ctx.VM().Warning("stream_filter_append(): Unable to create or locate filter \"" + name + "\"")
 		return vm.Bool(false)
 	}
+	fn := ctx.VM().NativeCallerName()
+	if fn == "" {
+		fn = "stream_filter_append"
+	}
+	// Пред-буфер чтения: Zend прогоняет уже вычитанные в буфер данные через
+	// новый читающий фильтр (php_stream_filter_append_ex). FATAL — фильтр не
+	// подключается, данные теряются; FEED_ME — буфер сбрасывается; PASS_ON —
+	// буфер заменяется результатом.
+	if f.read && len(h.fbuf) > 0 && !h.buffered() {
+		data := h.fbuf
+		h.fbuf = nil
+		var out []byte
+		var status int64
+		if f.builtin != nil {
+			out, status = f.builtin(data), 1
+		} else {
+			out, status = f.applyUserCode(data, false)
+		}
+		switch status {
+		case 2: // PSFS_ERR_FATAL
+			ctx.VM().Warning(fn + "(): Filter failed to process pre-buffered data")
+			f.closeCalled = true
+			f.closeFilter()
+			return vm.Bool(false)
+		case 0: // PSFS_FEED_ME: данные остаются «в фильтре» и буфер сброшен
+			out = nil
+		}
+		h.fbuf = out
+	}
 	if prepend {
 		h.filters = append([]*streamFilter{f}, h.filters...)
 	} else {
@@ -992,6 +1030,15 @@ func streamFilterRemoveFn(ctx *vm.Context) vm.Value {
 		return vm.Bool(false)
 	}
 	h := f.owner
+	// Zend (php_stream_filter_remove): сначала flush с PSFS_FLAG_FLUSH_CLOSE —
+	// filter() получает closing=true; FATAL оставляет фильтр в цепочке.
+	if f.builtin == nil && f.ensureInit() && f.hasUserFilterMethod(ctx.VMInstance()) {
+		if _, status := f.applyUserCode(nil, true); status == 2 {
+			ctx.VM().Warning("stream_filter_remove(): Unable to flush filter, not removing")
+			return vm.Bool(false)
+		}
+		f.closeCalled = true
+	}
 	f.closeFilter()
 	for i, x := range h.filters {
 		if x == f {

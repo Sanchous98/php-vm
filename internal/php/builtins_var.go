@@ -1628,11 +1628,11 @@ func varDumpFn(ctx *vm.Context) vm.Value {
 	}
 	var b strings.Builder
 	args := ctx.Args()
-	st := &dumpState{vm: ctx.VM(), objIDs: map[*vm.Object]int{}, arrs: map[*vm.Array]bool{}, objs: map[*vm.Object]bool{}, refCount: map[*vm.Ref]int{}, roots: args}
+	st := &dumpState{vm: ctx.VM(), objIDs: map[*vm.Object]int{}, arrs: map[*vm.Array]bool{}, objs: map[*vm.Object]bool{}, refCount: map[*vm.Ref]int{}, arrCount: map[*vm.Array]int{}, roots: args}
 	seenA := map[*vm.Array]bool{}
 	seenO := map[*vm.Object]bool{}
 	for _, s := range args {
-		countRefs(ctx.VM(), s, st.refCount, seenA, seenO)
+		countRefs(ctx.VM(), s, st.refCount, st.arrCount, seenA, seenO)
 	}
 	for _, s := range args {
 		if st.err != nil {
@@ -1653,8 +1653,9 @@ func varDumpFn(ctx *vm.Context) vm.Value {
 }
 
 // countRefs подсчитывает, сколько раз каждая Ref-ячейка встречается в
-// структуре (для печати `&` только при refcount>1, как в Zend).
-func countRefs(v *vm.VM, s vm.Slot, counts map[*vm.Ref]int, seenA map[*vm.Array]bool, seenO map[*vm.Object]bool) {
+// структуре (для печати `&` только при refcount>1, как в Zend), а также
+// вхождения массивов (для refcount в debug_zval_dump).
+func countRefs(v *vm.VM, s vm.Slot, counts map[*vm.Ref]int, arrCounts map[*vm.Array]int, seenA map[*vm.Array]bool, seenO map[*vm.Object]bool) {
 	if s.IsRef() {
 		if r := s.Ref(); r != nil {
 			counts[r]++
@@ -1664,12 +1665,18 @@ func countRefs(v *vm.VM, s vm.Slot, counts map[*vm.Ref]int, seenA map[*vm.Array]
 	switch s.Type() {
 	case vm.ArrayType:
 		a := s.AsArray()
-		if a == nil || seenA[a] {
+		if a == nil {
+			return
+		}
+		if arrCounts != nil {
+			arrCounts[a]++
+		}
+		if seenA[a] {
 			return
 		}
 		seenA[a] = true
 		for _, x := range a.All() {
-			countRefs(v, x, counts, seenA, seenO)
+			countRefs(v, x, counts, arrCounts, seenA, seenO)
 		}
 	case vm.ObjectType:
 		o := v.SlotObject(s)
@@ -1681,7 +1688,7 @@ func countRefs(v *vm.VM, s vm.Slot, counts map[*vm.Ref]int, seenA map[*vm.Array]
 			if de.Uninit {
 				continue
 			}
-			countRefs(v, de.Val, counts, seenA, seenO)
+			countRefs(v, de.Val, counts, arrCounts, seenA, seenO)
 		}
 	}
 }
@@ -1695,6 +1702,9 @@ type dumpState struct {
 	objs     map[*vm.Object]bool
 	closures map[*vm.Closure]bool
 	refCount map[*vm.Ref]int
+	// arrCount — вхождения массивов (refcount в debug_zval_dump: обход
+	// аргумента плюс внешние держатели-переменные).
+	arrCount map[*vm.Array]int
 	roots    []vm.Slot
 	// err — фатальная ошибка, возникшая при дампе (__debugInfo не массив):
 	// печать до неё уже выведена, ошибку поднимает varDumpFn.

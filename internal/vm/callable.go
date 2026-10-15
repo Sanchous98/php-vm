@@ -914,16 +914,24 @@ func (vm *VM) ForwardScope() (ClassInfo, ClassInfo) {
 // staticMagicFallback выбирает магический fallback для статически
 // оформленного вызова (C::x(), 'C::x', [C::class,'x']) без доступного метода:
 // __call, если вызов идёт из объектного контекста, чей $this — экземпляр
-// вызываемого класса (BC-правило Zend), иначе __callStatic. Возвращает метод
-// и его имя ("" — fallback отсутствует).
+// вызываемого класса И сам вызываемый класс объявляет/наследует __call
+// (BC-правило Zend), иначе __callStatic. Возвращает метод и его имя
+// ("" — fallback отсутствует).
 func (vm *VM) staticMagicFallback(ci ClassInfo) (*Function, string) {
 	if ci == nil {
 		return nil, ""
 	}
 	if t := deref(vm.cur.this); t.typ == ObjectType {
 		if tci := vm.classInfo(t); tci != nil && tci.IsA(ci) {
-			if m := tci.lookupMethod("__call"); m != nil {
-				return m, "__call"
+			// Наличие __call проверяется по целевому классу: parent::foo()
+			// не видит __call динамического класса, если сам родитель его не
+			// объявляет (bug75220: is_callable('parent::foo') === false при
+			// __call только у потомка). Вызов при этом диспетчеризуется по
+			// классу объекта — LSB для переопределённого __call (t4).
+			if ci.lookupMethod("__call") != nil {
+				if m := tci.lookupMethod("__call"); m != nil {
+					return m, "__call"
+				}
 			}
 		}
 	}
@@ -2036,9 +2044,10 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 		if i := strings.Index(lookup, "::"); i >= 0 {
 			cls := strings.TrimLeft(lookup[:i], "\\")
 			meth := lookup[i+2:]
-			// Deprecation «Use of "self" in callables» Zend печатает только
-			// для валидного callable (bug45186: невалидный self::y не
-			// предупреждает) — откладываем до успешной проверки.
+			// Deprecation «Use of "self" in callables» Zend печатает, как
+			// только класс self/parent/static разрешился в текущей области
+			// (bug75220: parent::foo без метода и без магии — false, но с
+			// deprecation; bug45186: self::y вне области класса — без него).
 			deprecateSelf := strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static")
 			deprecateName := cls
 			deprecate := func() {
@@ -2076,11 +2085,9 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 						return false, nm
 					}
 				}
-				deprecate()
 				return true, nm
 			}
 			if _, m := vm.staticMagicFallback(ci); m != "" {
-				deprecate()
 				return true, nm
 			}
 			return false, nm
@@ -2163,6 +2170,7 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 				if outerCI == nil || tci == nil || !outerCI.IsA(tci) {
 					return false, nm
 				}
+				deprecateSelfParent()
 				vm.Deprecated(`Callables of the form ["` + raw + `", "` + mname + `"] are deprecated`)
 				if syntaxOnly {
 					return true, nm

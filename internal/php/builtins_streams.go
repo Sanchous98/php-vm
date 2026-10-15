@@ -243,12 +243,15 @@ func streamGetMetaDataFn(ctx *vm.Context) vm.Value {
 	return vm.MakeArray(out)
 }
 
-// unreadBytes — число байт во внутреннем буфере потока (pushback).
+// unreadBytes — число байт во внутреннем буфере потока: пре-буфер чтения
+// (Zend stream->readbuf, writepos-readpos), отфильтрованные, но ещё не
+// отданные данные и pushback-байт.
 func unreadBytes(h *fsHandle) int {
+	n := len(h.fbuf) + len(h.filterBuf)
 	if h.push >= 0 {
-		return 1
+		n++
 	}
-	return 0
+	return n
 }
 
 // streamSetChunkSizeFn — stream_set_chunk_size(): изменяет размер буфера.

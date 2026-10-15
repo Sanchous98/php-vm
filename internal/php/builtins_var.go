@@ -549,6 +549,9 @@ func defineFn(ctx *vm.Context) vm.Value {
 }
 
 func definedFn(ctx *vm.Context) vm.Value {
+	if a := arg0(ctx); a.Type() == vm.NullType {
+		ctx.VM().Deprecated("defined(): Passing null to parameter #1 ($constant_name) of type string is deprecated")
+	}
 	name := strings.TrimPrefix(arg0(ctx).ToString(), "\\")
 	if _, ok := ctx.VMInstance().Const(name); ok {
 		return vm.Bool(true)

@@ -1850,18 +1850,26 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 		if i := strings.Index(lookup, "::"); i >= 0 {
 			cls := strings.TrimLeft(lookup[:i], "\\")
 			meth := lookup[i+2:]
-			if strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static") {
-				vm.Deprecated(`Use of "` + cls + `" in callables is deprecated`)
+			// Диагностика «Use of \"parent\" in callables» печатается только
+			// когда scoped-имя действительно разрешается в класс (вне класса
+			// parent/self не разрешается — deprecation нет,
+			// traits/bug76773-deprecated: is_callable(['parent', ...])).
+			deprecate := func() {
+				if strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static") {
+					vm.Deprecated(`Use of "` + cls + `" in callables is deprecated`)
+				}
 			}
 			cn := vm.callableClassName(cls)
 			nm := cn + "::" + meth
 			if syntaxOnly {
+				deprecate()
 				return true, name
 			}
 			ci := vm.resolveCallableNameToClass(cls)
 			if ci == nil {
 				return false, nm
 			}
+			deprecate()
 			if m := methodOrCtor(ci, meth); m != nil {
 				if !m.IsStatic && meth != "__construct" {
 					// Нестатический метод в scoped-имени допустим при
@@ -1946,8 +1954,13 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 		case StringType:
 			raw := strings.TrimLeft(recv.StringVal(), "\\")
 			nm := raw + "::" + mname
-			if strings.EqualFold(raw, "self") || strings.EqualFold(raw, "parent") || strings.EqualFold(raw, "static") {
-				vm.Deprecated(`Use of "` + raw + `" in callables is deprecated`)
+			// «Use of \"parent\" in callables» — только когда имя
+			// действительно разрешается в класс (вне класса — нет:
+			// traits/bug76773-deprecated и deprecation для top-level).
+			deprecateSelfParent := func() {
+				if strings.EqualFold(raw, "self") || strings.EqualFold(raw, "parent") || strings.EqualFold(raw, "static") {
+					vm.Deprecated(`Use of "` + raw + `" in callables is deprecated`)
+				}
 			}
 			if strings.Contains(mname, "::") {
 				outerCI := vm.resolveCallableNameToClass(raw)
@@ -1965,12 +1978,14 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 				return false, nm
 			}
 			if syntaxOnly {
+				deprecateSelfParent()
 				return true, nm
 			}
 			ci, _ := vm.resolveCallableClass(raw)
 			if ci == nil {
 				return false, nm
 			}
+			deprecateSelfParent()
 			nm = ci.Name() + "::" + mname
 			parentish := strings.EqualFold(raw, "parent") || strings.EqualFold(raw, "self") || strings.EqualFold(raw, "static")
 			if m := methodOrCtor(ci, mname); m != nil {

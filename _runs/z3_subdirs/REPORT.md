@@ -10,8 +10,8 @@ varSyntax, arrow_functions, anon и др.). Список — `wavebench/lists/z3
 | прогон | результат |
 |---|---|
 | база (master 5edebad) | **0 / 78** |
-| после всех правок | **37 / 78 (47.4%)** |
-| контроль: затронутые подкаталоги целиком (`Zend/tests/{anon,arrow_functions,assert,attributes,constants,constexpr,enum,fibers,function_arguments,generators,grammar,in-de-crement,match,nullsafe_operator,numeric_strings,object_types,readonly_classes,readonly_props,restrict_globals,return_types,throw,traits,type_declarations,typehints,varSyntax,weakrefs,zend_ini}`) | 1471/1513 → **1476/1513 (97.6%)**, все провалы — тесты из моего списка или из списков других агентов (`fails_*`, `z2_*`, `root_*`); регрессий нет |
+| после всех правок | **39 / 78 (50%)** |
+| контроль: затронутые подкаталоги целиком (`Zend/tests/{anon,arrow_functions,assert,attributes,constants,constexpr,enum,fibers,function_arguments,generators,grammar,in-de-crement,match,nullsafe_operator,numeric_strings,object_types,readonly_classes,readonly_props,restrict_globals,return_types,throw,traits,type_declarations,typehints,varSyntax,weakrefs,zend_ini}`) | 1471/1513 → **1478/1513 (97.7%)**, все провалы — тесты из моего списка или из списков других агентов (`fails_*`, `z2_*`, `root_*`); регрессий нет |
 | контроль: весь `Zend/tests` чанками по 400 (PHPT_OFFSET/PHPT_LIMIT) | без изменений множества провалов по чанкам; чанки 400/800/2000 — предсуществующее зависание (`decRefsSeen` на больших массивах в `wRegSlow`, воспроизводится и до правок) |
 | перф | изменений нет (правки вне горячих путей; `trackedType`/инлайн-опкоды не трогались) |
 
@@ -78,7 +78,7 @@ varSyntax, arrow_functions, anon и др.). Список — `wavebench/lists/z3
   ленивая привязка на `rewind`), кадр пользовательского метода итератора в трейсе
   виден, нативного — скрыт → `generators/gh8289`.
 
-## Остаток (41 тест) и причины
+## Остаток (39 тестов) и причины
 
 - **Трассировки/цепочки исключений**: `function_arguments/sensitive_parameter_eval_call`
   (кадр eval()'d code), `enum/update-class-constant-failure` (у нас лишний кадр
@@ -93,6 +93,7 @@ varSyntax, arrow_functions, anon и др.). Список — `wavebench/lists/z3
   `assert/expect_015/020`, `attributes/012_ast_export`, `enum/ast-dumper`,
   `match/009_ast_export`): нужен полноценный `zend_ast_export` по AST
   (у нас текст из исходника: лишние скобки, `new X` без `()`, форматирование тел).
+  Часть точечно исправлена (см. список ниже).
 - **Номера объектов/handle'ы** (`readonly_clone_success2`, `readonly_props/cache_slot`,
   `readonly_clone_error5`, `generator_with_nonscalar_keys`, `typed_properties_043`,
   `union_types/multiple_classes`, `weakrefs/weakmap_weakness`,
@@ -107,6 +108,9 @@ varSyntax, arrow_functions, anon и др.). Список — `wavebench/lists/z3
   `zend.multibyte`/`mbstring.script_encoding` (BOM/UTF-16/Shift_JIS в лексере).
 - **pcntl-сигналы** (`fibers/signal-async`, `fibers/signal-dispatch`): нужны
   `pcntl_async_signals`, `pcntl_signal`, `SIGUSR1` и доставка сигналов.
+- **Deprecated для null-аргументов встроенных функций** и арность
+  (`nullsafe_operator/013` — сделан: defined/chr/ord/array_slice, имена параметров,
+  ArgumentCountError для func_num_args/func_get_args/get_called_class).
 - **Прочее по одному**: `generators/yield_from_deep_recursion` (плоская модель
   цепочки yield from вместо Go-рекурсии, 50000 уровней), `generators/gh11028_3`
   (спред генератора с throwing finally: ошибка распаковки должна быть вытеснена

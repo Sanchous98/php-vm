@@ -160,6 +160,9 @@ func builtins() []*vm.Function {
 			if v.Type() == vm.FloatType || v.Type() == vm.StringType {
 				ctx.VM().FloatToIntWarn(v)
 			}
+			if v.Type() == vm.NullType {
+				ctx.VM().Deprecated("chr(): Passing null to parameter #1 ($codepoint) of type int is deprecated")
+			}
 			return vm.Str(string([]byte{byte(v.ToInt())}))
 		}),
 		vm.Register("boolval", func(ctx *vm.Context) vm.Value { return vm.Bool(arg0(ctx).ToBool()) }),
@@ -253,6 +256,9 @@ func builtins() []*vm.Function {
 					return *new(vm.Value)
 				}
 				return vm.Int(0)
+			}
+			if arg0(ctx).Type() == vm.NullType {
+				ctx.VM().Deprecated("ord(): Passing null to parameter #1 ($character) of type string is deprecated")
 			}
 			s := arg0(ctx).ToString()
 			if s == "" {

@@ -1109,11 +1109,20 @@ func arraySliceFn(ctx *vm.Context) vm.Value {
 	out := vm.NewArray()
 	a := arg(ctx, 0)
 	if a.Type() != vm.ArrayType {
+		// null/scalar для параметра array — TypeError (Zend коэрсит только
+		// scalar-параметры; null допустим лишь для nullable).
+		arrayArgError(ctx, 0, "array_slice")
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
 		return vm.MakeArray(out)
 	}
 	arr := a.AsArray()
 	n := arr.Len()
 	preserve := len(ctx.Args()) >= 4 && arg(ctx, 3).ToBool()
+	if arg(ctx, 1).Type() == vm.NullType {
+		ctx.VM().Deprecated("array_slice(): Passing null to parameter #2 ($offset) of type int is deprecated")
+	}
 	off := int(arg(ctx, 1).ToInt())
 	if off < 0 {
 		off = n + off
@@ -2016,7 +2025,9 @@ func arrayChangeKeyCaseFn(ctx *vm.Context) vm.Value {
 // параметра ($array), у последующих (variadic) — только номер.
 func arrayArgError(ctx *vm.Context, i int, fn string) {
 	name := ""
-	if i == 0 {
+	if names := intrinsicArity[strings.ToLower(fn)].Names; i < len(names) {
+		name = names[i]
+	} else if i == 0 {
 		name = "array"
 	}
 	ctx.Throw(vm.NewThrowable("TypeError",

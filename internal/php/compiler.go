@@ -13574,6 +13574,12 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 		case "func_get_arg", "func_get_args", "func_num_args":
 			c.usesFuncArg = true
 		}
+		// func_num_args()/func_get_args() принимают ровно 0 аргументов:
+		// иначе ArgumentCountError (nullsafe_operator/013).
+		if mn := strings.ToLower(x.Name); (mn == "func_num_args" || mn == "func_get_args" || mn == "get_called_class") && len(x.Args) > 0 {
+			return c.emitNamedArgError("ArgumentCountError",
+				mn+"() expects exactly 0 arguments, "+strconv.Itoa(len(x.Args))+" given"), nil
+		}
 		if x.Fallback != "" {
 			switch x.Fallback {
 			case "func_get_arg", "func_get_args", "func_num_args":

@@ -5947,6 +5947,13 @@ func (vm *VM) CheckDefaultArg(val Slot, argNum int) (Slot, error) {
 
 // checkParams проверяет/приводит типы аргументов вызова (слабая типизация).
 func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
+	return vm.checkParamsN(fn, args, -1)
+}
+
+// checkParamsN — checkParams с явным числом переданных вызывающим аргументов:
+// null-заглушки отсутствующих параметров не считаются явным null (bug68446:
+// `a(null)` при `array $a = FOO` — TypeError, а `a()` — дефолт).
+func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int) ([]Slot, error) {
 	types := fn.ParamTypes
 	if len(types) == 0 {
 		return args, nil
@@ -5975,7 +5982,11 @@ func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
 		byref := i < len(fn.ByRefArgs) && fn.ByRefArgs[i]
 		// Null-заглушка для непереданного необязательного аргумента не является
 		// нарушением типа (значение подставится default'ом в теле функции).
-		if args[i].typ == NullType && (i >= fn.NumRequired || (variadic && i >= fixed)) {
+		// Явно переданный null (argNum < provided) — нарушение, если тип его
+		// не допускает.
+		omitted := provided >= 0 && i >= provided
+		if args[i].typ == NullType && omitted &&
+			(i >= fn.NumRequired || (variadic && i >= fixed)) {
 			continue
 		}
 		strict := vm.argStrict()
@@ -6470,7 +6481,12 @@ func VerifyReturnAtPointBuiltin(ctx *Context) Slot {
 	if l := vm.line(); l > 0 {
 		vm.retLine = l
 	}
+	// Это явный return: retImplicit принадлежит другому (предыдущему) кадру
+	// и не должен попасть в диагностику (bug72347: «none returned»).
+	savedImplicit := vm.retImplicit
+	vm.retImplicit = false
 	out, err := vm.checkReturnType(fn, a[0])
+	vm.retImplicit = savedImplicit
 	if err != nil {
 		if th, ok := err.(*Throwable); ok {
 			ctx.Throw(th)
@@ -6961,7 +6977,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		vm.markTopObjMethod()
 		vm.setTopThis(cl.BoundThis)
 	}
-	if ck, perr := vm.checkParams(fn, full); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, full, len(args)); perr != nil {
 		err = perr
 	} else {
 		full = ck

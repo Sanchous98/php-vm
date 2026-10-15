@@ -1747,6 +1747,18 @@ func (vm *VM) IncDecTypedProp(o Slot, name string, cur Slot, dec bool) (Slot, er
 		return Slot{}, errNotObject
 	}
 	pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name)
+	// PRE_INC_OBJ перечитывает ячейку свойства: обработчик ошибки, вызванный
+	// warning'ом при чтении неопределённого свойства, мог записать в это же
+	// свойство (in-de-crement/unset_property_converted_to_obj_in_error_handler).
+	if ob := vm.objectOf(o); ob != nil {
+		key := name
+		if declared {
+			key = vm.propKey(pd, decl, name)
+		}
+		if v, ok := ob.propValueRaw(key); ok {
+			cur = v
+		}
+	}
 	old := deref(cur)
 	dir, lim := "increment", "maximal"
 	if dec {

@@ -5590,6 +5590,43 @@ func (vm *VM) warnByRefArgs(fn *Function, args []Slot) {
 	}
 }
 
+// checkByRefArgs — диагностика by-ref параметра, получившего значение
+// (не ссылку): при вызове через call_user_func*/из внутренней функции Zend
+// печатает Warning (zend_wrong_parameters_call_error), при прямом вызове
+// (операнд SEND_VAL/CONST) — фатальную Error
+// (zend_check_arg_send_type, "could not be passed by reference").
+func (vm *VM) checkByRefArgs(fn *Function, args []Slot) error {
+	if vm.cufCall || vm.argNoLoc > 0 {
+		vm.warnByRefArgs(fn, args)
+		return nil
+	}
+	return vm.byRefArgsError(fn, args)
+}
+
+// byRefArgsError формирует Error для by-ref параметра со значением-аргументом.
+func (vm *VM) byRefArgsError(fn *Function, args []Slot) error {
+	for i := range fn.ByRefArgs {
+		if !fn.ByRefArgs[i] {
+			continue
+		}
+		if fn.VariadicByRef && i >= len(fn.ByRefArgs)-1 {
+			continue
+		}
+		if i < len(args) && !args[i].IsRef() {
+			name := ""
+			tail := fn.VariadicByRef && i >= len(fn.ParamNames)-1
+			if !tail && i < len(fn.ParamNames) && fn.ParamNames[i] != "" {
+				name = " ($" + fn.ParamNames[i] + ")"
+			}
+			th := NewThrowable("Error", fmt.Sprintf("%s(): Argument #%d%s could not be passed by reference",
+				argFuncDisplayName(fn), i+1, name))
+			th.Trace = vm.captureExceptionTrace()
+			return th
+		}
+	}
+	return nil
+}
+
 // tooFewArgs формирует ошибку ArgumentCountError для вызова userland-функции
 // с меньшим числом аргументов, чем объявлено обязательных.
 func (vm *VM) tooFewArgs(fn *Function, passed int) *Throwable {
@@ -5846,7 +5883,12 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			// Диагностику by-ref смотрим на исходных аргументах: variadic-хвост
 			// ещё не упакован (value-аргументы вариативного by-ref параметра
 			// Zend оборачивает в ссылку без предупреждения).
-			vm.warnByRefArgs(fn, args)
+			if berr := vm.checkByRefArgs(fn, args); berr != nil {
+				if haveEnv {
+					vm.restoreFuncEnv(env)
+				}
+				return Slot{}, berr
+			}
 		}
 		args = cf.PackVariadic(args)
 		vm.mergeNamedVariadic(args, fn)
@@ -6799,7 +6841,9 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		return Slot{}, aerr
 	}
 	if len(fn.ByRefArgs) > 0 {
-		vm.warnByRefArgs(fn, args)
+		if berr := vm.checkByRefArgs(fn, args); berr != nil {
+			return Slot{}, berr
+		}
 	}
 	cf, isCompiled := fn.Executable.(*CompiledFunction)
 	var env funcEnv
@@ -6896,7 +6940,9 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		return Slot{}, aerr
 	}
 	if len(fn.ByRefArgs) > 0 {
-		vm.warnByRefArgs(fn, args)
+		if berr := vm.checkByRefArgs(fn, args); berr != nil {
+			return Slot{}, berr
+		}
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedPending := vm.pendingThis

@@ -7070,6 +7070,11 @@ func (vm *VM) checkNativeStrictParams(fn *Function, args []Slot, provided int, m
 	if len(types) == 0 {
 		return nil
 	}
+	// Функции с рукописной strict-диагностикой, отличающейся от generic
+	// (ini_set() не печатает ", <тип> given"): оставляем им проверку.
+	if nativeStrictSelfChecked[strings.ToLower(fn.Name)] {
+		return nil
+	}
 	variadic := strings.HasPrefix(types[len(types)-1], "...")
 	nFixed := len(types)
 	if variadic {
@@ -7093,6 +7098,13 @@ func (vm *VM) checkNativeStrictParams(fn *Function, args []Slot, provided int, m
 		if raw == "" {
 			continue
 		}
+		// callable-параметры встроенных функций имеют собственную диагностику
+		// Zend («must be a valid callback ...»), которую requireCallable* уже
+		// выдаёт в обоих режимах: не перекрываем её generic-текстом. Строгая
+		// проверка остальных типов ниже.
+		if typeMentionsCallable(raw) {
+			continue
+		}
 		arg := deref(args[i])
 		omitted := false
 		if maskSet {
@@ -7111,6 +7123,27 @@ func (vm *VM) checkNativeStrictParams(fn *Function, args []Slot, provided int, m
 		return th
 	}
 	return nil
+}
+
+// nativeStrictSelfChecked — встроенные функции, которые сами проверяют типы
+// аргументов в strict-режиме и печатают диагностику, отличную от generic-текста
+// (ini_set() не добавляет ", <тип> given"). Их generic-проверка пропускается.
+var nativeStrictSelfChecked = map[string]bool{
+	"ini_set":   true,
+	"ini_alter": true,
+}
+
+// typeMentionsCallable сообщает, что среди альтернатив типа есть callable:
+// такие параметры встроенные функции проверяют сами (requireCallable*) с
+// более точной диагностикой («must be a valid callback ...»).
+func typeMentionsCallable(t string) bool {
+	t = strings.TrimPrefix(t, "?")
+	for _, alt := range splitTopLevelAll(t, '|') {
+		if strings.TrimSpace(alt) == "callable" {
+			return true
+		}
+	}
+	return false
 }
 
 // wbSkipEntry — запись в стеке vm.wbSkip: свойство ob::$name было прочитано

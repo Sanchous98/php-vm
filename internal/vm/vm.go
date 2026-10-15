@@ -2116,9 +2116,7 @@ func internalTraceHidden(name string) bool {
 	if name == "__php_assert1" {
 		return false
 	}
-	// "[constant expression]" — внутренний кадр вычисления константного
-	// выражения (Zend его не показывает: enum/update-class-constant-failure).
-	return strings.HasPrefix(name, "__php_") || name == "__const_expr" || name == "[constant expression]"
+	return strings.HasPrefix(name, "__php_") || name == "__const_expr"
 }
 
 // DebugBacktraceArray строит результат debug_backtrace(options, limit):
@@ -7470,12 +7468,7 @@ func (vm *VM) evalThunk(th *Thunk) (Slot, error) {
 	th.materialize()
 	th.busy = true
 	vm.thunkEvalDepth++
-	// Кадр вычисления константного выражения Zend в трейсах не показывает
-	// (enum/update-class-constant-failure: #0 {main}).
-	savedSuppress := vm.suppressNextFrame
-	vm.suppressNextFrame = true
 	res, err := vm.invokeMethod(th.fn, Slot{}, th.self, nil)
-	vm.suppressNextFrame = savedSuppress
 	vm.thunkEvalDepth--
 	th.busy = false
 	if err != nil {

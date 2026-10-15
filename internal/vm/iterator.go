@@ -290,7 +290,12 @@ func (vm *VM) iterCall(obj Slot, name string) (Slot, error) {
 	if m == nil {
 		return MakeNull(), NewThrowable("Error", "Call to undefined method "+ci.Name()+"::"+name+"()")
 	}
-	vm.suppressNextFrame = true
+	// Кадр НАТИВНОГО метода итератора (Generator->valid/next) в трейсе не
+	// показывается, а пользовательский override остаётся
+	// (Zend: #0 ...: MyIt->key() — generators/gh8289).
+	if _, isNative := m.Executable.(*NativeFunction); isNative {
+		vm.suppressNextFrame = true
+	}
 	return vm.invokeMethod(m, obj, ci, nil)
 }
 

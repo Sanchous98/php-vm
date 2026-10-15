@@ -921,7 +921,7 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 			if cl.MagicName != "" {
 				if ci := vm.classInfo(cl.BoundThis); ci != nil {
 					if res, ok, merr := vm.callMagicMethod(ci, cl.BoundThis, "__call",
-						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+						[]Slot{MakeString(cl.MagicName), argsArrayValues(args)}); ok {
 						return res, merr
 					}
 				}
@@ -931,7 +931,7 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 						called = cl.Scope
 					}
 					if res, ok, merr := vm.callMagicMethodCalled(cl.Scope, called, Slot{}, "__callStatic",
-						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+						[]Slot{MakeString(cl.MagicName), argsArrayValues(args)}); ok {
 						return res, merr
 					}
 				}
@@ -1866,7 +1866,7 @@ func (vm *VM) callStringCallable(raw string, args []Slot, strict bool) (Slot, er
 			if strict && vm.magicUndefStaticErr(ci) {
 				return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
 			}
-			if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
+			if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArrayValues(args)}); ok {
 				return res, err
 			}
 			return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined method %s::%s()", ci.Name(), mname))
@@ -1935,6 +1935,11 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot, strict bool) (Slot, error) 
 		if strings.Contains(mname, "::") {
 			if qci, meth, _ := vm.resolveQualifiedMethod(ci, mname); qci != nil {
 				qm, qdecl, qvis := qci.methodInfo(meth)
+				if qm == nil && strings.EqualFold(meth, "__construct") {
+					// Конструктор хранится отдельно от methods-таблицы
+					// (ci.Constructor): `[$this, "Base::__construct"]` — bug40398.
+					qm, qdecl, qvis = qci.CtorInfo()
+				}
 				if qm != nil {
 					// Доступ проверяется по текущей области видимости
 					// (bug48770_2: `parent::func22` — private A::func22 при
@@ -2049,7 +2054,7 @@ func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot, stric
 	if strict && vm.magicUndefStaticErr(ci) {
 		return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
 	}
-	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
+	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArrayValues(args)}); ok {
 		return res, err
 	}
 	if strings.EqualFold(mname, "__construct") {

@@ -143,7 +143,7 @@ func exceptionCtor(ctx *Context, args []Slot) (Slot, error) {
 func registerExceptionMembers(ci ClassInfo) {
 	if rc, ok := asRuntimeClass(ci); ok && rc != nil {
 		for _, p := range []struct{ name, typ string }{
-			{"message", ""}, {"code", ""}, {"file", ""},
+			{"message", ""}, {"string", ""}, {"code", ""}, {"file", ""},
 			{"line", ""}, {"trace", "array"}, {"previous", "?Throwable"},
 		} {
 			rc.SetPropTypeOnly(p.name, p.typ, Protected)

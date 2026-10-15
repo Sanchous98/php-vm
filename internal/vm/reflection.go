@@ -331,6 +331,11 @@ func (c *runtimeClass) methodFinal(name string) bool {
 // NewReflectionClasses создаёт дескрипторы всех классов Reflection.
 func NewReflectionClasses() []ClassInfo {
 	attrClass := NewClass("Attribute", nil)
+	// Объявленные свойства внутреннего Attribute: Zend их знает, поэтому
+	// запись flags/args не считается созданием динамического свойства.
+	if rc, ok := asRuntimeClass(attrClass); ok && rc != nil {
+		rc.SetPropTypeOnly("flags", "", Public)
+	}
 	MarkInternal(attrClass)
 	attrClass.MarkAttributeClass(1) // внутренний Attribute: только TARGET_CLASS
 	for _, kv := range []struct {

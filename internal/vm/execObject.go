@@ -2440,7 +2440,7 @@ func (vm *VM) opMethodCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		if argc > 0 && int(in.B)+1+argc <= len(regs) {
 			passed = regs[int(in.B)+1 : int(in.B)+1+argc]
 		}
-		if res, ok, err := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArray(passed)}); ok {
+		if res, ok, err := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArrayValues(passed)}); ok {
 			if err != nil {
 				if !vm.handleThrow(chunk, err) {
 					return execResult{err: err}
@@ -2477,7 +2477,7 @@ func (vm *VM) opMethodCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 				if argc > 0 && int(in.B)+1+argc <= len(regs) {
 					passed = regs[int(in.B)+1 : int(in.B)+1+argc]
 				}
-				if res, mok, merr := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArray(passed)}); mok {
+				if res, mok, merr := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArrayValues(passed)}); mok {
 					if merr != nil {
 						if !vm.handleThrow(chunk, merr) {
 							return execResult{err: merr}

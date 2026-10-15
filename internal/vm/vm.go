@@ -8088,7 +8088,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		if cl.MagicName != "" {
 			if ci := vm.classInfo(cl.BoundThis); ci != nil {
 				if res, ok, merr := vm.callMagicMethod(ci, cl.BoundThis, "__call",
-					[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+					[]Slot{MakeString(cl.MagicName), argsArrayValues(args)}); ok {
 					return res, merr
 				}
 			}
@@ -8098,7 +8098,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 					called = cl.Scope
 				}
 				if res, ok, merr := vm.callMagicMethodCalled(cl.Scope, called, vm.cur.this, vm.magicStaticName(cl.Scope),
-					[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+					[]Slot{MakeString(cl.MagicName), argsArrayValues(args)}); ok {
 					return res, merr
 				}
 			}
@@ -8945,7 +8945,7 @@ func (vm *VM) callMagicUndefStatic(cls ClassInfo, calledIn ClassInfo, mname stri
 		if tci := vm.classInfo(vm.cur.this); tci != nil && tci.IsA(cls) {
 			if cls.lookupMethod("__call") != nil {
 				if m := tci.lookupMethod("__call"); m != nil {
-					res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArray(passed)})
+					res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArrayValues(passed)})
 					return res, true, err
 				}
 			}
@@ -8957,7 +8957,7 @@ func (vm *VM) callMagicUndefStatic(cls ClassInfo, calledIn ClassInfo, mname stri
 	if cls.hasAbstract("__callStatic") {
 		return Slot{}, true, NewThrowable("Error", "Cannot call abstract method "+cls.Name()+"::"+mname+"()")
 	}
-	return vm.callMagicMethodCalled(cls, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArray(passed)})
+	return vm.callMagicMethodCalled(cls, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArrayValues(passed)})
 }
 
 // callMagicMethod вызывает магический метод name у класса ci, если он есть.
@@ -9017,7 +9017,27 @@ func argsArray(args []Slot) Slot {
 		// Ссылки сохраняются: Zend кладёт в $arguments ячейки-ссылки, и
 		// call_user_func_array('inc', $args) внутри __call пишет в исходную
 		// переменную (bug50394: int(3)).
+		if s.typ != RefType {
+			// Значение-контейнер получает второго владельца: помечаем массив
+			// shared, иначе запись в $arguments[0][0] мутировала бы by-value
+			// аргумент вызывающего (__call_003).
+			shareSlot(s)
+		}
 		_, _ = a.Append(s)
+	}
+	return MakeArray(a)
+}
+
+// argsArrayValues — как argsArray, но значения разыменовываются: Zend для
+// ПРЯМОГО вызова несуществующего метода передаёт аргументы __call по значению
+// (ref-ячейки окна вызова — внутренняя деталь VM; __call_003). Массивы
+// помечаем shared: у значения появляется второй владелец (COW при записи).
+func argsArrayValues(args []Slot) Slot {
+	a := newArray()
+	for _, s := range args {
+		v := deref(s)
+		shareSlot(v)
+		_, _ = a.Append(v)
 	}
 	return MakeArray(a)
 }

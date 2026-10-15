@@ -156,6 +156,32 @@ zz_p1_order_test, судя по сообщению коммита, нет (та�
 «by-ref»). Прежде чем включать free-list поверх htab, нужен дифф-тест именно
 этого угла против живого php 8.3.
 
+### Merge-инструкция (dry-run против текущего мастера d6118a7)
+
+`git merge-tree --write-tree --name-only d6118a7 p2_hash` — **единственный
+конфликтный файл `internal/vm/array.go`, 7 зон**; `htab.go`, `iterator.go`,
+`iterremap.go`, `array_test.go`, `builtins_array.go` и `zz_p1_order_test.go`
+(p1_free) сливаются автоматически.
+
+Резолв: во всех 7 зонах брать сторону **p2_hash** (индекс/поиск/COW через
+`buckets`); код p1_free с `mStr/mInt/maps.Clone/delete(...)` становится мёртвым
+вместе с полями. Отдельно по пунктам:
+
+- `maps.Clone` (зона Unshare) — выбросить: у S1 COW = memcpy `entries`+`buckets`;
+- «мёртвый суффикс не копируется» в Unshare (та же зона) — **нельзя брать как
+  есть**: усечение `entries` осиротит индексы бакетов из отброшенного
+  диапазона. Либо копировать entries целиком (как в p2_hash), либо перестраивать
+  таблицу после усечения;
+- `putEntry`/`tailDead` (зона Set): совместимы, если Unshare копирует entries
+  целиком; вставку тогда делать `pos := a.putEntry(...)` + бакет на `pos`
+  (старый бакет удалённой позиции уже tombstone, `used++` и `nLive++`
+  сохраняются);
+- `maybeCompact` (зона SetInt): после сжатия нужен `a.htResize(len(a.buckets))`
+  (или рост), иначе бакеты указывают на старые позиции; флаги `hasRefs`
+  (noteVal) и `walkBusy` из p1_free сохранить;
+- `hasRefs` в `noteVal` (зона noteVal): сохранить (безвреден, если
+  maybeCompact выброшен).
+
 ## Риски
 
 1. **Порядок/позиции обхода**: entries — единственный источник порядка

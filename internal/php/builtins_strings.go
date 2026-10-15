@@ -1628,6 +1628,8 @@ func phpStrCaseCmpRaw(a, b string, limit int) int64 {
 	}
 	return 0
 }
+
+func stripslashesFn(ctx *vm.Context) vm.Value {
 	s := arg0(ctx).ToString()
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {

@@ -2102,6 +2102,14 @@ func incDecPropBuiltin(ctx *vm.Context) vm.Value {
 	return res
 }
 
+// unsetPropBaseBuiltin — приёмник промежуточного звена цепочки unset()
+// (`unset($a->b->c->d)`): не-объект даёт null без диагностик (bug78644).
+func unsetPropBaseBuiltin(ctx *vm.Context) vm.Value {
+	recv := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	return ctx.VM().UnsetPropBase(recv, name)
+}
+
 // propWriteCheckBuiltin — проверка приёмника записи свойства по ссылке
 // (`$o->p =& ...`): не-объект даёт «Attempt to modify property» до RHS
 // (bug75241).

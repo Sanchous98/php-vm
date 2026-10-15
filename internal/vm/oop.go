@@ -1760,6 +1760,27 @@ func (vm *VM) magicGetInaccessible(ci ClassInfo, recv Slot, pname string) (Slot,
 // свойства (может быть ссылкой с guard). При переполнении int и типе, не
 // допускающем float, поднимается TypeError "past its maximal/minimal value";
 // иначе результат становится float. Возвращает новое значение.
+// UnsetPropBase — приёмник промежуточного звена цепочки unset()
+// (`unset($a->b->c->d)`): не-объект даёт null без диагностик, у объекта
+// свойство создаётся как null (write-fetch) и возвращается его значение
+// (Zend: unset через null — no-op, но промежуточное свойство появляется).
+func (vm *VM) UnsetPropBase(recv Slot, name string) Slot {
+	recv = deref(recv)
+	ci := vm.classInfo(recv)
+	if ci == nil {
+		return MakeNull()
+	}
+	key := propKeyForScope(vm.ctx.self, ci, name)
+	if v, ok := vm.getProp(recv, key); ok {
+		if sl, isSlot := v.(Slot); isSlot {
+			return Deref(sl)
+		}
+		return valueSlot(v)
+	}
+	vm.setProp(recv, key, MakeNull())
+	return MakeNull()
+}
+
 // IncDecPropCheck проверяет приёмник ++/-- над свойством: не-объект даёт
 // Error «Attempt to increment/decrement property "x" on <type>» (Zend бросает
 // его до чтения значения, без Warning о чтении). Возвращает приёмник.

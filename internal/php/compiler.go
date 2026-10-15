@@ -2926,6 +2926,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_incdec_prop", incDecPropBuiltin),
 		vm.Register("__php_incdec_prop_check", incDecPropCheckBuiltin),
 		vm.Register("__php_prop_write_check", propWriteCheckBuiltin),
+		vm.Register("__php_unset_prop_base", unsetPropBaseBuiltin),
 		vm.Register("__php_incdec_ref", incDecRefBuiltin),
 		vm.Register("__php_incdec_val", incDecValBuiltin),
 		vm.Register("__php_incdec_global", incDecGlobalBuiltin),
@@ -11021,11 +11022,23 @@ func (c *compiler) stmt(st Stmt) error {
 				if isTemporaryExpr(v.Arr) {
 					return c.newFatal("Cannot use temporary expression in write context")
 				}
-				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
-				arr, wb, err := c.indexBase(v, false)
-				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
-				if err != nil {
-					return err
+				var arr uint8
+				var wb func(uint8)
+				var err error
+				if pe, ok := v.Arr.(*PropExpr); ok {
+					// `unset($a->b->c['d'])`: промежуточные свойства — через
+					// null-терпимый write-fetch (bug78644).
+					arr, err = c.exprUnsetBase(pe)
+					if err != nil {
+						return err
+					}
+				} else {
+					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+					arr, wb, err = c.indexBase(v, false)
+					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+					if err != nil {
+						return err
+					}
 				}
 				// `unset($x[0])` при неопределённом $x: Zend читает $x (и
 				// печатает «Undefined variable»), но запись не выполняется.
@@ -11046,9 +11059,25 @@ func (c *compiler) stmt(st Stmt) error {
 				}
 				// База unset-цепочки читается в IS-режиме: неинициализированное
 				// типизированное свойство не диагностируется (variation_nested).
-				obj, err := c.exprIssetBase(v.Recv)
-				if err != nil {
-					return err
+				// Цепочка через null не ошибка: промежуточное свойство
+				// создаётся как null (bug78644).
+				var obj uint8
+				var err error
+				if pe, ok := v.Recv.(*PropExpr); ok {
+					base, berr := c.exprUnsetBase(pe.Recv)
+					if berr != nil {
+						return berr
+					}
+					nameReg, nerr := c.propNameReg(pe)
+					if nerr != nil {
+						return nerr
+					}
+					obj = c.emitCall("__php_unset_prop_base", []uint8{base, nameReg})
+				} else {
+					obj, err = c.exprIssetBase(v.Recv)
+					if err != nil {
+						return err
+					}
 				}
 				if v.NameExpr != nil {
 					ne, err := c.expr(v.NameExpr)
@@ -16399,6 +16428,21 @@ func (c *compiler) refCellForExpr(value Expr) (uint8, error) {
 			}
 			return c.refCell(v.Name), nil
 		}
+		// Динамическая переменная (`$$x`) в ref-контексте: переменная
+		// создаётся как ссылка на null без диагностики (Zend; bug78182: после
+		// `... =& $$x` переменная определена).
+		nameReg, err := c.expr(v.NameExpr)
+		if err != nil {
+			return 0, err
+		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+		cur := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(nameReg)})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+		cell := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpNewRef, A: cell, B: cur})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: cell, C: int32(nameReg)})
+		return cell, nil
 	case *IndexExpr:
 		if v.Key == nil {
 			break
@@ -17038,6 +17082,18 @@ func (c *compiler) assignPropRef(t *PropExpr, value Expr) (uint8, error) {
 			return 0, err
 		}
 	}
+	// Правая часть-переменная: Zend выполняет FETCH_W (создание ячейки)
+	// раньше проверки левой части (bug78182: `$x->p =& $$n` создаёт $$n,
+	// даже если левая часть падает).
+	var srcCell uint8
+	preCreated := false
+	if _, isVar := value.(*VarExpr); isVar {
+		srcCell, err = c.refCellForExpr(value)
+		if err != nil {
+			return 0, err
+		}
+		preCreated = true
+	}
 	// Zend выполняет FETCH_OBJ_W левой части до вычисления RHS: запись в
 	// свойство null — «Attempt to modify property ... on null» ещё до правой
 	// части (bug75241).
@@ -17052,9 +17108,11 @@ func (c *compiler) assignPropRef(t *PropExpr, value Expr) (uint8, error) {
 		}
 		obj = c.emitCall("__php_prop_write_check", []uint8{obj, nr})
 	}
-	srcCell, err := c.refCellForExpr(value)
-	if err != nil {
-		return 0, err
+	if !preCreated {
+		srcCell, err = c.refCellForExpr(value)
+		if err != nil {
+			return 0, err
+		}
 	}
 	srcCell = c.decoupleCallRef(value, srcCell)
 	if t.NameExpr != nil {
@@ -18113,6 +18171,34 @@ func (c *compiler) exprCoalesceBase(a Expr) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
+	return r, nil
+}
+
+// exprUnsetBase — база цепочки unset(): промежуточные свойства читаются
+// write-fetch'ем через __php_unset_prop_base (через null — no-op, bug78644).
+func (c *compiler) exprUnsetBase(e Expr) (uint8, error) {
+	if pe, ok := e.(*PropExpr); ok {
+		base, err := c.exprUnsetBase(pe.Recv)
+		if err != nil {
+			return 0, err
+		}
+		nameReg, err := c.propNameReg(pe)
+		if err != nil {
+			return 0, err
+		}
+		return c.emitCall("__php_unset_prop_base", []uint8{base, nameReg}), nil
+	}
+	return c.exprIssetBase(e)
+}
+
+// propNameReg — регистр с именем свойства (для динамического имени —
+// выражение).
+func (c *compiler) propNameReg(pe *PropExpr) (uint8, error) {
+	if pe.NameExpr != nil {
+		return c.expr(pe.NameExpr)
+	}
+	r := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: r, C: int32(c.chunk.AddConst(vm.StrConst(pe.Name)))})
 	return r, nil
 }
 

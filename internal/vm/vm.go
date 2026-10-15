@@ -7034,6 +7034,12 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 // invokeMethod вызывает метод объекта: $this = recv, self = класс объявления,
 // static = класс получателя (late static binding).
 func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slot) (res Slot, err error) {
+	// Статический метод не получает $this, даже если вызван через объект
+	// (`$obj->staticMethod()`, [obj,'staticMethod']): Zend выдаёт «Using $this
+	// when not in object context» при обращении (bug77877).
+	if fn.IsStatic {
+		recv = Slot{}
+	}
 	namedCount := vm.pendingNamedCount
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided

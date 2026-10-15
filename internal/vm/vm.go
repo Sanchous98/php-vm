@@ -4500,21 +4500,27 @@ func (vm *VM) exec(chunk *Chunk) error {
 			// Конкатенация C частей из регистров B..B+C-1: одна аллокация.
 			n := int(in.C)
 			base := int(in.B)
-			var small [16]string
+			var smallParts [16]string
+			var smallVals [16]Slot
 			var parts []string
-			if n <= len(small) {
-				parts = small[:n]
+			var vals []Slot
+			if n <= len(smallParts) {
+				parts = smallParts[:n]
+				vals = smallVals[:n]
 			} else {
 				parts = make([]string, n)
+				vals = make([]Slot, n)
 			}
 			total := 0
 			bad := false
 			for i := 0; i < n; i++ {
-				// string/int-части не материализуются в промежуточную строку:
-				// сначала измеряем, затем concatNResultSlots форматирует их
+				// Снимок значения части (для ссылок — до приведения более
+				// поздних частей). string/int не материализуются в
+				// промежуточную строку: concatNResultSlots форматирует их
 				// прямо в результирующий буфер. Прочие приводятся к строке
 				// здесь (с сохранением порядка диагностик/__toString).
 				pv := deref(regs[base+i])
+				vals[i] = pv
 				switch pv.typ {
 				case StringType:
 					parts[i] = pv.StringVal()
@@ -4542,7 +4548,7 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 			{
 				old := regs[in.A]
-				wv := concatNResultSlots(parts, regs[base:base+n], total)
+				wv := concatNResultSlots(parts, vals, total)
 				regs[in.A] = wv
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)

@@ -209,23 +209,24 @@ func concatNResult(parts []string, total int) Slot {
 }
 
 // concatNResultSlots собирает n частей одной аллокацией, форматируя int-части
-// прямо в результирующий буфер (без промежуточных intToString). seg — регистры
-// частей в порядке конкатенации; parts — уже приведённые строки для частей,
-// которые не являются string/int (для остальных значение не используется).
-func concatNResultSlots(parts []string, seg []Slot, total int) Slot {
+// прямо в результирующий буфер (без промежуточных intToString). vals — снимки
+// значений частей (уже разыменованные, в порядке конкатенации); parts — уже
+// приведённые строки для частей, которые не являются string/int (для
+// остальных значение не используется). Снимок обязателен: приведение более
+// поздней части может через __toString изменить значение ссылки-части.
+func concatNResultSlots(parts []string, vals []Slot, total int) Slot {
 	if total == 0 {
 		return MakeString("")
 	}
 	buf := make([]byte, total)
 	off := 0
-	for i := range seg {
-		pv := deref(seg[i])
-		switch pv.typ {
+	for i := range vals {
+		switch vals[i].typ {
 		case StringType:
-			off += copy(buf[off:], pv.StringVal())
+			off += copy(buf[off:], vals[i].StringVal())
 		case IntType:
 			var tb [20]byte
-			b := strconv.AppendInt(tb[:0], pv.Int(), 10)
+			b := strconv.AppendInt(tb[:0], vals[i].Int(), 10)
 			off += copy(buf[off:], b)
 		default:
 			off += copy(buf[off:], parts[i])

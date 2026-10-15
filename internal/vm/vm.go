@@ -363,6 +363,9 @@ type VM struct {
 	// (__get/__set/__isset/__unset) для одного и того же свойства объекта.
 	magicBusy map[string]bool
 
+	// classAliasOrder — имена class_alias-псевдонимов в порядке создания
+	// (get_declared_classes/get_declared_interfaces).
+	classAliasOrder []string
 	// wbSkip — стек «отменённых» записей-обратно после дим-записи в
 	// перегруженное свойство: Zend читает свойство через __get, модифицирует
 	// временную копию и не пишет её назад (fetch_property_address, ветка
@@ -5134,6 +5137,22 @@ func (vm *VM) exec(chunk *Chunk) error {
 			} else if hr.next {
 				continue
 			}
+		case OpPropGetCompound:
+			if hr := vm.opPropGetRW(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpPropGetCompoundDyn:
+			if hr := vm.opPropGetRW(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
 		case OpPropRef:
 			if hr := vm.opPropRef(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
@@ -7970,15 +7989,37 @@ func (vm *VM) runShutdownDestructors() {
 	defer func() { vm.noSwitch = savedNoSwitch }()
 	// Zend вызывает деструкторы всех объектов в порядке, обратном созданию;
 	// циклический мусор (gcPendingObjs) тоже уничтожается при завершении.
-	all := make([]*Object, 0, len(vm.liveObjs)+len(vm.gcPendingObjs))
-	for _, o := range vm.liveObjs {
-		if o != nil && (o.dead || o.gcPending) {
-			continue
+	// Объекты, созданные внутри __destruct, уничтожаются следующим проходом
+	// (Zend обходит растущий objects_store; bug51822: "1\n2").
+	for pass := 0; pass < 100; pass++ {
+		all := make([]*Object, 0, len(vm.liveObjs)+len(vm.gcPendingObjs))
+		for _, o := range vm.liveObjs {
+			if o != nil && (o.dead || o.gcPending) {
+				continue
+			}
+			if vm.destructed[o] {
+				continue
+			}
+			if vm.noDtor[o] {
+				continue
+			}
+			all = append(all, o)
 		}
-		all = append(all, o)
+		for _, o := range vm.gcPendingObjs {
+			if o != nil && !vm.destructed[o] && !vm.noDtor[o] {
+				all = append(all, o)
+			}
+		}
+		if len(all) == 0 {
+			break
+		}
+		sort.SliceStable(all, func(i, j int) bool { return all[i].objID > all[j].objID })
+		vm.shutdownDestructPass(all, &shutdownErrs)
 	}
-	all = append(all, vm.gcPendingObjs...)
-	sort.SliceStable(all, func(i, j int) bool { return all[i].objID > all[j].objID })
+}
+
+// shutdownDestructPass уничтожает один проход объектов (по убыванию id).
+func (vm *VM) shutdownDestructPass(all []*Object, shutdownErrs *[]*Throwable) {
 	for _, o := range all {
 		if o == nil || o.dead || vm.destructed[o] || vm.noDtor[o] {
 			continue
@@ -7993,7 +8034,7 @@ func (vm *VM) runShutdownDestructors() {
 			if g := objectAs[Generator](o, vm.genClass); g != nil {
 				if err := vm.closeGenerator(g, true); err != nil {
 					if th, ok := asThrowable(err); ok {
-						shutdownErrs = append(shutdownErrs, th)
+						*shutdownErrs = append(*shutdownErrs, th)
 					}
 				}
 				continue
@@ -8006,7 +8047,7 @@ func (vm *VM) runShutdownDestructors() {
 			if f := objectAs[Fiber](o, vm.fiberClass); f != nil {
 				if err := vm.closeFiber(f, true); err != nil {
 					if th, ok := asThrowable(err); ok {
-						shutdownErrs = append(shutdownErrs, th)
+						*shutdownErrs = append(*shutdownErrs, th)
 					}
 				}
 				continue
@@ -8033,7 +8074,7 @@ func (vm *VM) runShutdownDestructors() {
 			// ошибка (weakmap_dtor_exception): Zend печатает её как
 			// непойманную, а не глотает.
 			if th, ok := asThrowable(err); ok {
-				shutdownErrs = append(shutdownErrs, th)
+				*shutdownErrs = append(*shutdownErrs, th)
 			}
 		}
 	}

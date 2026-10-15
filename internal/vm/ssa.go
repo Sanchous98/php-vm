@@ -234,6 +234,8 @@ func init() {
 	s(OpIndexUnsetRaw, rDef, rUse, rUse)
 	s(OpPropGetIncDec, rDef, rUse, rNone)
 	s(OpPropGetIncDecDyn, rDef, rUse, rUse)
+	s(OpPropGetCompound, rDef, rUse, rNone)
+	s(OpPropGetCompoundDyn, rDef, rUse, rUse)
 	s(OpIndexSetRaw, rUseDef, rUse, rUse)
 	s(OpIndexSetOverloadRaw, rUseDef, rUse, rUse)
 	s(OpListFetchRef, rUseDef, rUse, rUse)

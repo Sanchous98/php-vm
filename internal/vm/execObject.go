@@ -749,8 +749,11 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	readMode := in.Op == OpPropGetRWRead
 	interm := in.Op == OpPropGetRWInterm
 	arrMode := in.Op == OpPropGetRWArr || in.Op == OpPropGetRWArrDyn
+	// compound — промежуточное звено `+=`/`++`: как Interm, но
+	// неинициализированное типизированное свойство — ошибка доступа.
+	compound := in.Op == OpPropGetCompound || in.Op == OpPropGetCompoundDyn
 	var pname string
-	if in.Op == OpPropGetRWDyn || in.Op == OpPropGetRWArrDyn {
+	if in.Op == OpPropGetRWDyn || in.Op == OpPropGetRWArrDyn || in.Op == OpPropGetCompoundDyn {
 		pname = deref(regs[in.C]).ToString()
 	} else {
 		pname = consts[in.C].StringVal()
@@ -848,7 +851,7 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			}
 			declared = false
 		}
-		if declared && pd.readonly && !readMode {
+		if declared && pd.readonly && !readMode && !compound {
 			// Косвенная запись в readonly-свойство:
 			// - промежуточное звено (OpPropGetRWInterm): инициализированное
 			//   свойство допустимо (модифицируется вложенный объект), пустое —
@@ -889,7 +892,7 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		return execResult{}
 	}
 	if declared {
-		if readMode {
+		if readMode || compound {
 			// Составное присваивание сначала читает значение: неинициализированное
 			// типизированное свойство — ошибка доступа (variation.phpt).
 			if uerr := vm.uninitPropErr(ci, pname); uerr != nil {

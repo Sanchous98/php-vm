@@ -506,10 +506,17 @@ const (
 	OpPropGetIncDec // PROP_GET_INC_DEC
 	// OpPropGetIncDecDyn — то же для динамического имени (C — регистр-имя).
 	OpPropGetIncDecDyn // PROP_GET_INC_DEC_DYN
+	// OpPropGetCompound — промежуточное звено цепочки составного присваивания
+	// и ++/-- (`X->p->q += v`, `X->p->q++`): как OpPropGetRWInterm, но
+	// неинициализированное типизированное свойство даёт ошибку доступа
+	// (Zend FETCH_OBJ_RW), а не-объект — Error "Attempt to modify property ...".
+	OpPropGetCompound // PROP_GET_COMPOUND
+	// OpPropGetCompoundDyn — то же для динамического имени (C — регистр-имя).
+	OpPropGetCompoundDyn // PROP_GET_COMPOUND_DYN
 )
 
 // numOpcodes — число опкодов (для таблиц, индексируемых опкодом).
-const numOpcodes = int(OpPropGetIncDecDyn) + 1
+const numOpcodes = int(OpPropGetCompoundDyn) + 1
 
 // IsUnconditionalTerminator сообщает, что после инструкции исполнение не
 // продолжается со следующей позиции (нет fallthrough): компилятор не ставит

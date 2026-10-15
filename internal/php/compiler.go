@@ -13751,10 +13751,13 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpTrue, A: d})
 			jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfFalse, A: ir})
 			val := c.alloc()
+			// Значение читается IS-режимом (FETCH_OBJ_IS): при __isset=true
+			// и отсутствии __get — null без warning'а «Undefined property»
+			// (bug44899).
 			if pe.NameExpr != nil {
-				c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetDyn, A: val, B: obj, C: int32(nameReg)})
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetSafeDyn, A: val, B: obj, C: int32(nameReg)})
 			} else {
-				c.chunk.Emit(vm.Instruction{Op: vm.OpPropGet, A: val, B: obj,
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetSafe, A: val, B: obj,
 					C: int32(c.chunk.AddConst(vm.StrConst(pe.Name)))})
 			}
 			c.chunk.Emit(vm.Instruction{Op: vm.OpNot, A: d, B: val})
@@ -16225,6 +16228,31 @@ func (c *compiler) indexBase(t *IndexExpr, dimW bool) (uint8, func(uint8), error
 // нужен только контейнеру, в который идёт запись (readonly-семантика:
 // variation_nested; объектные цепочки не авто-вивифицируются).
 func (c *compiler) exprChainRead(e Expr) (uint8, error) {
+	// Звено-свойство читается RW-фетчем (Zend FETCH_OBJ_RW): не-объект даёт
+	// Error «Attempt to modify property ...», неинициализированное
+	// типизированное — ошибку доступа, warning'ов об неопределённых
+	// свойствах нет (bug52041).
+	if pe, ok := e.(*PropExpr); ok {
+		recv, err := c.exprChainRead(pe.Recv)
+		if err != nil {
+			return 0, err
+		}
+		d := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+		if pe.NameExpr != nil {
+			ne, err := c.expr(pe.NameExpr)
+			if err != nil {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+				return 0, err
+			}
+			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetCompoundDyn, A: d, B: recv, C: int32(ne)})
+		} else {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetCompound, A: d, B: recv,
+				C: int32(c.chunk.AddConst(vm.StrConst(pe.Name)))})
+		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+		return d, nil
+	}
 	c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 	r, err := c.expr(e)
 	c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
@@ -16928,7 +16956,16 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 		}
 		return old, nil
 	case *PropExpr:
-		obj, err := c.expr(t.Recv)
+		// Промежуточные звенья цепочки (`foo()->a->b++`) читаются RW-фетчем;
+		// прочие приёмники — обычным чтением (важны Undefined variable и
+		// Attempt to read property ... при не-объекте).
+		var obj uint8
+		var err error
+		if _, isProp := t.Recv.(*PropExpr); isProp {
+			obj, err = c.exprChainRead(t.Recv)
+		} else {
+			obj, err = c.expr(t.Recv)
+		}
 		if err != nil {
 			return 0, err
 		}

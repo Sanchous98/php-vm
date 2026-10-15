@@ -2458,6 +2458,9 @@ func getDeclaredClassesFn(ctx *vm.Context) vm.Value {
 		}
 		_, _ = out.Append(vm.MakeString(ci.Name()))
 	}
+	for _, alias := range ctx.VM().ClassAliasOrder() {
+		_, _ = out.Append(vm.MakeString(alias))
+	}
 	return vm.MakeArray(out)
 }
 

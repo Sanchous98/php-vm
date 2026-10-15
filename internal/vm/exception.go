@@ -387,8 +387,17 @@ func (vm *VM) AddClassAlias(alias string, ci ClassInfo) {
 	if vm.classAliases == nil {
 		vm.classAliases = map[string]ClassInfo{}
 	}
-	vm.classAliases[strings.ToLower(strings.TrimLeft(alias, "\\"))] = ci
+	key := strings.ToLower(strings.TrimLeft(alias, "\\"))
+	if _, exists := vm.classAliases[key]; !exists {
+		// Порядок создания псевдонимов — как у Zend в get_declared_classes
+		// (псевдонимы идут после объявленных классов; bug62343).
+		vm.classAliasOrder = append(vm.classAliasOrder, alias)
+	}
+	vm.classAliases[key] = ci
 }
+
+// ClassAliasOrder возвращает имена псевдонимов классов в порядке создания.
+func (vm *VM) ClassAliasOrder() []string { return vm.classAliasOrder }
 
 // ClassAliasTargets возвращает псевдонимы классов (нижний регистр имени →
 // имя целевого класса) — для проверок типов при рантайм-компиляции

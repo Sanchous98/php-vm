@@ -531,14 +531,14 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.B])
 	pname := deref(regs[in.C]).ToString()
-	if err := vm.propNulNameErr(pname); err != nil {
-		if !vm.handleThrow(chunk, err) {
-			return execResult{err: err}
-		}
-		return execResult{next: true}
-	}
 	ci := vm.classInfo(recv)
 	if ci == nil {
+		if err := vm.propNulNameErr(pname); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
 		{
 			old := regs[in.A]
@@ -666,6 +666,13 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	}
 	if gres, stop := vm.staticShadowGuard(ci, pname, "__get", chunk); stop {
 		return gres
+	}
+	// \0-имя: Error, если магия не сработала (внутри __get — bug52484_3).
+	if err := vm.propNulNameErr(pname); err != nil {
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
 	}
 	vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
 	{
@@ -1295,12 +1302,8 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 }
 
 func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	if err := vm.propNulNameErr(deref(regs[in.C]).ToString()); err != nil {
-		if !vm.handleThrow(chunk, err) {
-			return execResult{err: err}
-		}
-		return execResult{next: true}
-	}
+	// \0-имя проверяется ПОСЛЕ магии: Zend вызывает __set для такого имени
+	// и падает уже внутри него (bug52484_2).
 	ci := vm.classInfo(regs[in.A])
 	if ci == nil {
 		err := vm.propWriteNonObjectErr(regs[in.A], deref(regs[in.C]).ToString())
@@ -1430,6 +1433,12 @@ func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			return execResult{next: true}
 		}
 		return execResult{}
+	}
+	if err := vm.propNulNameErr(pname); err != nil {
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
 	}
 	if gres, stop := vm.staticShadowGuard(ci, pname, "__set", chunk); stop {
 		return gres
@@ -1950,12 +1959,10 @@ func (vm *VM) opPropUnset(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 
 func (vm *VM) opPropUnsetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.A])
-	if err := vm.propNulNameErr(deref(regs[in.C]).ToString()); err != nil {
-		if !vm.handleThrow(chunk, err) {
-			return execResult{err: err}
-		}
-		return execResult{next: true}
-	}
+	// Zend сначала уходит в __unset (если свойство отсутствует), и лишь
+	// недоступная по имени "\0" запись внутри магического метода даёт Error
+	// (bug52484: в трейсе остаётся кадр A->__unset('\x00')); проверка имени
+	// делается после попытки магии (см. ниже).
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		return execResult{}
@@ -2016,6 +2023,12 @@ func (vm *VM) opPropUnsetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 			return execResult{next: true}
 		}
 		return execResult{}
+	}
+	if err := vm.propNulNameErr(pname); err != nil {
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
 	}
 	if gres, stop := vm.staticShadowGuard(ci, pname, "__unset", chunk); stop {
 		return gres

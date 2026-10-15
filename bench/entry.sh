@@ -13,6 +13,10 @@ for f in /repo/bench/ab.sh /repo/bench/bench.py /repo/bench/entry.sh; do
     fi
 done
 
+if [ "${1:-}" = "jit" ]; then
+    export JIT=1
+    shift
+fi
 if [ "${1:-}" = "bash" ] || [ "${1:-}" = "shell" ]; then
     shift
     exec bash "$@"

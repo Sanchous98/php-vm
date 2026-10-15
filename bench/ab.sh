@@ -9,6 +9,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 N=${1:-3}
 export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.27.1}
+# JIT=1 — сравнение с php, у которого включены opcache CLI + JIT (tracing).
+if [ "${JIT:-0}" = "1" ] && [ -z "${PHP_ARGS:-}" ]; then
+    export PHP_ARGS='-d opcache.enable_cli=1 -d opcache.jit_buffer_size=64M -d opcache.jit=tracing'
+fi
+echo "php: $(command -v php) ${PHP_ARGS:-<без дополнительных опций>}"
 mkdir -p bench/work_cur bench/work_ref
 
 go test -c -vet=off -o bench/phpvm_cur.test ./internal/php/

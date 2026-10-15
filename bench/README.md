@@ -30,6 +30,21 @@ GOTOOLCHAIN=go1.27.1 go test -c -vet=off -o bench/phpvm.test ./internal/php/
 python3 bench/bench.py bench/phpvm.test bench/work 3 # только наш VM vs php
 ```
 
+## Сравнение с php+JIT
+`JIT=1` включает у php opcache CLI + JIT (tracing):
+```bash
+JIT=1 bash bench/ab.sh 3
+```
+Docker:
+```bash
+docker run --rm phpvm-bench jit                      # или: -e JIT=1
+docker run --rm -v "${PWD}:/repo" -e JIT=1 phpvm-bench
+```
+Свои опции php — через `PHP_ARGS` (пример: `PHP_ARGS="-d opcache.jit=function -d opcache.jit_buffer_size=32M"`).
+Ориентир (php vs php+JIT на 12 нагрузках): JIT заметно помогает только объектным
+нагрузкам (08_obj_props ×1.4, 09_obj_methods ×1.4, 10_recursion ×1.2), остальные —
+в пределах шума: прогоны короткие, компиляция не окупается.
+
 ## Что смотреть
 - Итоговая таблица печатается в конце: `cur/ref` ≈ 1.00 — регрессий нет; >1.10 — присмотреться.
 - Каждая нагрузка берётся как **min по двум перемежающимся проходам** (гасит ноутбучный шум:

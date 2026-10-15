@@ -980,6 +980,16 @@ func (vm *VM) GlobalsUnsetDyn(name string) {
 	}
 }
 
+// SetSuperglobalSynced записывает суперглобал (например $_SESSION) в таблицу
+// глобалов и синхронизирует снимок $GLOBALS.
+func (vm *VM) SetSuperglobalSynced(name string, v Slot) {
+	if vm.globals == nil {
+		vm.globals = map[string]Slot{}
+	}
+	vm.globals[name] = v
+	vm.syncGlobalsSnapshot(name)
+}
+
 // GlobalGet возвращает значение глобальной переменной.
 func (vm *VM) GlobalGet(name string) (Slot, bool) {
 	v, ok := vm.globals[name]

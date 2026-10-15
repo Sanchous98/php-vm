@@ -658,10 +658,14 @@ func builtins() []*vm.Function {
 		vm.Register("register_tick_function", registerTickFunctionFn),
 		vm.Register("unregister_tick_function", unregisterTickFunctionFn),
 		vm.Register("session_save_path", func(ctx *vm.Context) vm.Value { return vm.Str("") }),
-		vm.Register("session_start", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("session_start", func(ctx *vm.Context) vm.Value {
+			// Сессия не поддерживается: как Zend при пустом хранилище —
+			// $_SESSION становится пустым массивом (unset_cv05/06).
+			ctx.VM().SetSuperglobalSynced("$_SESSION", vm.MakeArray(vm.NewArray()))
+			return vm.Bool(true)
+		}),
 		vm.Register("session_unset", func(ctx *vm.Context) vm.Value {
-			// Освобождает все переменные сессии: $_SESSION становится [].
-			ctx.VM().GlobalSet("$_SESSION", vm.MakeArray(vm.NewArray()))
+			ctx.VM().SetSuperglobalSynced("$_SESSION", vm.MakeArray(vm.NewArray()))
 			return vm.MakeNull()
 		}),
 		vm.Register("get_resources", func(ctx *vm.Context) vm.Value {

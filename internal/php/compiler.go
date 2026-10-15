@@ -15509,6 +15509,23 @@ func (c *compiler) builtinCallBase(e Expr) bool {
 	}
 }
 
+// callLikeBase сообщает, что база write-цепочки — вызов функции/метода
+// (в т.ч. через промежуточные индексы). Подавление диагностик на такой базе
+// недопустимо: Zend не глушит код вызываемой функции, когда запись идёт в
+// результат вызова (`$foo->c()[0] = 1` — диагностики внутри c() видны).
+func callLikeBase(e Expr) bool {
+	for {
+		switch t := e.(type) {
+		case *IndexExpr:
+			e = t.Arr
+		case *CallExpr, *MethodCallExpr, *StaticCallExpr, *DynCallExpr, *NewExpr:
+			return true
+		default:
+			return false
+		}
+	}
+}
+
 // assignCoalesce компилирует `target ??= value`: если текущее значение
 // существует и не null, возвращается оно; иначе value вычисляется один раз и
 // записывается в target.
@@ -17982,21 +17999,4 @@ func constValue(name string) (vm.Const, bool) {
 		return vm.FloatConst(math.Nextafter(1, 2) - 1), true
 	}
 	return vm.Const{}, false
-}
-
-// callLikeBase сообщает, что база write-цепочки — вызов функции/метода
-// (в т.ч. через промежуточные индексы). Подавление диагностик на такой базе
-// недопустимо: Zend не глушит код вызываемой функции, когда запись идёт в
-// результат вызова (`$foo->c()[0] = 1` — диагностики внутри c() видны).
-func callLikeBase(e Expr) bool {
-	for {
-		switch t := e.(type) {
-		case *IndexExpr:
-			e = t.Arr
-		case *CallExpr, *MethodCallExpr, *StaticCallExpr, *DynCallExpr, *NewExpr:
-			return true
-		default:
-			return false
-		}
-	}
 }

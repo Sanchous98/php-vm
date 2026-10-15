@@ -107,13 +107,21 @@ func (u *userStream) seek(off int64, whence int) (int64, error) {
 }
 
 func (u *userStream) eof() bool {
+	v, _ := u.eofChecked()
+	return v
+}
+
+// eofChecked возвращает значение stream_eof и признак успеха вызова
+// (false — метод не реализован или бросил исключение; Zend в этом случае
+// печатает Warning и считает поток завершённым).
+func (u *userStream) eofChecked() (bool, bool) {
 	if u.hasEof {
 		res, ok := u.callMethod("stream_eof")
 		if ok {
-			return res.ToBool()
+			return res.ToBool(), true
 		}
 	}
-	return false
+	return false, false
 }
 
 func (u *userStream) close() {

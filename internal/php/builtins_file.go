@@ -2380,7 +2380,18 @@ func feofFn(ctx *vm.Context) vm.Value {
 			return vm.Bool(false)
 		}
 		if h.us != nil && h.us.hasEof {
-			return vm.Bool(h.us.eof())
+			v, ok := h.us.eofChecked()
+			if !ok {
+				// Zend: сбой вызова stream_eof — Warning и предположение EOF
+				// (исключение из метода всплывёт позже само).
+				name := "user stream wrapper"
+				if o := ctx.VM().SlotObject(h.us.obj); o != nil && o.ClassName() != "" {
+					name = o.ClassName()
+				}
+				ctx.VM().Warn("feof(): " + name + "::stream_eof is not implemented! Assuming EOF")
+				return vm.Bool(true)
+			}
+			return vm.Bool(v)
 		}
 		return vm.Bool(h.rbof)
 	}

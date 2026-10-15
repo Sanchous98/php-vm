@@ -366,13 +366,6 @@ func castSlot(vm *VM, s Slot, kind int) Slot {
 			return MakeInt(0)
 		}
 		if s.typ == ObjectType || s.typ == ClosureType {
-			// Zend: Warning + результат 1 (значение __toString не влияет).
-			if vm != nil {
-				vm.Warn("Object of class " + vm.objClassName(s) + " could not be converted to int")
-			}
-			return MakeInt(1)
-		}
-		if s.typ == ObjectType || s.typ == ClosureType {
 			// Zend: объект -> int даёт 1 с Warning (zval_get_long).
 			if vm != nil {
 				vm.Warn("Object of class " + vm.slotClassName(s) + " could not be converted to int")
@@ -392,18 +385,6 @@ func castSlot(vm *VM, s Slot, kind int) Slot {
 			// Zend: объект -> float даёт 1.0 с Warning (zval_get_double).
 			if vm != nil {
 				vm.Warn("Object of class " + vm.slotClassName(s) + " could not be converted to float")
-			}
-			return MakeFloat(1)
-		}
-		if s.typ == ArrayType {
-			if s.AsArray().Len() > 0 {
-				return MakeFloat(1)
-			}
-			return MakeFloat(0)
-		}
-		if s.typ == ObjectType || s.typ == ClosureType {
-			if vm != nil {
-				vm.Warn("Object of class " + vm.objClassName(s) + " could not be converted to float")
 			}
 			return MakeFloat(1)
 		}

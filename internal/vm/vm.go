@@ -766,12 +766,23 @@ func (vm *VM) IncludedFiles() []string {
 // Output возвращает writer вывода VM (для вложенных запусков, напр. eval).
 func (vm *VM) Output() io.Writer { return vm.out }
 
-// DefineConst регистрирует пользовательскую константу (define()).
+// DefineConst регистрирует пользовательскую константу (define()). Имена с
+// '\': Zend хранит/ищет их с регистронезависимым префиксом пространства имён
+// до последнего '\' (последний сегмент — точно) — bug46304.
 func (vm *VM) DefineConst(name string, v Slot) {
 	if vm.consts == nil {
 		vm.consts = map[string]Slot{}
 	}
-	vm.consts[name] = v
+	vm.consts[normConstName(name)] = v
+}
+
+// normConstName нормализует имя define-константы: префикс до последнего '\'
+// приводится к нижнему регистру, последний сегмент сохраняется как есть.
+func normConstName(name string) string {
+	if i := strings.LastIndexByte(name, '\\'); i >= 0 {
+		return strings.ToLower(name[:i]) + name[i:]
+	}
+	return name
 }
 
 // setPendingDefaultError запоминает первую ошибку вычисления ленивого дефолта.
@@ -792,9 +803,9 @@ func (vm *VM) takePendingDefaultError() error {
 // функций, инстанцирующих класс пользовательской обёртки.
 func (vm *VM) TakePendingDefaultError() error { return vm.takePendingDefaultError() }
 
-// Const возвращает пользовательскую константу.
+// Const возвращает пользовательскую константу (см. normConstName).
 func (vm *VM) Const(name string) (Slot, bool) {
-	v, ok := vm.consts[name]
+	v, ok := vm.consts[normConstName(name)]
 	return v, ok
 }
 
@@ -1811,6 +1822,7 @@ func (vm *VM) pushCall(fn *Function, args []Slot) {
 		callee: fn, callerChunk: chunk,
 		callerPC: pc, fallback: fallback, fileID: fileID, args: args,
 	}
+
 	if vm.pendingFrameNamed != nil {
 		entry.named = vm.pendingFrameNamed
 		vm.pendingFrameNamed = nil
@@ -2683,6 +2695,11 @@ func (vm *VM) traceArg(s Slot) string {
 		return "Object"
 	case ClosureType:
 		return "Object(Closure)"
+	case ResourceType:
+		if id := ResourceID(s); id > 0 {
+			return fmt.Sprintf("Resource id #%d", id)
+		}
+		return "Resource id #0"
 	}
 	return "NULL"
 }
@@ -3095,7 +3112,13 @@ func (vm *VM) NewInstanceByName(name string, args []Slot) (Slot, error) {
 func (vm *VM) NewInstanceByNameFromInternal(name string, args []Slot) (Slot, error) {
 	vm.argNoLoc++
 	vm.MarkNextFrameInternal()
-	defer func() { vm.argNoLoc-- }()
+	defer func() {
+		// Кадр конструктора мог так и не появиться (класс без __construct):
+		// флаг не должен «протечь» на следующий пользовательский вызов
+		// (bug41421: feof получал [internal function]).
+		vm.markNextFrameInternal = false
+		vm.argNoLoc--
+	}()
 	return vm.NewInstanceByName(name, args)
 }
 
@@ -4854,6 +4877,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 			} else if hr.next {
 				continue
 			}
+		case OpIndexUnsetRaw:
+			if hr := vm.opIndexUnsetRaw(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
 		case OpIndexRef:
 			if hr := vm.opIndexRef(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
@@ -5081,6 +5112,22 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 		case OpPropGetDyn:
 			if hr := vm.opPropGetDyn(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpPropGetIncDec:
+			if hr := vm.opPropGetIncDec(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpPropGetIncDecDyn:
+			if hr := vm.opPropGetIncDecDyn(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
 				return nil
@@ -6070,6 +6117,16 @@ func (vm *VM) pushWbSkip(ob *Object, name string, real bool) {
 	vm.wbSkip = append(vm.wbSkip, wbSkipEntry{ob: ob, name: name, real: real})
 }
 
+// dropWbSkip снимает верхнюю запись wbSkip для ob::$name (если она есть).
+func (vm *VM) dropWbSkip(ob *Object, name string) {
+	if ob == nil || len(vm.wbSkip) == 0 {
+		return
+	}
+	if n := len(vm.wbSkip); vm.wbSkip[n-1].ob == ob && vm.wbSkip[n-1].name == name {
+		vm.wbSkip = vm.wbSkip[:n-1]
+	}
+}
+
 // accessError формирует PHP-совместимую ошибку доступа к непубличному методу.
 func (vm *VM) accessError(decl ClassInfo, mname string, vis Visibility) error {
 	kind := "private"
@@ -6742,7 +6799,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 				if called == nil {
 					called = cl.Scope
 				}
-				if res, ok, merr := vm.callMagicMethodCalled(cl.Scope, called, Slot{}, "__callStatic",
+				if res, ok, merr := vm.callMagicMethodCalled(cl.Scope, called, vm.cur.this, vm.magicStaticName(cl.Scope),
 					[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
 					return res, merr
 				}
@@ -7451,8 +7508,12 @@ func (vm *VM) callMagicUndefStatic(cls ClassInfo, calledIn ClassInfo, mname stri
 	if called == nil {
 		called = cls
 	}
-	if deref(vm.cur.this).typ == ObjectType && cls.lookupMethod("__call") != nil {
-		if tci := vm.classInfo(vm.cur.this); tci != nil {
+	if deref(vm.cur.this).typ == ObjectType {
+		// BC-правило Zend (PHP 7/8): статически оформленный вызов без метода
+		// из объектного контекста, чей $this — экземпляр вызываемого класса,
+		// идёт в __call; иначе — в __callStatic. Для несвязанного класса
+		// __call из чужого scope не используется (bug42937).
+		if tci := vm.classInfo(vm.cur.this); tci != nil && tci.IsA(cls) {
 			if m := tci.lookupMethod("__call"); m != nil {
 				res, err := vm.invokeMethod(m, vm.cur.this, tci, []Slot{MakeString(mname), argsArray(passed)})
 				return res, true, err

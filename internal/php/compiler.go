@@ -405,6 +405,10 @@ type compiler struct {
 	writes map[string]bool
 	// byrefReturn — текущая функция объявлена как `function &`.
 	byrefReturn bool
+	// chainUnset — компилируется цепочка unset($a[k1][k2][...]): промежуточные
+	// разыменования идут через OpIndexUnsetRaw (BP_VAR_UNSET: контейнер-строка
+	// даёт "Cannot unset string offsets", а не TypeError чтения).
+	chainUnset bool
 	// closureBody — компилируется тело замыкания (self/parent в параметрах
 	// разрешены и резолвятся при вызове через bindTo).
 	closureBody bool
@@ -10795,7 +10799,10 @@ func (c *compiler) stmt(st Stmt) error {
 					return c.newFatal("Cannot use temporary expression in write context")
 				}
 				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+				oldUnset := c.chainUnset
+				c.chainUnset = true
 				arr, wb, err := c.indexBase(v, false)
+				c.chainUnset = oldUnset
 				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
 				if err != nil {
 					return err
@@ -16388,7 +16395,11 @@ func (c *compiler) indexBaseKeys(t *IndexExpr, keys []uint8, dimW bool) (uint8, 
 			}
 		}
 		arr := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRaw, A: arr, B: inner, C: int32(k)})
+		op := vm.OpIndexRaw
+		if c.chainUnset {
+			op = vm.OpIndexUnsetRaw
+		}
+		c.chunk.Emit(vm.Instruction{Op: op, A: arr, B: inner, C: int32(k)})
 		return arr, func(r uint8) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSetOverloadRaw, A: inner, B: k, C: int32(r)})
 			if wbInner != nil {
@@ -16935,9 +16946,9 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 		}
 		cur := c.alloc()
 		if t.NameExpr != nil {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetDyn, A: cur, B: obj, C: int32(nameReg)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetIncDecDyn, A: cur, B: obj, C: int32(nameReg)})
 		} else {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGet, A: cur, B: obj,
+			c.chunk.Emit(vm.Instruction{Op: vm.OpPropGetIncDec, A: cur, B: obj,
 				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
 		}
 		if x.Pre {

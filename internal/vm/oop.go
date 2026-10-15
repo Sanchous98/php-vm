@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -1545,7 +1546,9 @@ func (vm *VM) magicGetValue(ci ClassInfo, o Slot, pname string) (Slot, error) {
 func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 	ci := vm.classInfo(recv)
 	if ci == nil {
-		return MakeRef(&Ref{v: MakeNull()}), nil
+		// Zend: взятие ячейки свойства у не-объекта — Error
+		// "Attempt to modify property ..." (bug44660).
+		return Slot{}, NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", pname, valueTypeName(vm, deref(recv))))
 	}
 	if ci.IsEnum() {
 		return Slot{}, vm.enumWriteError(ci, recv, pname)

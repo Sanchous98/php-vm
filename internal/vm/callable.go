@@ -551,7 +551,7 @@ func (vm *VM) fccStaticMethod(ci ClassInfo, mname string) (Slot, error) {
 	m, decl, vis := ci.methodInfo(mname)
 	if m != nil && !m.IsStatic && mname != "__construct" {
 		if decl != nil && vis != Public && !vm.methodAccessibleFrom(decl, vis, vm.fccScope()) {
-			if ci.lookupMethod("__callStatic") != nil {
+			if _, magic := vm.staticMagicFallback(ci); magic != "" {
 				return MakeClosure(&Closure{MagicName: mname, Scope: ci, Called: ci, BoundThis: vm.staticCallRecv(ci), Fake: true}), nil
 			}
 			return Slot{}, NewThrowable("Error", "Call to "+visWord(vis)+" method "+ci.Name()+"::"+mname+"() from "+scopeDesc(vm.fccScope()))
@@ -559,13 +559,13 @@ func (vm *VM) fccStaticMethod(ci ClassInfo, mname string) (Slot, error) {
 		return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
 	}
 	if m != nil && decl != nil && vis != Public && !vm.methodAccessibleFrom(decl, vis, vm.fccScope()) {
-		if ci.lookupMethod("__callStatic") != nil {
+		if _, magic := vm.staticMagicFallback(ci); magic != "" {
 			return MakeClosure(&Closure{MagicName: mname, Scope: ci, Called: ci, BoundThis: vm.staticCallRecv(ci), Fake: true}), nil
 		}
 		return Slot{}, NewThrowable("Error", "Call to "+visWord(vis)+" method "+ci.Name()+"::"+mname+"() from "+scopeDesc(vm.fccScope()))
 	}
 	if m == nil {
-		if ci.lookupMethod("__callStatic") != nil {
+		if _, magic := vm.staticMagicFallback(ci); magic != "" {
 			return MakeClosure(&Closure{MagicName: mname, Scope: ci, Called: ci, BoundThis: vm.staticCallRecv(ci), Fake: true}), nil
 		}
 		return Slot{}, NewThrowable("Error", "Call to undefined method "+ci.Name()+"::"+mname+"()")
@@ -778,7 +778,6 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 		return Slot{}, NewThrowable("Error", "Cannot call "+name+"() dynamically")
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
-	savedMarkInternal := vm.markNextFrameInternal
 	if !direct {
 		vm.argNoLoc++
 		vm.markNextFrameInternal = true
@@ -786,8 +785,13 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 	defer func() {
 		if !direct {
 			vm.argNoLoc--
+			// Флаг снимаем, а не восстанавливаем saved: кадр callee уже
+			// зарегистрирован (pushCall гасит флаг), а восстановленное true
+			// «протекало» на следующий пользовательский вызов (bug41421:
+			// feof получал [internal function]). Если кадр не появился —
+			// тем более нельзя оставлять флаг.
+			vm.markNextFrameInternal = false
 		}
-		vm.markNextFrameInternal = savedMarkInternal
 		vm.ctx.this, vm.ctx.self, vm.ctx.called = savedThis, savedSelf, savedCalled
 	}()
 
@@ -875,6 +879,57 @@ func (vm *VM) ForwardScope() (ClassInfo, ClassInfo) {
 		called = vm.ctx.self
 	}
 	return vm.ctx.self, called
+}
+
+// staticMagicFallback выбирает магический fallback для статически
+// оформленного вызова (C::x(), 'C::x', [C::class,'x']) без доступного метода:
+// __call, если вызов идёт из объектного контекста, чей $this — экземпляр
+// вызываемого класса (BC-правило Zend), иначе __callStatic. Возвращает метод
+// и его имя ("" — fallback отсутствует).
+func (vm *VM) staticMagicFallback(ci ClassInfo) (*Function, string) {
+	if ci == nil {
+		return nil, ""
+	}
+	if t := deref(vm.cur.this); t.typ == ObjectType {
+		if tci := vm.classInfo(t); tci != nil && tci.IsA(ci) {
+			if m := tci.lookupMethod("__call"); m != nil {
+				return m, "__call"
+			}
+		}
+	}
+	if m := ci.lookupMethod("__callStatic"); m != nil {
+		return m, "__callStatic"
+	}
+	return nil, ""
+}
+
+// magicStaticName — имя магического метода для статически оформленного вызова
+// без доступного метода (см. staticMagicFallback), либо "".
+func (vm *VM) magicStaticName(ci ClassInfo) string {
+	if _, n := vm.staticMagicFallback(ci); n != "" {
+		return n
+	}
+	return ""
+}
+
+// callableMethodVisible — доступен ли метод name класса ci из scope для целей
+// is_callable: private проверяется по классу объявления (bug29210).
+func (vm *VM) callableMethodVisible(ci ClassInfo, name string, scope ClassInfo) bool {
+	m, decl, vis := ci.methodInfo(name)
+	if m == nil {
+		v, ok := ci.MethodVisibility(name)
+		if !ok {
+			return true
+		}
+		decl, vis = ci, v
+	}
+	if vis == Public {
+		return true
+	}
+	if decl == nil {
+		decl = ci
+	}
+	return vm.methodAccessibleFromProto(ci, decl, name, vis, scope)
 }
 
 // thisClassInfo возвращает класс текущего $this (nil, если его нет).
@@ -1118,7 +1173,7 @@ func (vm *VM) CallCallableNamed(ctx *Context, c Slot, arr *Array) (Slot, error) 
 					}
 				}
 				if cl.Scope != nil {
-					if res, ok, err := vm.callMagicMethodCalled(cl.Scope, cl.Called, Slot{}, "__callStatic",
+					if res, ok, err := vm.callMagicMethodCalled(cl.Scope, cl.Called, vm.cur.this, vm.magicStaticName(cl.Scope),
 						[]Slot{MakeString(cl.MagicName), argsArrayNamed(arr)}); ok {
 						return res, err
 					}
@@ -1141,7 +1196,7 @@ func (vm *VM) CallCallableNamed(ctx *Context, c Slot, arr *Array) (Slot, error) 
 			mname := raw[i+2:]
 			m := methodOrCtor(ci, mname)
 			if m == nil {
-				if res, ok, err := vm.callMagicMethodCalled(ci, ci, vm.cur.this, "__callStatic",
+				if res, ok, err := vm.callMagicMethodCalled(ci, ci, vm.cur.this, vm.magicStaticName(ci),
 					[]Slot{MakeString(mname), argsArrayNamed(arr)}); ok {
 					return res, err
 				}
@@ -1246,7 +1301,7 @@ func (vm *VM) CallCallableNamed(ctx *Context, c Slot, arr *Array) (Slot, error) 
 			}
 			m := methodOrCtor(ci, mname)
 			if m == nil {
-				if res, ok, err := vm.callMagicMethodCalled(ci, ci, vm.cur.this, "__callStatic",
+				if res, ok, err := vm.callMagicMethodCalled(ci, ci, vm.cur.this, vm.magicStaticName(ci),
 					[]Slot{MakeString(mname), argsArrayNamed(arr)}); ok {
 					return res, err
 				}
@@ -1435,7 +1490,7 @@ func (vm *VM) StaticCallNamed(cls Slot, mname string, arr *Array) (Slot, error) 
 		if scoped && vm.ctx.called != nil {
 			calledM = vm.ctx.called
 		}
-		if res, ok, err := vm.callMagicMethodCalled(ci, calledM, vm.cur.this, "__callStatic",
+		if res, ok, err := vm.callMagicMethodCalled(ci, calledM, vm.cur.this, vm.magicStaticName(ci),
 			[]Slot{MakeString(mname), argsArrayNamed(arr)}); ok {
 			return res, err
 		}
@@ -1634,7 +1689,7 @@ func (vm *VM) callStringCallable(raw string, args []Slot) (Slot, error) {
 		}
 		m := methodOrCtor(ci, mname)
 		if m == nil {
-			if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArray(args)}); ok {
+			if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
 				return res, err
 			}
 			return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined method %s::%s()", ci.Name(), mname))
@@ -1747,7 +1802,7 @@ func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot) (Slot
 		}
 		return vm.invokeMethod(m, Slot{}, called, args)
 	}
-	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArray(args)}); ok {
+	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
 		return res, err
 	}
 	// В объектном контексте с instance-__call Zend разрешает C::m как
@@ -1872,12 +1927,12 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 						return false, nm
 					}
 				}
-				if vis, ok := ci.MethodVisibility(meth); ok && !vm.methodAccessible(ci, vis) {
+				if !vm.callableMethodVisible(ci, meth, vm.ctx.self) {
 					return false, nm
 				}
 				return true, nm
 			}
-			if ci.lookupMethod("__callStatic") != nil {
+			if _, m := vm.staticMagicFallback(ci); m != "" {
 				return true, nm
 			}
 			return false, nm
@@ -1934,7 +1989,7 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 				return true, nm
 			}
 			if m := methodOrCtor(ci, mname); m != nil {
-				if vis, ok := ci.MethodVisibility(mname); ok && !vm.methodAccessible(ci, vis) {
+				if !vm.callableMethodVisible(ci, mname, vm.ctx.self) {
 					return false, nm
 				}
 				return true, nm
@@ -1981,12 +2036,12 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 						return false, nm
 					}
 				}
-				if vis, ok := ci.MethodVisibility(mname); ok && !vm.methodAccessible(ci, vis) {
+				if !vm.callableMethodVisible(ci, mname, vm.ctx.self) {
 					return false, nm
 				}
 				return true, nm
 			}
-			if ci.lookupMethod("__callStatic") != nil {
+			if _, m := vm.staticMagicFallback(ci); m != "" {
 				return true, nm
 			}
 			return false, nm

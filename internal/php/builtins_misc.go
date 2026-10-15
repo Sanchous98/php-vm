@@ -1183,17 +1183,20 @@ func forwardStaticCallArrayFn(ctx *vm.Context) vm.Value {
 // methodAccessReason возвращает причину недоступности непубличного метода
 // ("" если доступен) с учётом текущего scope — как zend_is_callable.
 func methodAccessReason(ctx *vm.Context, ci vm.ClassInfo, mname string) string {
-	vis, ok := ci.MethodVisibility(mname)
+	decl, vis, ok := ci.MethodDecl(mname)
 	if !ok || vis == vm.Public {
 		return ""
+	}
+	if decl == nil {
+		decl = ci
 	}
 	scope := ctx.Self()
 	if scope != nil {
 		if vis == vm.Private {
-			if scope == ci {
+			if scope == decl {
 				return ""
 			}
-		} else if scope == ci || scope.IsA(ci) || ci.IsA(scope) {
+		} else if scope == decl || scope.IsA(decl) || decl.IsA(scope) {
 			return ""
 		}
 	}
@@ -3110,6 +3113,13 @@ func iniSetFn(ctx *vm.Context) vm.Value {
 		ctx.VM().Warning("ini_set(): open_basedir restriction in effect. File(" + s +
 			") is not within the allowed path(s): (" + openBasedirRaw() + ")")
 		return vm.Bool(false)
+	}
+	if name == "arg_separator.input" || name == "arg_separator.output" {
+		// Обе директивы используют OnUpdateStringUnempty: пустое значение
+		// отвергается (ini_set возвращает false, значение не меняется).
+		if s == "" {
+			return vm.Bool(false)
+		}
 	}
 	if name == "auto_detect_line_endings" {
 		ctx.VM().Deprecated("auto_detect_line_endings is deprecated")

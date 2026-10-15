@@ -350,12 +350,44 @@ func (vm *VM) propGetDeclaredFast(ci ClassInfo, recv Slot, pname string, dst *Sl
 	return execResult{}, true
 }
 
+// propGetForIncDec — общий вход баз ++/-- на свойстве: не-объект даёт Error
+// "Attempt to increment/decrement property ..." (Zend FETCH_OBJ_INC/DEC не
+// печатает warning чтения), иначе — обычный OpPropGet.
+func (vm *VM) propGetForIncDec(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, name string) execResult {
+	recv := deref(regs[in.B])
+	if vm.classInfo(recv) == nil {
+		err := NewThrowable("Error", fmt.Sprintf("Attempt to increment/decrement property %q on %s", name, valueTypeName(vm, recv)))
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
+	return vm.opPropGet(regs, consts, chunk, in)
+}
+
+func (vm *VM) opPropGetIncDec(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	return vm.propGetForIncDec(regs, consts, chunk, in, consts[in.C].StringVal())
+}
+
+func (vm *VM) opPropGetIncDecDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	recv := deref(regs[in.B])
+	if vm.classInfo(recv) == nil {
+		name := deref(regs[in.C]).ToString()
+		err := NewThrowable("Error", fmt.Sprintf("Attempt to increment/decrement property %q on %s", name, valueTypeName(vm, recv)))
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
+	return vm.opPropGetDyn(regs, consts, chunk, in)
+}
+
 func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.B])
 	pname := consts[in.C].StringVal()
 	ci := vm.classInfo(recv)
 	if ci == nil {
-		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, operandTypeName(recv)))
+		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -507,7 +539,7 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	}
 	ci := vm.classInfo(recv)
 	if ci == nil {
-		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, operandTypeName(recv)))
+		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -983,6 +1015,10 @@ func (vm *VM) propSetOverloadCommon(regs []Slot, consts []Slot, chunk *Chunk, in
 			name = deref(regs[in.C]).ToString()
 		}
 		if overloaded, byRef := vm.propRefOverloaded(ci, obj, name, true); overloaded && !byRef {
+			// Запись-обратно в overloaded-свойство не выполняется; снимаем
+			// оставленную чтением запись из стека wbSkip, чтобы её не
+			// «съел» посторонний поход в то же свойство (bug40833).
+			vm.dropWbSkip(vm.objectOf(obj), name)
 			if v := deref(regs[in.B]); v.typ != ObjectType {
 				vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + name + " has no effect")
 			}
@@ -1076,32 +1112,37 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	// Запись-обратно после дим-записи в перегруженное/недоступное свойство:
 	// Zend не пишет временную копию (модификация без эффекта); для by-ref
 	// __get значение ложится прямо в объявленное свойство (обход проверки
-	// видимости — реальная ячейка уже выдана).
-	if n := len(vm.wbSkip); n > 0 {
-		if e := vm.wbSkip[n-1]; e.ob == vm.objectOf(o) && e.name == pname {
-			vm.wbSkip = vm.wbSkip[:n-1]
-			if !e.real {
-				// Zend печатает notice в точке записи (вне внутреннего
-				// подавления компилятора, но под `@` пользователя).
-				vm.Notice("Indirect modification of overloaded property " + ci.Name() + "::$" + pname + " has no effect")
-			}
-			if e.real {
-				pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, pname)
-				if declared {
-					key := vm.propKey(pd, decl, pname)
-					val, verr := vm.coercePropValue(pd, decl, pname, deref(regs[in.B]), vm.chunk != nil && vm.chunk.Strict, false)
-					if verr != nil {
-						if !vm.handleThrow(chunk, verr) {
-							return execResult{err: verr}
-						}
-						return execResult{next: true}
-					}
-					vm.setProp(o, key, val)
-				} else {
-					vm.setProp(o, pname, deref(regs[in.B]))
+	// видимости — реальная ячейка уже выдана). Стек wbSkip потребляется
+	// только настоящим writeback-опкодом: обычный OpPropSet в то же свойство
+	// (например, из чужого __set) не должен «съедать» запись (bug40833).
+	if in.Op == OpPropSetOverload || in.Op == OpPropSetOverloadDyn {
+		if n := len(vm.wbSkip); n > 0 {
+			if e := vm.wbSkip[n-1]; e.ob == vm.objectOf(o) && e.name == pname {
+				vm.wbSkip = vm.wbSkip[:n-1]
+				if !e.real && deref(regs[in.B]).typ != ObjectType {
+					// Zend печатает notice в точке записи. Для значения-объекта
+					// запись-обратно не нужна и notice не печатается: мутация
+					// объекта видна напрямую (bug40833).
+					vm.Notice("Indirect modification of overloaded property " + ci.Name() + "::$" + pname + " has no effect")
 				}
+				if e.real {
+					pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, pname)
+					if declared {
+						key := vm.propKey(pd, decl, pname)
+						val, verr := vm.coercePropValue(pd, decl, pname, deref(regs[in.B]), vm.chunk != nil && vm.chunk.Strict, false)
+						if verr != nil {
+							if !vm.handleThrow(chunk, verr) {
+								return execResult{err: verr}
+							}
+							return execResult{next: true}
+						}
+						vm.setProp(o, key, val)
+					} else {
+						vm.setProp(o, pname, deref(regs[in.B]))
+					}
+				}
+				return execResult{}
 			}
-			return execResult{}
 		}
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное нетипизированное
@@ -2140,6 +2181,11 @@ func (vm *VM) opMethodCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	var args []Slot
 	if argc > 0 && int(in.B)+1+argc <= len(regs) {
 		args = regs[int(in.B)+1 : int(in.B)+1+argc]
+	}
+	// Статический метод, вызванный как $obj->m(): $this внутри недоступен
+	// (Zend передаёт NULL this, сохраняя scope класса) — bug27304.
+	if m.IsStatic {
+		recv = MakeNull()
 	}
 	res, err := vm.invokeMethod(m, recv, ci, args)
 	if err != nil {

@@ -74,6 +74,23 @@ func (c *runtimeClass) HasMethod(name string) bool {
 // MethodVisibility возвращает видимость метода name (с учётом наследования).
 // Имена методов регистронезависимы.
 func (c *runtimeClass) MethodVisibility(name string) (Visibility, bool) {
+	return c.methodVisibilityScan(name)
+}
+
+// MethodDecl возвращает класс объявления и видимость метода name. Нужен
+// проверкам доступа из builtins: private-метод родителя не должен считаться
+// доступным в наследнике (bug29210).
+func (c *runtimeClass) MethodDecl(name string) (ClassInfo, Visibility, bool) {
+	if m, decl, vis := c.methodInfo(name); decl != nil && m != nil {
+		return decl, vis, true
+	}
+	if vis, ok := c.MethodVisibility(name); ok {
+		return c, vis, true
+	}
+	return nil, Public, false
+}
+
+func (c *runtimeClass) methodVisibilityScan(name string) (Visibility, bool) {
 	ln := strings.ToLower(name)
 	for k := c; k != nil; k = k.parent {
 		if _, ok := k.methods[name]; ok {

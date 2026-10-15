@@ -170,6 +170,23 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 // обязательно записывается обратно в тот же элемент (INDEX_SET_OVERLOAD),
 // поэтому второй владелец не появляется, а shareSlot заставлял бы копировать
 // вложенный массив на каждой записи.
+// opIndexUnsetRaw — промежуточное звено цепочки unset($a[k1][k2][...]):// семантика OpIndexRaw, но контейнер-строка с ключом, не приводимым к
+// допустимому string-offset (нечисловая строка, массив и т.п.), даёт
+// Error "Cannot unset string offsets" (Zend BP_VAR_UNSET для промежуточного
+// звена), а не TypeError "Cannot access offset of type ... on string".
+func (vm *VM) opIndexUnsetRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	if src := deref(regs[in.B]); src.typ == StringType {
+		if _, ok, _ := vm.stringOffsetKey(regs[in.C]); !ok {
+			err := NewThrowable("Error", "Cannot unset string offsets")
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+	}
+	return vm.opIndexRaw(regs, consts, chunk, in)
+}
+
 func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	src := deref(regs[in.B])
 	if src.typ == ObjectType {

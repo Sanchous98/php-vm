@@ -197,6 +197,11 @@ func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if argc > 0 && int(in.B)+1+argc <= len(regs) {
 		args = regs[int(in.B)+1 : int(in.B)+1+argc]
 	}
+	// Статический метод, вызванный как $obj->m(): $this внутри недоступен
+	// (Zend передаёт NULL this, сохраняя scope класса) — bug27304.
+	if m.IsStatic {
+		recv = MakeNull()
+	}
 	res, err := vm.invokeMethod(m, recv, ci, args)
 	if err != nil {
 		if !vm.handleThrow(chunk, err) {

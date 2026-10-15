@@ -495,10 +495,21 @@ const (
 	OpPropSetOverload // PROP_SET_OVERLOAD
 	// OpPropSetOverloadDyn — то же для динамического имени (C — регистр-имя).
 	OpPropSetOverloadDyn // PROP_SET_OVERLOAD_DYN
+	// OpIndexUnsetRaw — промежуточное звено цепочки unset ($a[k1][k2][...]):
+	// как OpIndexRaw, но контейнер-строка с нечисловым строковым ключом даёт
+	// Error "Cannot unset string offsets" (Zend BP_VAR_UNSET при
+	// разыменовании промежуточного звена), а не TypeError.
+	OpIndexUnsetRaw // INDEX_UNSET_RAW
+	// OpPropGetIncDec — база ++/-- на свойстве: как OpPropGet, но не-объект
+	// даёт Error "Attempt to increment/decrement property ..." (без warning'а
+	// предварительного чтения, как Zend FETCH_OBJ_INC/DEC).
+	OpPropGetIncDec // PROP_GET_INC_DEC
+	// OpPropGetIncDecDyn — то же для динамического имени (C — регистр-имя).
+	OpPropGetIncDecDyn // PROP_GET_INC_DEC_DYN
 )
 
 // numOpcodes — число опкодов (для таблиц, индексируемых опкодом).
-const numOpcodes = int(OpPropSetOverloadDyn) + 1
+const numOpcodes = int(OpPropGetIncDecDyn) + 1
 
 // IsUnconditionalTerminator сообщает, что после инструкции исполнение не
 // продолжается со следующей позиции (нет fallthrough): компилятор не ставит

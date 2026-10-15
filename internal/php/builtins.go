@@ -610,7 +610,7 @@ func builtins() []*vm.Function {
 		}),
 		vm.Register("restore_error_handler", func(ctx *vm.Context) vm.Value {
 			ctx.VM().SetErrorHandler(vm.MakeNull())
-			return vm.MakeNull()
+			return vm.MakeBool(true)
 		}),
 		vm.Register("set_exception_handler", func(ctx *vm.Context) vm.Value {
 			cb := vm.MakeNull()

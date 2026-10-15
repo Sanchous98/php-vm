@@ -645,6 +645,12 @@ func constLookupTail(ctx *vm.Context, name, reportName string) vm.Value {
 		if ok {
 			return v
 		}
+		// Как Zend: class-константа с ненайденным именем — Error без кавычек
+		// ("Undefined constant A::B1", bug51791).
+		ctx.Throw(vm.NewThrowable("Error", "Undefined constant "+name))
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
 		return vm.MakeNull()
 	}
 	if cv, ok := constValue(name); ok {

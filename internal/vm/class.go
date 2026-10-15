@@ -129,6 +129,10 @@ type ClassInfo interface {
 	ParentName() string
 	HasMethod(name string) bool
 	MethodVisibility(name string) (Visibility, bool)
+	// MethodDecl возвращает класс объявления и видимость метода name (с учётом
+	// наследования) — для проверок доступа из builtins: private-метод родителя
+	// не должен считаться доступным в наследнике (bug29210).
+	MethodDecl(name string) (ClassInfo, Visibility, bool)
 	MethodNames(caller ClassInfo) []string
 	AllMethodNames() []string
 	ConstNames() []string

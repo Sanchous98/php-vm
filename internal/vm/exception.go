@@ -474,7 +474,7 @@ func (vm *VM) BailOut() { panic(fatalSignal{}) }
 // объекты, реализующие Throwable.
 func (vm *VM) makeThrowable(v Slot) error {
 	if v.typ != ObjectType {
-		return NewThrowable("TypeError", "Can only throw objects")
+		return NewThrowable("Error", "Can only throw objects")
 	}
 	ci := vm.classInfo(v)
 	throwable := vm.findClass("Throwable")

@@ -356,9 +356,17 @@ func (p *iniParser) scanVarRef(s string, i int) (string, int) {
 	if i < len(s) && s[i] == '}' {
 		i++
 	} else if hasFb {
-		// Fallback прочитан, а '}' нет: Zend сообщает ожидание '}' (а не
-		// TC_FALLBACK/TC_VARNAME) — oss_fuzz_428983568.
-		p.fail("syntax error, unexpected end of file, expecting '}' in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
+		// Fallback прочитан, а '}' нет. Сообщение зависит от того, где
+		// остановился скан fallback (Zend-лексер ini):
+		//   * EOF (нет ни '}', ни перевода строки) — «unexpected TC_FALLBACK,
+		//     expecting TC_VARNAME» (parse_ini_string_error: `a=${b:-a`);
+		//   * перевод строки — «unexpected end of file, expecting '}'»
+		//     (oss_fuzz_428983568: `[${zz:-x\n`).
+		if i >= len(s) {
+			p.fail("syntax error, unexpected TC_FALLBACK, expecting TC_VARNAME in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
+		} else {
+			p.fail("syntax error, unexpected end of file, expecting '}' in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
+		}
 	} else {
 		p.fail("syntax error, unexpected end of file, expecting TC_FALLBACK or '}' in " + p.file + " on line " + strconv.Itoa(p.line) + "\n")
 	}

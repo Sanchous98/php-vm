@@ -245,6 +245,16 @@ func (c *Chunk) SetLocalVars(m map[string]int) { c.localVars = m }
 // SetTempLo фиксирует первый временный регистр чанка.
 func (c *Chunk) SetTempLo(lo uint8) { c.tempLo = lo }
 
+// resetIC сбрасывает inline-кэши чанка. Дескрипторы IC (в т.ч. индексы классов
+// и указатели на propDecl) действительны только в рамках запуска одной VM:
+// классы, созданные в рантайме, занимают индексы в порядке появления, а чанк
+// может переиспользоваться между запусками (бенчмарк/повторный Run).
+func (c *Chunk) resetIC() {
+	for i := range c.ic {
+		c.ic[i] = icEntry{}
+	}
+}
+
 // buildSweepMask предвычисляет маску keep для dropStmtTemps (см. sweepKeep).
 // Вызывается после финализации varRegs/tempLo (конец AllocateRegisters).
 func (c *Chunk) buildSweepMask() {
@@ -377,20 +387,21 @@ type icEntry struct {
 	state uint8
 
 	// --- IC объявленного свойства (OpPropGet/Set/…, отдельное пространство) ---
-	propState   uint8     // icEmpty / icMono / icDisabled
-	propClass   ClassInfo // класс объекта — guard
-	propScope   ClassInfo // область видимости — guard (vm.ctx.self)
-	propName    string    // имя свойства — guard (для Dyn-опкодов)
-	propNameC   int32     // индекс константы имени (-1 — имя из регистра)
-	propPd      *propDecl // метаданные (nil — не объявлено)
-	propDecl    ClassInfo // класс объявления
-	propKey     string    // ключ хранения (манглированный для private)
-	propIdx     int       // индекс слота (-1 — не слот)
-	propOk      bool      // свойство объявлено
-	propAccess  bool      // свойство доступно из propScope (кэш propAccessErr)
-	propFastGet bool      // готовый флаг: объявлено, в слоте, читаемо (public/доступ)
-	propFastSet bool      // готовый флаг: читаемо + !readonly + !hasType (для прямой записи)
-	propMiss    uint8
+	propState    uint8     // icEmpty / icMono / icDisabled
+	propClass    ClassInfo // класс объекта — guard
+	propScope    ClassInfo // область видимости — guard (vm.ctx.self)
+	propName     string    // имя свойства — guard (для Dyn-опкодов)
+	propNameC    int32     // индекс константы имени (-1 — имя из регистра)
+	propPd       *propDecl // метаданные (nil — не объявлено)
+	propDecl     ClassInfo // класс объявления
+	propKey      string    // ключ хранения (манглированный для private)
+	propIdx      int       // индекс слота (-1 — не слот)
+	propOk       bool      // свойство объявлено
+	propAccess   bool      // свойство доступно из propScope (кэш propAccessErr)
+	propFastGet  bool      // готовый флаг: объявлено, в слоте, читаемо (public/доступ)
+	propFastSet  bool      // готовый флаг: читаемо + !readonly + !hasType (для прямой записи)
+	propClassIdx int32     // индекс propClass в vm.classes (guard без интерфейсного сравнения)
+	propMiss     uint8
 }
 
 // TryCatch описывает одну catch-ветку try-региона.

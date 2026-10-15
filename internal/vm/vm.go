@@ -654,10 +654,12 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	// материализуем константы всех функций один раз
 	chunk.materialize()
 	chunk.checkConstKinds()
+	chunk.resetIC()
 	for _, f := range funcs {
 		if cf, ok := f.Executable.(*CompiledFunction); ok {
 			cf.chunk.materialize()
 			cf.chunk.checkConstKinds()
+			cf.chunk.resetIC()
 		}
 	}
 	for _, c := range classes {
@@ -5992,19 +5994,17 @@ func (vm *VM) exec(chunk *Chunk) error {
 			// Ультра-быстрый путь в самом диспетчере (IC прогрет): пропускает
 			// вызов обработчика и его ранние guard'ы. Медленный путь — ниже.
 			if recv := deref(regs[in.B]); recv.typ == ObjectType {
-				if ci := vm.classInfo(recv); ci != nil {
-					if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastGet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClass == ci {
-						ob := (*Object)(recv.ptr)
-						if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
-							if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
-								old := regs[in.A]
-								regs[in.A] = s
-								if trackedType(old.typ) || trackedType(s.typ) {
-									vm.wRegSlow(int(in.A), old)
-								}
-								shareSlot(s)
-								break
+				if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastGet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(recv.num) {
+					ob := (*Object)(recv.ptr)
+					if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
+						if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
+							old := regs[in.A]
+							regs[in.A] = s
+							if trackedType(old.typ) || trackedType(s.typ) {
+								vm.wRegSlow(int(in.A), old)
 							}
+							shareSlot(s)
+							break
 						}
 					}
 				}
@@ -6109,23 +6109,21 @@ func (vm *VM) exec(chunk *Chunk) error {
 			// Ультра-быстрый путь в диспетчере (IC прогрет): публичное
 			// нетипизированное не-readonly свойство в слоте.
 			if d := deref(regs[in.A]); d.typ == ObjectType {
-				if ci := vm.classInfo(d); ci != nil && !ci.IsEnum() {
-					if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastSet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClass == ci {
-						ob := (*Object)(d.ptr)
-						if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
-							cur := ob.slots[ic.propIdx]
-							if cur.typ != RefType && cur.typ != slotUninit {
-								val := deref(regs[in.B])
-								ob.slots[ic.propIdx] = val
-								vm.noteDropped(cur)
-								vm.noteStored(val)
-								old := regs[in.B]
-								regs[in.B] = val
-								if trackedType(old.typ) || trackedType(val.typ) {
-									vm.wRegSlow(int(in.B), old)
-								}
-								break
+				if ic := vm.icAt(chunk); ic.propState == icMono && ic.propFastSet && ic.propNameC == in.C && ic.propScope == vm.ctx.self && ic.propClassIdx == int32(d.num) {
+					ob := (*Object)(d.ptr)
+					if ob != nil && !ob.incomplete && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
+						cur := ob.slots[ic.propIdx]
+						if cur.typ != RefType && cur.typ != slotUninit {
+							val := deref(regs[in.B])
+							ob.slots[ic.propIdx] = val
+							vm.noteDropped(cur)
+							vm.noteStored(val)
+							old := regs[in.B]
+							regs[in.B] = val
+							if trackedType(old.typ) || trackedType(val.typ) {
+								vm.wRegSlow(int(in.B), old)
 							}
+							break
 						}
 					}
 				}
@@ -8633,7 +8631,8 @@ func (vm *VM) icProp(ci ClassInfo, name string, nameC int32, chunk *Chunk) (*pro
 			ic.propAccess = false
 		}
 		ic.propFastGet = ok && idx >= 0 && (ic.propAccess || (pd != nil && pd.vis == Public))
-		ic.propFastSet = ic.propFastGet && pd != nil && !pd.readonly && !pd.hasType
+		ic.propFastSet = ic.propFastGet && pd != nil && !pd.readonly && !pd.hasType && !ci.IsEnum()
+		ic.propClassIdx = int32(vm.classIndex(ci))
 	}
 	return pd, decl, key, idx, ok
 }

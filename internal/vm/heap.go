@@ -766,6 +766,17 @@ func (vm *VM) DisplayClassNameOf(ci ClassInfo) string {
 	return classDisplayName(ci)
 }
 
+// AnonDisplayNameOf — имя класса в формате Zend для get_class()/::class:
+// у анонимных классов к краткому имени добавляется суффикс
+// "\x00<file>:<line>$<N>" (class@anonymous\0/path/file.php:3$0).
+func (vm *VM) AnonDisplayNameOf(ci ClassInfo) string {
+	name := classDisplayName(ci)
+	if suffix := vm.AnonClassSuffix(ci); suffix != "" {
+		return name + suffix
+	}
+	return name
+}
+
 // getProp/setProp/unsetProp — безопасный доступ к свойствам объекта.
 func (vm *VM) getProp(s Slot, name string) (Value, bool) {
 	if o := vm.objectOf(s); o != nil {

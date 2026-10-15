@@ -153,7 +153,7 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	}
 	// Массив-вызываемое ([obj, method] / [class, method]).
 	if d := deref(regs[base]); d.typ == ArrayType {
-		res, err := vm.callArrayCallable(d, args)
+		res, err := vm.callArrayCallable(d, args, true)
 		if err != nil {
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
@@ -198,7 +198,7 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	name := regs[base].ToString()
 	// "Class::method" строкой — статический вызов метода.
 	if i := strings.Index(name, "::"); i >= 0 {
-		res, err := vm.callStaticStringCallable(name[:i], name[i+2:], args)
+		res, err := vm.callStaticStringCallable(name[:i], name[i+2:], args, true)
 		if err != nil {
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
@@ -251,7 +251,7 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		// по строке). Резолвим общим путём строковых callable: он умеет
 		// автозагрузку, __callStatic и снятие ведущего "\".
 		if strings.IndexByte(name, ':') >= 0 {
-			res, cerr := vm.callStringCallable(name, args)
+			res, cerr := vm.callStringCallable(name, args, true)
 			if cerr != nil {
 				if !vm.handleThrow(chunk, cerr) {
 					return execResult{err: cerr}

@@ -765,6 +765,18 @@ func (vm *VM) catchMatches(ci ClassInfo, classes []string) bool {
 	return false
 }
 
+// takePendingStringableErr забирает отложенное исключение, поднятое
+// приведением Stringable-объекта к строке (__toString): оно приоритетнее
+// диагностики типа в точке приведения (gh14969). Забирая его, мы не оставляем
+// «залипшего» исключения в контексте.
+func (vm *VM) takePendingStringableErr() *Throwable {
+	if t := vm.ctx.thrown; t != nil {
+		vm.ctx.thrown = nil
+		return t
+	}
+	return nil
+}
+
 // popTriesForFrame убирает обработчики, принадлежащие кадру fp (и глубже).
 // Вызывается при выходе из функции, чтобы не оставлять «висящие» try.
 func (vm *VM) popTriesForFrame(fp int) {

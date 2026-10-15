@@ -1497,6 +1497,18 @@ func (vm *VM) Run() (err error) {
 			panic(r)
 		}
 	}()
+	// Исключение из callback-буфера при сбросе на завершении запроса: Zend
+	// отдаёт его обработчику непойманных исключений (gh10695_6).
+	defer func() {
+		for i := 0; i < 3; i++ {
+			t := vm.ctx.takeThrown()
+			if t == nil {
+				return
+			}
+			vm.reportUncaught(t)
+			vm.flushOutputBuffers()
+		}
+	}()
 	err = vm.exec(vm.chunk)
 	// Нативные ошибки (деление на ноль и т.п.) нормализуем к PHP-исключению,
 	// чтобы вызывающий код видел Throwable (формат вывода — Uncaught ...).
@@ -2442,20 +2454,35 @@ func (vm *VM) reportUncaught(err error) {
 	if !ok {
 		return
 	}
-	excHandler := vm.currentExcHandler()
-	if !th.Fatal && !vm.inExcHandler && deref(excHandler).typ != NullType {
-		obj := vm.throwableObject(th, vm.throwableClass(th))
-		if obj.typ == ObjectType {
-			vm.inExcHandler = true
-			_, herr := vm.CallCallable(&vm.ctx, excHandler, []Slot{obj})
-			vm.inExcHandler = false
-			if herr == nil {
-				return
-			}
-			if hth, ok2 := asThrowable(herr); ok2 {
-				th = hth
-			}
+	// Обработчик может зарегистрировать новый обработчик и выбросить своё
+	// исключение — оно уходит НОВОМУ обработчику (gh10695_5); тот же
+	// обработчик дважды не вызывается (gh10695_4). Цикл ограничен; текущий
+	// обработчик — верх стека (z1a: excHandlers).
+	var ranHandler Slot
+	for i := 0; i < 100 && !th.Fatal && !vm.inExcHandler; i++ {
+		excHandler := vm.currentExcHandler()
+		if deref(excHandler).typ == NullType {
+			break
 		}
+		if ranHandler.typ != NullType && slotCallableEqual(vm, ranHandler, excHandler) {
+			break
+		}
+		obj := vm.throwableObject(th, vm.throwableClass(th))
+		if obj.typ != ObjectType {
+			break
+		}
+		ranHandler = excHandler
+		vm.inExcHandler = true
+		_, herr := vm.CallCallable(&vm.ctx, excHandler, []Slot{obj})
+		vm.inExcHandler = false
+		if herr == nil {
+			return
+		}
+		hth, ok2 := asThrowable(herr)
+		if !ok2 {
+			break
+		}
+		th = hth
 	}
 	// Цепочка previous (исключения деструкторов/finally): Zend печатает
 	// исключения от самого глубокого (первого выброшенного) к текущему,
@@ -2501,6 +2528,10 @@ func (vm *VM) reportUncaught(err error) {
 	class := th.Class
 	if class == "" {
 		class = "Error"
+	}
+	ctxPrefix := ""
+	if th.Context != "" {
+		ctxPrefix = th.Context + ": "
 	}
 	line := vm.curLine
 	if th.LocLine > 0 || th.LocOverridden {
@@ -2550,9 +2581,9 @@ func (vm *VM) reportUncaught(err error) {
 		if html {
 			msg := errHTML(th.Message)
 			if th.DefinedIn {
-				vm.Write("\n<br />\n<b>Fatal error</b>:  Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
+				vm.Write("\n<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
 			} else {
-				vm.Write("\n<br />\n<b>Fatal error</b>:  Uncaught " + class + ": " + msg + " in " + file + ":" + strconv.Itoa(line) + "\n")
+				vm.Write("\n<br />\n<b>Fatal error</b>:  " + ctxPrefix + "Uncaught " + class + ": " + msg + " in " + file + ":" + strconv.Itoa(line) + "\n")
 			}
 			vm.Write("Stack trace:\n")
 			vm.Write(vm.traceString(th.Trace, file, line) + "\n")
@@ -2564,15 +2595,15 @@ func (vm *VM) reportUncaught(err error) {
 			return
 		}
 		if th.DefinedIn {
-			vm.Write("\nFatal error: Uncaught " + class + ": " + th.Message + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
+			vm.Write("\nFatal error: " + ctxPrefix + "Uncaught " + class + ": " + th.Message + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
 		} else {
-			vm.Write("\nFatal error: Uncaught " + class + ": " + th.Message + " in " + file + ":" + strconv.Itoa(line) + "\n")
+			vm.Write("\nFatal error: " + ctxPrefix + "Uncaught " + class + ": " + th.Message + " in " + file + ":" + strconv.Itoa(line) + "\n")
 		}
 	} else {
 		if th.DefinedIn {
-			vm.Write("\nFatal error: Uncaught " + class + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
+			vm.Write("\nFatal error: " + ctxPrefix + "Uncaught " + class + " and defined in " + file + ":" + strconv.Itoa(line) + "\n")
 		} else {
-			vm.Write("\nFatal error: Uncaught " + class + " in " + file + ":" + strconv.Itoa(line) + "\n")
+			vm.Write("\nFatal error: " + ctxPrefix + "Uncaught " + class + " in " + file + ":" + strconv.Itoa(line) + "\n")
 		}
 	}
 	vm.Write("Stack trace:\n")
@@ -3298,6 +3329,21 @@ func (vm *VM) exec(chunk *Chunk) error {
 			if line <= 0 {
 				line = 1
 			}
+			// Явная локация в сообщении ("<msg>\x00<file>\x00<line>"):
+			// нужна там, где Zend печатает фатал вне текущего файла
+			// ("Unknown on line 0", "<file>(N) : eval()'d code").
+			if i := strings.IndexByte(msg, 0); i >= 0 {
+				parts := strings.SplitN(msg, "\x00", 3)
+				msg = parts[0]
+				if len(parts) > 1 && parts[1] != "" {
+					file = parts[1]
+				}
+				if len(parts) > 2 {
+					if n, aerr := strconv.Atoi(parts[2]); aerr == nil {
+						line = n
+					}
+				}
+			}
 			fmt.Fprintf(vm.out, "\nFatal error: %s in %s on line %d\n", msg, file, line)
 			return exitSignal{}
 
@@ -3867,6 +3913,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
 				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение могло поднять исключение при приведении
+					// (__toString в объекте) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
+				}
 			}
 		case OpSpaceship:
 			{
@@ -3875,6 +3929,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				regs[in.A] = wv
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
+				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение могло поднять исключение при приведении
+					// (__toString в объекте) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
 				}
 			}
 		case OpLessK:
@@ -3885,6 +3947,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
 				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение могло поднять исключение при приведении
+					// (__toString в объекте) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
+				}
 			}
 		case OpLessOrEqualK:
 			{
@@ -3893,6 +3963,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				regs[in.A] = wv
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
+				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение могло поднять исключение при приведении
+					// (__toString в объекте) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
 				}
 			}
 		case OpGreaterK:
@@ -3903,6 +3981,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
 				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение могло поднять исключение при приведении
+					// (__toString в объекте) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
+				}
 			}
 		case OpGreaterEqualK:
 			{
@@ -3912,6 +3998,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
 				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение могло поднять исключение при приведении
+					// (__toString в объекте) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
+				}
 			}
 		case OpEqualK:
 			{
@@ -3920,6 +4014,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 				regs[in.A] = wv
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)
+				}
+				if t := vm.ctx.takeThrown(); t != nil {
+					// Сравнение подняло исключение при приведении
+					// (__toString объекта) — раскручиваем его.
+					if !vm.handleThrow(chunk, t) {
+						return t
+					}
+					continue
 				}
 			}
 
@@ -4407,6 +4509,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpLessFloat:
@@ -4437,6 +4547,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
+					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
 					}
 				}
 			}
@@ -4469,6 +4587,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpGreaterFloat:
@@ -4500,6 +4626,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpGreaterEqualFloat:
@@ -4530,6 +4664,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
+					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
 					}
 				}
 			}
@@ -4570,6 +4712,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpLessFloatK:
@@ -4594,6 +4744,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpGreaterIntK:
@@ -4611,6 +4769,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
+					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
 					}
 				}
 			}
@@ -4630,6 +4796,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpEqualIntK:
@@ -4647,6 +4821,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
+					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
 					}
 				}
 			}
@@ -4667,6 +4849,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpLessOrEqualIntImm:
@@ -4684,6 +4874,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
+					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
 					}
 				}
 			}
@@ -4703,6 +4901,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpGreaterEqualIntImm:
@@ -4721,6 +4927,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
 					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
+					}
 				}
 			}
 		case OpEqualIntImm:
@@ -4738,6 +4952,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 					regs[in.A] = wv
 					if trackedType(old.typ) || trackedType(wv.typ) {
 						vm.wRegSlow(int(in.A), old)
+					}
+					if t := vm.ctx.takeThrown(); t != nil {
+						// Сравнение подняло исключение при приведении
+						// (__toString объекта) — раскручиваем его.
+						if !vm.handleThrow(chunk, t) {
+							return t
+						}
+						continue
 					}
 				}
 			}
@@ -6502,9 +6724,36 @@ func (vm *VM) tryToString(s Slot) (string, bool) {
 	}
 	res, err := vm.invokeMethod(m, s, ci, nil)
 	if err != nil {
+		// Исключение из __toString распространяется наружу (Zend): фиксируем
+		// его в VM, чтобы раскрутить в точке сравнения/приведения.
+		if th, ok := err.(*Throwable); ok {
+			vm.ctx.Throw(th)
+		}
 		return "", false
 	}
-	return deref(res).ToString(), true
+	rv := deref(res)
+	if rv.typ != StringType {
+		// Неявный/несовместимый возврат __toString: ошибка должна
+		// распространяться наружу (gh418106144 — сравнение с строкой),
+		// поэтому фиксируем её в VM.
+		if ok, out := vm.coerceReturnMode("string", rv, fnStrict(m)); ok {
+			return out.StringVal(), true
+		}
+		kind := valueTypeName(vm, rv)
+		if vm.retImplicit {
+			kind = "none"
+		}
+		th := vm.returnTypeError(funcDisplayName(m), "string", kind)
+		if m.DefFile != "" {
+			th.LocFile = m.DefFile
+		}
+		if vm.retLine > 0 {
+			th.LocLine = vm.retLine
+		}
+		vm.ctx.Throw(th)
+		return "", false
+	}
+	return rv.StringVal(), true
 }
 
 // coerceReturnMode — coerceReturn с учётом режима strict_types: в строгом
@@ -7604,6 +7853,12 @@ func (vm *VM) callMagicUndefStatic(cls ClassInfo, calledIn ClassInfo, mname stri
 			}
 		}
 	}
+	// Абстрактный __callStatic (интерфейс/абстрактный класс): трамплин для
+	// несуществующего метода сам абстрактен — Zend: "Cannot call abstract
+	// method X::y()" (gh_17718).
+	if cls.hasAbstract("__callStatic") {
+		return Slot{}, true, NewThrowable("Error", "Cannot call abstract method "+cls.Name()+"::"+mname+"()")
+	}
 	return vm.callMagicMethodCalled(cls, called, vm.cur.this, "__callStatic", []Slot{MakeString(mname), argsArray(passed)})
 }
 
@@ -7691,7 +7946,29 @@ func (vm *VM) stringify(s Slot) (string, error) {
 				if err != nil {
 					return "", err
 				}
-				return deref(res).ToString(), nil
+				rv := deref(res)
+				if rv.typ != StringType {
+					// __toString обязан вернуть строку (неявный tentative-тип
+					// Stringable): неявный return без значения даёт "none
+					// returned" (gh418106144), несовместимое значение —
+					// обычную диагностику типа возврата.
+					if ok, out := vm.coerceReturnMode("string", rv, fnStrict(m)); ok {
+						return out.StringVal(), nil
+					}
+					kind := valueTypeName(vm, rv)
+					if vm.retImplicit {
+						kind = "none"
+					}
+					th := vm.returnTypeError(funcDisplayName(m), "string", kind)
+					if m.DefFile != "" {
+						th.LocFile = m.DefFile
+					}
+					if vm.retLine > 0 {
+						th.LocLine = vm.retLine
+					}
+					return "", th
+				}
+				return rv.StringVal(), nil
 			}
 			return "", NewThrowable("Error", "Object of class "+ci.Name()+" could not be converted to string")
 		}

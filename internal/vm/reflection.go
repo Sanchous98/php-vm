@@ -272,6 +272,15 @@ func SetClassDefinition(ci ClassInfo, file string, start, end int) {
 	}
 }
 
+// ClassDefinitionFile возвращает файл объявления класса (для диагностик
+// константных выражений: ошибка указывает на файл объявления, gh7771).
+func ClassDefinitionFile(ci ClassInfo) string {
+	if rc, ok := asRuntimeClass(ci); ok && rc != nil {
+		return rc.defFile
+	}
+	return ""
+}
+
 // SetDefinition задаёт расположение объявления класса.
 func (c *runtimeClass) SetDefinition(file string, start, end int) {
 	c.defFile = file

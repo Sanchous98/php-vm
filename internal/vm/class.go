@@ -293,6 +293,11 @@ type runtimeClass struct {
 	name   string
 	parent *runtimeClass
 
+	// anonSuffix — суффикс Zend-имени анонимного класса
+	// ("\x00<file>:<line>$<N>"), печатается get_class()/reflection после
+	// краткого class@anonymous.
+	anonSuffix string
+
 	methods map[string]*Function
 	ctor    *Function
 	ctorVis Visibility
@@ -660,6 +665,23 @@ func newClassInfo(name string, parent *runtimeClass) *runtimeClass {
 		methods: map[string]*Function{},
 		consts:  map[string]Value{},
 	}
+}
+
+// SetClassAnonSuffix сохраняет суффикс Zend-имени анонимного класса
+// ("\x00<file>:<line>$<N>"): get_class()/reflection печатают его после
+// краткого имени class@anonymous.
+func SetClassAnonSuffix(ci ClassInfo, suffix string) {
+	if rc, ok := ci.(*runtimeClass); ok {
+		rc.anonSuffix = suffix
+	}
+}
+
+// AnonClassSuffix возвращает суффикс Zend-имени анонимного класса.
+func (vm *VM) AnonClassSuffix(ci ClassInfo) string {
+	if rc, ok := ci.(*runtimeClass); ok {
+		return rc.anonSuffix
+	}
+	return ""
 }
 
 // NewClass создаёт дескриптор PHP-класса (данные класса пусты).
@@ -2125,6 +2147,37 @@ func (c *runtimeClass) materializeLazyStatic(name string) *Slot {
 		c.allStatics[name] = s
 	}
 	return s
+}
+
+// MaterializeStaticProp вычисляет отложенное значение статического свойства
+// (Zend делает это при объявлении класса) и возвращает ошибку вычисления.
+func (vm *VM) MaterializeStaticProp(ci ClassInfo, name string) error {
+	rc, ok := asRuntimeClass(ci)
+	if !ok || rc == nil {
+		return nil
+	}
+	th, owner := rc.findLazyStatic(name)
+	if th == nil || owner == nil {
+		return nil
+	}
+	v, err := rc.resolveThunk(th)
+	if err != nil {
+		return err
+	}
+	s := new(Slot)
+	SlotOf(s, v)
+	if owner.staticProps == nil {
+		owner.staticProps = map[string]*Slot{}
+	}
+	owner.staticProps[name] = s
+	delete(owner.lazyStatics, name)
+	if owner.allStatics != nil {
+		owner.allStatics[name] = s
+	}
+	if rc.allStatics != nil {
+		rc.allStatics[name] = s
+	}
+	return nil
 }
 
 // resolveThunk вычисляет ленивое выражение через VM класса.

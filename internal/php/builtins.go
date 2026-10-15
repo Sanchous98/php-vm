@@ -109,6 +109,9 @@ func builtins() []*vm.Function {
 			if o == nil {
 				return vm.Bool(false)
 			}
+			if ci := o.Class(); ci != nil {
+				return vm.Str(ctx.VM().AnonDisplayNameOf(ci))
+			}
 			return vm.Str(o.ClassName())
 		}),
 		vm.Register("get_class_methods", getClassMethodsFn),

@@ -60,6 +60,11 @@ type Chunk struct {
 	// emitLine — текущая строка эмиссии; Emit записывает её в lines. Компилятор
 	// выставляет через SetLine вместо эмиссии служебного опкода.
 	emitLine int32
+	// staticNames/staticKeys/staticDefaults — объявленные статические переменные
+	// функции (см. SetStatics).
+	staticNames    []string
+	staticKeys     []string
+	staticDefaults []Slot
 	// strictFlags — параллельно code: режим strict_types в точке эмиссии
 	// инструкции. Инлайненные include/eval смешивают в одном чанке код из
 	// файлов с разным strict_types, поэтому вызов наследует режим файла, в
@@ -417,6 +422,11 @@ func (c *Chunk) SetMayTrack() { c.mayTrack = true }
 // SetConstExpr помечает чанк как константное выражение (см. constExpr).
 func (c *Chunk) SetConstExpr() { c.constExpr = true }
 
+// IsConstExpr сообщает, что чанк — вычисление константного выражения
+// («[constant expression]»): диагностики внутри указывают на исходник
+// объявления, а не на место обращения (gh7771).
+func (c *Chunk) IsConstExpr() bool { return c != nil && c.constExpr }
+
 // opMayTrack сообщает, что опкод может поместить в регистр учитываемое
 // значение. Белый список — только операции, чей результат всегда скаляр
 // (при скалярных операндах, что гарантируется индукцией: см. mayTrack).
@@ -461,8 +471,22 @@ func (c *Chunk) SetLine(line int) {
 	}
 }
 
+// EmitLine возвращает строку, которая будет записана следующим инструкциям.
+func (c *Chunk) EmitLine() int { return int(c.emitLine) }
+
 // SetEmitStrict задаёт режим strict_types для последующих Emit.
 func (c *Chunk) SetEmitStrict(v bool) { c.emitStrict = v }
+
+// SetStatics сохраняет объявленные статические переменные функции (имена,
+// ключи ячеек в globals и значения по умолчанию) — для var_dump/reflection.
+func (c *Chunk) SetStatics(names, keys []string, defaults []Slot) {
+	c.staticNames, c.staticKeys, c.staticDefaults = names, keys, defaults
+}
+
+// Statics возвращает объявленные статические переменные функции.
+func (c *Chunk) Statics() ([]string, []string, []Slot) {
+	return c.staticNames, c.staticKeys, c.staticDefaults
+}
 
 // StrictAt возвращает режим strict_types инструкции pc. Если сайд-таблица
 // отсутствует (вручную собранные чанки в тестах), возвращается режим чанка.

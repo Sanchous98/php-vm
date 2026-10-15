@@ -88,6 +88,14 @@ type Function struct {
 	Attrs []AttributeInfo
 	// ParamAttrs[idx] — атрибуты параметра idx (для ReflectionParameter).
 	ParamAttrs [][]AttributeInfo
+	// StaticNames/StaticKeys — объявленные статические переменные функции
+	// (имена без `$`) и ключи их ячеек в таблице globals. Нужны для
+	// var_dump/ReflectionFunction::getStaticVariables (gh8083).
+	StaticNames []string
+	StaticKeys  []string
+	// StaticDefaults — значения статических переменных по умолчанию (Zend
+	// хранит их в static_variables и печатает var_dump замыкания).
+	StaticDefaults []Slot
 }
 
 // HasParamCoercion сообщает, что хотя бы у одного параметра объявлен тип
@@ -257,4 +265,12 @@ func (f *NativeFunction) Call(vm *VM, ctx *Context, args []Slot) (Slot, error) {
 // NewCompiledFunction создаёт байткод-функцию из чанка (для компилятора).
 func NewCompiledFunction(chunk *Chunk) *CompiledFunction {
 	return &CompiledFunction{chunk: chunk}
+}
+
+// Statics возвращает объявленные статические переменные тела функции.
+func (f *CompiledFunction) Statics() ([]string, []string, []Slot) {
+	if f == nil || f.chunk == nil {
+		return nil, nil, nil
+	}
+	return f.chunk.Statics()
 }

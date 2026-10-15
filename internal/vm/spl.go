@@ -149,6 +149,11 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	simpleXml := RegisterClass[simpleXmlData]("SimpleXMLElement", nil)
 	objStorage := RegisterClass[splObjectStorageData]("SplObjectStorage", nil)
 	weakMap := RegisterClass[weakMapData]("WeakMap", nil)
+	weakMapIter := RegisterClass[weakMapIterData]("InternalIterator", nil)
+	weakMapIter.SetNoDynamicProps()
+	weakMapIter.SetFinal()
+	// Zend не показывает InternalIterator в get_declared_classes().
+	HideClass(weakMapIter)
 	weakMap.SetNoDynamicProps()
 	weakMap.SetNoAppend()
 	weakMap.SetNotSerializable()
@@ -229,7 +234,9 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	registerSplObjectStorageMembers(objStorage)
 	registerSplObjectStorageSerialize(objStorage)
 	registerSplFixedArrayMembers(fixedArray)
-	registerWeakMapMembers(weakMap)
+	registerWeakMapMembers(weakMap, weakMapIter)
+	registerWeakMapIteratorMembers(weakMapIter)
+	weakMapIter.Implements(iterator)
 	registerWeakReferenceMembers(weakRef)
 
 	// Порядок: сначала интерфейс, затем классы.
@@ -238,7 +245,7 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	observer := NewInterface("SplObserver", nil)
 	subject := NewInterface("SplSubject", nil)
 
-	return []ClassInfo{seekable, arrayObject, arrayIterator, recArrayIterator, recIteratorIterator, simpleXml, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
+	return []ClassInfo{seekable, arrayObject, arrayIterator, recArrayIterator, recIteratorIterator, simpleXml, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakMapIter, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
 }
 
 // filterIterData — состояние FilterIterator/CallbackFilterIterator:
@@ -1837,7 +1844,7 @@ func (vm *VM) WeakMapDumpEntries(o *Object) ([]DumpEntry, bool) {
 	return out, true
 }
 
-func registerWeakMapMembers(ci *runtimeClass) {
+func registerWeakMapMembers(ci *runtimeClass, iterClass *runtimeClass) {
 	ci.Method("count", &Function{Name: "count", NumArgs: 0, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
 			ctx.vm.ArmHandles()
@@ -1954,14 +1961,130 @@ func registerWeakMapMembers(ci *runtimeClass) {
 	ci.Method("getIterator", &Function{Name: "getIterator", NumArgs: 0, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
 			ctx.vm.ArmHandles()
-			d := ctx.This[weakMapData]()
-			arr := NewArray()
-			if d != nil {
-				for _, e := range d.entries {
-					_, _ = arr.Append(e.obj)
+			itClass := iterClass
+			if itClass == nil {
+				return MakeNull(), nil
+			}
+			d := &weakMapIterData{}
+			d.mapSlot = ctx.ThisSlot()
+			d.mapObj = ctx.vm.objectOf(d.mapSlot)
+			if m := d.mapObj; m != nil {
+				if md := (*weakMapData)(unsafe.Pointer(m)); md != nil {
+					for _, e := range md.entries {
+						d.keys = append(d.keys, e.obj)
+					}
 				}
 			}
-			return MakeArray(arr), nil
+			return nativeObject(ctx.vm, itClass, d), nil
+		},
+	}})
+}
+
+// --- WeakMapIterator ---
+
+// weakMapIterData — данные итератора WeakMap::getIterator(): снимок ключей
+// (Zend: WeakMapIterator обходит снимок и пропускает уничтоженные ключи).
+type weakMapIterData struct {
+	Object
+	mapSlot Slot
+	mapObj  *Object
+	keys    []Slot
+	pos     int
+}
+
+// vmObject возвращает объект-карту итератора.
+func (d *weakMapIterData) vmObject() *Object { return d.mapObj }
+
+// registerWeakMapIteratorMembers объявляет методы итератора WeakMap.
+func registerWeakMapIteratorMembers(ci *runtimeClass) {
+	rewind := func(d *weakMapIterData) {
+		d.keys = d.keys[:0]
+		d.pos = 0
+		if d.mapSlot.typ != ObjectType {
+			return
+		}
+		m := d.vmObject()
+		if m == nil {
+			return
+		}
+		md := (*weakMapData)(unsafe.Pointer(m))
+		if md == nil {
+			return
+		}
+		for _, e := range md.entries {
+			d.keys = append(d.keys, e.obj)
+		}
+	}
+	ci.Method("rewind", &Function{Name: "rewind", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			ctx.vm.ArmHandles()
+			if d := ctx.This[weakMapIterData](); d != nil {
+				rewind(d)
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("valid", &Function{Name: "valid", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			ctx.vm.ArmHandles()
+			d := ctx.This[weakMapIterData]()
+			if d == nil {
+				return MakeBool(false), nil
+			}
+			for d.pos < len(d.keys) {
+				if k := deref(d.keys[d.pos]); k.typ == ObjectType && ctx.vm.classInfo(k) != nil {
+					return MakeBool(true), nil
+				}
+				d.pos++
+			}
+			return MakeBool(false), nil
+		},
+	}})
+	ci.Method("key", &Function{Name: "key", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			ctx.vm.ArmHandles()
+			d := ctx.This[weakMapIterData]()
+			if d == nil || d.pos < 0 || d.pos >= len(d.keys) {
+				return MakeNull(), nil
+			}
+			k := deref(d.keys[d.pos])
+			if k.typ != ObjectType || ctx.vm.classInfo(k) == nil {
+				return MakeNull(), nil
+			}
+			return k, nil
+		},
+	}})
+	ci.Method("current", &Function{Name: "current", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			ctx.vm.ArmHandles()
+			d := ctx.This[weakMapIterData]()
+			if d == nil || d.pos < 0 || d.pos >= len(d.keys) {
+				return MakeNull(), nil
+			}
+			k := deref(d.keys[d.pos])
+			if k.typ != ObjectType {
+				return MakeNull(), nil
+			}
+			o := ctx.vm.objectOf(k)
+			if o == nil || d.mapObj == nil {
+				return MakeNull(), nil
+			}
+			md := (*weakMapData)(unsafe.Pointer(d.mapObj))
+			if md == nil {
+				return MakeNull(), nil
+			}
+			if i := weakMapFind(md, o); i >= 0 {
+				return md.entries[i].val, nil
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("next", &Function{Name: "next", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			if d := ctx.This[weakMapIterData](); d != nil {
+				d.pos++
+			}
+			return MakeNull(), nil
 		},
 	}})
 }

@@ -119,6 +119,12 @@ func assertFailed(ctx *vm.Context, assertion, desc vm.Slot, exprText string, has
 	}
 	if assertExceptionOpt != 0 {
 		th := &vm.Throwable{Class: "AssertionError", Message: msg}
+		// Zend привязывает AssertionError к месту вызова assert()
+		// (gh8810_5: многострочный assert — строка открытия вызова).
+		th.LocFile = ctx.VM().CurrentFile()
+		if l := ctx.VM().CurrentLine(); l > 0 {
+			th.LocLine = l
+		}
 		// Zend включает кадр assert(...) в трейс AssertionError.
 		th.Trace = ctx.VM().CaptureExceptionTrace()
 		ctx.Throw(th)

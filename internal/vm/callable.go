@@ -799,16 +799,35 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 	switch c.typ {
 	case ClosureType:
 		cl := c.asClosure()
-		if cl == nil || cl.Fn == nil {
+		if cl == nil {
+			return Slot{}, NewThrowable("Error", "Value is not callable")
+		}
+		if cl.Fn == nil {
+			// Трамплин магического метода (Fn == nil, MagicName задан):
+			// вызов уходит в __call/__callStatic (gh16515).
+			if cl.MagicName != "" {
+				if ci := vm.classInfo(cl.BoundThis); ci != nil {
+					if res, ok, err := vm.callMagicMethod(ci, cl.BoundThis, "__call",
+						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+						return res, err
+					}
+				}
+				if cl.Scope != nil {
+					if res, ok, err := vm.callMagicMethodCalled(cl.Scope, cl.Called, Slot{}, "__callStatic",
+						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+						return res, err
+					}
+				}
+			}
 			return Slot{}, NewThrowable("Error", "Value is not callable")
 		}
 		return vm.invokeClosure(cl, args)
 
 	case StringType:
-		return vm.callStringCallable(c.StringVal(), args)
+		return vm.callStringCallable(c.StringVal(), args, false)
 
 	case ArrayType:
-		return vm.callArrayCallable(c, args)
+		return vm.callArrayCallable(c, args, false)
 
 	case ObjectType:
 		ci := vm.classInfo(c)
@@ -1665,7 +1684,7 @@ func (vm *VM) resolveCallableNameToClass(raw string) ClassInfo {
 }
 
 // callStringCallable вызывает функцию по строке: "func" или "Class::method".
-func (vm *VM) callStringCallable(raw string, args []Slot) (Slot, error) {
+func (vm *VM) callStringCallable(raw string, args []Slot, strict bool) (Slot, error) {
 	name := strings.TrimLeft(raw, "\\")
 	if i := strings.Index(name, "::"); i >= 0 {
 		clsName := strings.TrimLeft(name[:i], "\\")
@@ -1688,7 +1707,21 @@ func (vm *VM) callStringCallable(raw string, args []Slot) (Slot, error) {
 			called = vm.ctx.called
 		}
 		m := methodOrCtor(ci, mname)
+		if m != nil && !m.IsStatic && mname != "__construct" {
+			// Строгий динамический вызов ('$m()', '$s()'): Zend не биндит $this, а
+			// сообщает ошибку; косвенный (call_user_func/…, свёрнутые) биндит совместимый
+			// $this (php 8: "Non-static method C::m() cannot be called statically").
+			if !strict {
+				if recv := vm.staticCallRecv(ci); deref(recv).typ == ObjectType {
+					return vm.invokeMethod(m, recv, called, args)
+				}
+			}
+			return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+m.Name+"() cannot be called statically")
+		}
 		if m == nil {
+			if strict && vm.magicUndefStaticErr(ci) {
+				return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
+			}
 			if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
 				return res, err
 			}
@@ -1718,7 +1751,7 @@ func arrayCallbackIndicesErr(a *Array) error {
 }
 
 // callArrayCallable вызывает [obj|class, method].
-func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
+func (vm *VM) callArrayCallable(c Slot, args []Slot, strict bool) (Slot, error) {
 	a := c.AsArray()
 	if a == nil || a.Len() != 2 {
 		return Slot{}, NewThrowable("Error", "Array callback must have exactly two elements")
@@ -1772,7 +1805,7 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
 	}
 
 	if recv.typ == StringType {
-		return vm.callStaticStringCallable(recv.StringVal(), mname, args)
+		return vm.callStaticStringCallable(recv.StringVal(), mname, args, strict)
 	}
 
 	return Slot{}, NewThrowable("Error", "Value is not callable")
@@ -1784,7 +1817,7 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
 // метода нет, но есть instance-__call и активный $this — та же ошибка,
 // иначе "Call to undefined method". __callStatic имеет приоритет, но только
 // для отсутствующих (не для нестатических) методов.
-func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot) (Slot, error) {
+func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot, strict bool) (Slot, error) {
 	clsName = strings.TrimLeft(clsName, "\\")
 	ci := vm.resolveCallableNameToClass(clsName)
 	if ci == nil {
@@ -1808,8 +1841,10 @@ func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot) (Slot
 		if tci, meth, _ := vm.resolveQualifiedMethod(ci, mname); tci != nil {
 			if m := methodOrCtor(tci, meth); m != nil {
 				if !m.IsStatic && meth != "__construct" {
-					if recv := vm.staticCallRecv(tci); deref(recv).typ == ObjectType {
-						return vm.invokeMethod(m, recv, tci, args)
+					if !strict {
+						if recv := vm.staticCallRecv(tci); deref(recv).typ == ObjectType {
+							return vm.invokeMethod(m, recv, tci, args)
+						}
 					}
 					return Slot{}, NewThrowable("Error", "Non-static method "+tci.Name()+"::"+m.Name+"() cannot be called statically")
 				}
@@ -1819,26 +1854,43 @@ func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot) (Slot
 	}
 	if m := methodOrCtor(ci, mname); m != nil {
 		if !m.IsStatic && mname != "__construct" {
-			// Как checkStaticCall: вызов допустим, если есть активный $this
-			// совместимого класса (Zend биндит метод на него).
-			if recv := vm.staticCallRecv(ci); deref(recv).typ == ObjectType {
-				return vm.invokeMethod(m, recv, called, args)
+			// Строгий динамический вызов ([C,m]()/'C::m'() из опкода): без бинда — php
+			// сообщает "Non-static method ... cannot be called statically";
+			// косвенный (call_user_func/…, свёрнутые) биндит совместимый $this.
+			if !strict {
+				if recv := vm.staticCallRecv(ci); deref(recv).typ == ObjectType {
+					return vm.invokeMethod(m, recv, called, args)
+				}
 			}
 			return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+m.Name+"() cannot be called statically")
 		}
 		return vm.invokeMethod(m, Slot{}, called, args)
 	}
+	// Отсутствующий метод: прямой вызов в совместимом контексте с объявленным
+	// __call — ошибка (не магия); иначе __call/__callStatic по BC-правилу.
+	if strict && vm.magicUndefStaticErr(ci) {
+		return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
+	}
 	if res, ok, err := vm.callMagicMethodCalled(ci, called, vm.cur.this, vm.magicStaticName(ci), []Slot{MakeString(mname), argsArray(args)}); ok {
 		return res, err
 	}
-	// В объектном контексте с instance-__call Zend разрешает C::m как
-	// нестатический вызов — и сообщает об ошибке "cannot be called statically".
-	if t := deref(vm.ctx.this); t.typ == ObjectType && ci.lookupMethod("__call") != nil {
-		if tci := vm.classInfo(t); tci != nil && tci.IsA(ci) {
-			return Slot{}, NewThrowable("Error", "Non-static method "+ci.Name()+"::"+mname+"() cannot be called statically")
-		}
-	}
 	return Slot{}, NewThrowable("Error", fmt.Sprintf("Call to undefined method %s::%s()", ci.Name(), mname))
+}
+
+// magicUndefStaticErr — Zend для строгого динамического вызова отсутствующего
+// метода с активным $this совместимого класса и объявленным __call сообщает
+// "Non-static method C::m() cannot be called statically" вместо вызова магии
+// (проверено матрицей на php 8.3: '$m=['C','m']; $m()' и 'C::m'()).
+func (vm *VM) magicUndefStaticErr(ci ClassInfo) bool {
+	if ci == nil || ci.lookupMethod("__call") == nil {
+		return false
+	}
+	t := deref(vm.ctx.this)
+	if t.typ != ObjectType {
+		return false
+	}
+	tci := vm.classInfo(t)
+	return tci != nil && tci.IsA(ci)
 }
 
 // callableTypeName — имя типа для "Value of type %s is not callable"
@@ -1933,7 +1985,9 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 	switch c.typ {
 	case ClosureType:
 		cl := c.asClosure()
-		return cl != nil && cl.Fn != nil, "Closure::__invoke"
+		// Трамплин магического метода (__call/__callStatic, Fn == nil, но
+		// задан MagicName) тоже вызываем (gh16515).
+		return cl != nil && (cl.Fn != nil || cl.MagicName != ""), "Closure::__invoke"
 	case ObjectType:
 		ci := vm.classInfo(c)
 		if ci != nil {

@@ -1052,6 +1052,41 @@ func (vm *VM) releasedObjWriteErr(recv Slot, ci ClassInfo, pname string, v Slot)
 	return NewThrowable("Error", "Object was released while assigning to property "+classDisplayName(ci)+"::$"+pname)
 }
 
+// propCoercionMayReleaseReceiver сообщает, что приведение значения к типу
+// свойства может выполнить пользовательский код (__toString объекта), который
+// способен уничтожить объект-приёмник: только в этом случае Zend проверяет
+// «Object was released while assigning» (gh10169). Для union-типов, в которые
+// объект входит сам по себе, конвертации нет (union_types/multiple_classes).
+func propCoercionMayReleaseReceiver(pd *propDecl, v Slot) bool {
+	if pd == nil || !pd.hasType || deref(v).typ != ObjectType {
+		return false
+	}
+	return !typeAllowsObjectVal(pd.typ)
+}
+
+// typeAllowsObjectVal сообщает, допускает ли объявленный тип значение-объект
+// без конвертации (имена классов, object/iterable/mixed/self и т.п.).
+func typeAllowsObjectVal(t string) bool {
+	if t == "" {
+		return true
+	}
+	low := strings.ToLower(t)
+	for _, kw := range []string{"mixed", "object", "iterable", "self", "static", "parent"} {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	for _, atom := range strings.Split(low, "|") {
+		a := strings.TrimSpace(strings.TrimPrefix(atom, "?"))
+		switch a {
+		case "int", "float", "string", "bool", "array", "callable", "false", "true", "null", "void", "never":
+		default:
+			return true // имя класса/интерфейса
+		}
+	}
+	return false
+}
+
 func (vm *VM) coercePropValue(pd *propDecl, decl ClassInfo, name string, v Slot, strict bool, refAdopt bool) (Slot, error) {
 	if pd == nil || !pd.hasType || strings.EqualFold(pd.typ, "mixed") {
 		return v, nil

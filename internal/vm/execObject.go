@@ -1386,7 +1386,7 @@ func (vm *VM) propSetDeclaredFast(ci ClassInfo, o Slot, pname string, valReg int
 	}
 	plain := deref(regs[valReg])
 	val, verr := vm.coercePropValue(pd, decl, pname, plain, chunk != nil && chunk.Strict, false)
-	if verr == nil {
+	if verr == nil && propCoercionMayReleaseReceiver(pd, plain) {
 		if derr := vm.releasedObjWriteErr(o, ci, pname, plain); derr != nil {
 			if !vm.handleThrow(chunk, derr) {
 				return execResult{err: derr}, true
@@ -1562,7 +1562,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			return execResult{next: true}
 		}
 		val, verr := vm.coercePropValue(pd, decl, pname, plain, vm.chunk != nil && vm.chunk.Strict, false)
-		if verr == nil {
+		if verr == nil && propCoercionMayReleaseReceiver(pd, plain) {
 			if derr := vm.releasedObjWriteErr(o, ci, pname, plain); derr != nil {
 				if !vm.handleThrow(chunk, derr) {
 					return execResult{err: derr}

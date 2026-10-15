@@ -16790,6 +16790,9 @@ func (c *compiler) incDecStmt(x *IncDecExpr) error {
 		return c.newFatal("Can't use nullsafe operator in write context")
 	}
 	if t, ok := x.X.(*VarExpr); ok && t.NameExpr == nil && !c.isRef(t.Name) && !c.useGlobal(t.Name) {
+		// `$x++;` — Zend читает переменную: неопределённая даёт
+		// "Undefined variable" (bug63206: warning внутри обработчика).
+		c.emitUndefCheck(t.Name, c.exprLine(x))
 		c.emitIncDecReg(x.Op, c.varReg(t.Name))
 		return nil
 	}

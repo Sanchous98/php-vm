@@ -551,18 +551,21 @@ func (vm *VM) reportDiag(kind string, level int64, msg string) {
 	}
 	// Пользовательский обработчик (set_error_handler) получает управление
 	// вместо стандартного вывода; если он вернул false — печатаем как обычно.
-	if deref(vm.errHandler).typ != NullType && !vm.inErrHandler {
+	handler := vm.currentErrorHandler()
+	if deref(handler).typ != NullType {
 		vm.inErrHandler = true
+		vm.errHandlerBusy = len(vm.errHandlers)
 		pc := 0
 		if vm.ip > 0 {
 			pc = vm.ip - 1
 		}
 		// Zend зовёт обработчик из точки ошибки: кадр handler'а получает
 		// файл/строку ошибки, а не "[internal function]".
-		res, err := vm.CallCallableAt(&vm.ctx, vm.errHandler, []Slot{
+		res, err := vm.CallCallableAt(&vm.ctx, handler, []Slot{
 			MakeInt(level), MakeString(msg), MakeString(file), MakeInt(int64(line)),
 		}, file, vm.chunk, pc, line)
 		vm.inErrHandler = false
+		vm.errHandlerBusy = 0
 		if err != nil {
 			// Исключение из пользовательского обработчика ошибок:
 			// фиксируем и возвращаемся (поднимет цикл VM/wrapper).
@@ -687,26 +690,63 @@ func (vm *VM) UserError(level int64, msg string) {
 	vm.reportDiag(kind, level, msg)
 }
 
-// SetErrorHandler устанавливает пользовательский обработчик ошибок и
-// возвращает предыдущий (set_error_handler).
+// SetErrorHandler кладёт пользовательский обработчик ошибок на стек и
+// возвращает предыдущий верхний (set_error_handler). null тоже кладётся на
+// стек (bug63206_1: set_error_handler(null) + restore).
 func (vm *VM) SetErrorHandler(cb Slot) Slot {
-	old := vm.errHandler
-	if old.typ == 0 {
-		old = MakeNull()
-	}
-	vm.errHandler = deref(cb)
+	old := vm.currentErrorHandler()
+	vm.errHandlers = append(vm.errHandlers, deref(cb))
 	return old
 }
 
-// SetExceptionHandler устанавливает обработчик непойманных исключений
-// (set_exception_handler) и возвращает предыдущий.
-func (vm *VM) SetExceptionHandler(cb Slot) Slot {
-	old := vm.exceptionHandler
-	if old.typ == 0 {
-		old = MakeNull()
+// RestoreErrorHandler снимает верхний обработчик со стека.
+func (vm *VM) RestoreErrorHandler() {
+	if n := len(vm.errHandlers); n > 0 {
+		vm.errHandlers = vm.errHandlers[:n-1]
+		if vm.errHandlerBusy > len(vm.errHandlers) {
+			vm.errHandlerBusy = len(vm.errHandlers)
+		}
 	}
-	vm.exceptionHandler = deref(cb)
+}
+
+// currentErrorHandler возвращает обработчик, которому адресуются диагностики.
+// Пока верхний обработчик исполняется, Zend зануляет EG(user_error_handler)
+// (php_error_cb): ошибки внутри него уходят только к обработчику, назначенному
+// внутри этого же вызова; иначе — встроенному (bug63206, bug63206_1).
+func (vm *VM) currentErrorHandler() Slot {
+	if vm.errHandlerBusy > 0 {
+		if n := len(vm.errHandlers); n > vm.errHandlerBusy {
+			return vm.errHandlers[n-1]
+		}
+		return MakeNull()
+	}
+	if n := len(vm.errHandlers); n > 0 {
+		return vm.errHandlers[n-1]
+	}
+	return MakeNull()
+}
+
+// SetExceptionHandler кладёт обработчик непойманных исключений на стек и
+// возвращает предыдущий верхний.
+func (vm *VM) SetExceptionHandler(cb Slot) Slot {
+	old := vm.currentExcHandler()
+	vm.excHandlers = append(vm.excHandlers, deref(cb))
 	return old
+}
+
+// RestoreExceptionHandler снимает верхний обработчик со стека.
+func (vm *VM) RestoreExceptionHandler() {
+	if n := len(vm.excHandlers); n > 0 {
+		vm.excHandlers = vm.excHandlers[:n-1]
+	}
+}
+
+// currentExcHandler возвращает активный обработчик непойманных исключений.
+func (vm *VM) currentExcHandler() Slot {
+	if n := len(vm.excHandlers); n > 0 {
+		return vm.excHandlers[n-1]
+	}
+	return MakeNull()
 }
 
 // ErrorReportingGet возвращает текущий уровень error_reporting.

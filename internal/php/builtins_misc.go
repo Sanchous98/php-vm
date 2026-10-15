@@ -1745,6 +1745,12 @@ func reflectClass(ctx *vm.Context, i int) (vm.ClassInfo, *vm.Object, string) {
 			return nil, nil, ""
 		}
 		return o.Class(), o, o.ClassName()
+	case vm.ClosureType:
+		o := ctx.Arg[*vm.Object](i)
+		if o == nil {
+			return nil, nil, ""
+		}
+		return o.Class(), o, o.ClassName()
 	case vm.StringType:
 		name := s.StringVal()
 		return ctx.VM().FindClass(name), nil, name
@@ -2311,7 +2317,8 @@ func propertyExistsFn(ctx *vm.Context) vm.Value {
 	s := reflectArg(ctx, 0)
 	name := reflectArg(ctx, 1).ToString()
 	switch s.Type() {
-	case vm.ObjectType:
+	case vm.ObjectType, vm.ClosureType:
+		// Closure — тоже объект (property_exists(Closure) => false, bug50146).
 		ci, o, _ := reflectClass(ctx, 0)
 		if ci == nil {
 			return vm.Bool(false)

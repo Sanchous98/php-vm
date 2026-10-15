@@ -1770,6 +1770,14 @@ func (vm *VM) callStaticStringCallable(clsName, mname string, args []Slot) (Slot
 	clsName = strings.TrimLeft(clsName, "\\")
 	ci := vm.resolveCallableNameToClass(clsName)
 	if ci == nil {
+		// Zend вызывает автозагрузчик при резолве [Class, method]/"Class::m"
+		// (bug61011: исключение автозагрузчика пробрасывается наружу).
+		if _, aerr := vm.Autoload(nil, clsName); aerr != nil {
+			return Slot{}, aerr
+		}
+		ci = vm.resolveCallableNameToClass(clsName)
+	}
+	if ci == nil {
 		return Slot{}, NewThrowable("Error", fmt.Sprintf("Class \"%s\" not found", clsName))
 	}
 	called := ci

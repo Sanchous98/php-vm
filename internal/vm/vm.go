@@ -131,17 +131,23 @@ type VM struct {
 	// suppressStack — сохранённые значения error_reporting для активных
 	// операторов `@` (Zend BEGIN_SILENCE/END_SILENCE).
 	suppressStack []int64
-	// errHandler — пользовательский обработчик ошибок (set_error_handler).
-	// Null-слот означает «не установлен». inErrHandler защищает от рекурсии.
-	errHandler   Slot
-	inErrHandler bool
+	// errHandlers — стек пользовательских обработчиков ошибок
+	// (set_error_handler/restore_error_handler). Null-элемент = «встроенный»
+	// обработчик. Во время вызова верхнего обработчика ошибки внутри него
+	// уходят к предыдущему (Zend снимает верхний со стека на время вызова);
+	// errHandlerBusy хранит глубину стека в момент вызова. inErrHandler
+	// защищает от рекурсии.
+	errHandlers    []Slot
+	errHandlerBusy int
+	inErrHandler   bool
 	// iniLookup — доступ к INI-настройкам (log_errors/error_log/date.timezone)
 	// для журналирования диагностик. Ставится хост-пакетом php.
 	iniLookup func(name string) (string, bool)
-	// exceptionHandler — пользовательский обработчик непойманных исключений
-	// (set_exception_handler). inExcHandler защищает от рекурсии.
-	exceptionHandler Slot
-	inExcHandler     bool
+	// excHandlers — стек обработчиков непойманных исключений
+	// (set_exception_handler/restore_exception_handler); inExcHandler
+	// защищает от рекурсии.
+	excHandlers  []Slot
+	inExcHandler bool
 	// noActiveFile — выполняется shutdown-обработчик вне какого-либо
 	// компилируемого файла: ошибки локализуются как "[no active file]:0".
 	noActiveFile bool
@@ -700,9 +706,10 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.pendingNamedCount = -1
 	vm.pendingNativeProvided = -1
 	vm.diagLineOverride = 0
-	vm.errHandler = MakeNull()
+	vm.errHandlers = nil
+	vm.errHandlerBusy = 0
 	vm.inErrHandler = false
-	vm.exceptionHandler = MakeNull()
+	vm.excHandlers = nil
 	vm.inExcHandler = false
 	vm.lastErrSet = false
 	vm.headersSent = false
@@ -1530,7 +1537,7 @@ func (vm *VM) Run() (err error) {
 			_ = vm.sweepLifetime(false, vm.chunk, vm.ip-1)
 		}
 	}
-	if vm.exceptionHandler.typ != NullType {
+	if deref(vm.currentExcHandler()).typ != NullType {
 		// Обработчик непойманных исключений выполняется до сброса буферов
 		// (как в Zend): он может очистить буфер.
 		vm.reportUncaught(err)
@@ -2424,11 +2431,12 @@ func (vm *VM) reportUncaught(err error) {
 	if !ok {
 		return
 	}
-	if !th.Fatal && !vm.inExcHandler && vm.exceptionHandler.typ != NullType {
+	excHandler := vm.currentExcHandler()
+	if !th.Fatal && !vm.inExcHandler && deref(excHandler).typ != NullType {
 		obj := vm.throwableObject(th, vm.throwableClass(th))
 		if obj.typ == ObjectType {
 			vm.inExcHandler = true
-			_, herr := vm.CallCallable(&vm.ctx, vm.exceptionHandler, []Slot{obj})
+			_, herr := vm.CallCallable(&vm.ctx, excHandler, []Slot{obj})
 			vm.inExcHandler = false
 			if herr == nil {
 				return

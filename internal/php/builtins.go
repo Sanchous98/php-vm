@@ -641,7 +641,7 @@ func builtins() []*vm.Function {
 			return ctx.VM().SetErrorHandler(cb)
 		}),
 		vm.Register("restore_error_handler", func(ctx *vm.Context) vm.Value {
-			ctx.VM().SetErrorHandler(vm.MakeNull())
+			ctx.VM().RestoreErrorHandler()
 			return vm.MakeBool(true)
 		}),
 		vm.Register("set_exception_handler", func(ctx *vm.Context) vm.Value {
@@ -652,8 +652,8 @@ func builtins() []*vm.Function {
 			return ctx.VM().SetExceptionHandler(cb)
 		}),
 		vm.Register("restore_exception_handler", func(ctx *vm.Context) vm.Value {
-			ctx.VM().SetExceptionHandler(vm.MakeNull())
-			return vm.MakeNull()
+			ctx.VM().RestoreExceptionHandler()
+			return vm.MakeBool(true)
 		}),
 		vm.Register("trigger_error", triggerErrorFn),
 		vm.Register("user_error", triggerErrorFn),

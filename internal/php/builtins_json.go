@@ -191,6 +191,9 @@ func (e *jsonEncoder) encode(v vm.Slot) bool {
 }
 
 func (e *jsonEncoder) encodeDepth(v vm.Slot, depth int) bool {
+	// Глубину считаем сами: jsontext.WithDepthLimit в stdlib закомментирован
+	// (TODO go.dev/issue/56733 — опции нет в API), поэтому php-семантика
+	// JSON_ERROR_DEPTH (код 1, false/JsonException) возможна только так.
 	if depth > e.maxDepth {
 		e.err = jsonErrorDepth
 		return false

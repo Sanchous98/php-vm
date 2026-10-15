@@ -2141,6 +2141,37 @@ func (c *runtimeClass) materializeLazyStatic(name string) *Slot {
 	return s
 }
 
+// MaterializeStaticProp вычисляет отложенное значение статического свойства
+// (Zend делает это при объявлении класса) и возвращает ошибку вычисления.
+func (vm *VM) MaterializeStaticProp(ci ClassInfo, name string) error {
+	rc, ok := asRuntimeClass(ci)
+	if !ok || rc == nil {
+		return nil
+	}
+	th, owner := rc.findLazyStatic(name)
+	if th == nil || owner == nil {
+		return nil
+	}
+	v, err := rc.resolveThunk(th)
+	if err != nil {
+		return err
+	}
+	s := new(Slot)
+	SlotOf(s, v)
+	if owner.staticProps == nil {
+		owner.staticProps = map[string]*Slot{}
+	}
+	owner.staticProps[name] = s
+	delete(owner.lazyStatics, name)
+	if owner.allStatics != nil {
+		owner.allStatics[name] = s
+	}
+	if rc.allStatics != nil {
+		rc.allStatics[name] = s
+	}
+	return nil
+}
+
 // resolveThunk вычисляет ленивое выражение через VM класса.
 func (c *runtimeClass) resolveThunk(th *Thunk) (Value, error) {
 	if c != nil && c.vm != nil {

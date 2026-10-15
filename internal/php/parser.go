@@ -204,6 +204,10 @@ type ClassDecl struct {
 	IfaceDeprecation string
 	// IfaceDeprecationName — имя интерфейса для контекста наследования.
 	IfaceDeprecationName string
+	// LazyStaticProps — статические свойства класса с отложенным (не
+	// константным) значением по умолчанию: вычисляются в точке объявления
+	// класса, как в Zend (gh10356).
+	LazyStaticProps []string
 	// AnonSuffix — суффикс Zend-имени анонимного класса ("\x00<file>:<line>$N")
 	// для get_class()/reflection; у неанонимных классов пуст.
 	AnonSuffix        string

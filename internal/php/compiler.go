@@ -2892,6 +2892,27 @@ func constString(e Expr, file string) (string, bool) {
 func internalFuncs() []*vm.Function {
 	funcs := []*vm.Function{
 		vm.Register("__php_eval", evalBuiltin),
+		vm.Register("__php_static_prop_init", func(ctx *vm.Context) vm.Value {
+			a := ctx.Args()
+			if len(a) < 2 {
+				return vm.MakeNull()
+			}
+			idx := int(a[0].ToInt())
+			classes := ctx.VM().Classes()
+			if idx < 0 || idx >= len(classes) {
+				return vm.MakeNull()
+			}
+			if err := ctx.VM().MaterializeStaticProp(classes[idx], a[1].ToString()); err != nil {
+				// Значение по умолчанию статического свойства не вычислилось:
+				// Zend поднимает исключение в точке объявления (gh10356).
+				if th, ok := err.(*vm.Throwable); ok {
+					ctx.Throw(th)
+				} else {
+					ctx.Throw(vm.NewThrowable("Error", err.Error()))
+				}
+			}
+			return vm.MakeNull()
+		}),
 		vm.Register("__php_iface_deprecation", func(ctx *vm.Context) vm.Value {
 			a := ctx.Args()
 			if len(a) < 3 {
@@ -4761,6 +4782,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						}
 						if th != nil {
 							ci.DefineLazyStatic(m.PropName, th)
+							cd.LazyStaticProps = append(cd.LazyStaticProps, m.PropName)
 						} else {
 							ci.DefineStatic(m.PropName, coerceFloatDefaultValue(v, m.PropType))
 						}
@@ -6134,6 +6156,17 @@ compatLoop:
 				mc.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: idxReg,
 					C: int32(mc.chunk.AddConst(vm.IntConst(int64(plan.rtIdx))))})
 				mc.emitCall("__php_variance_check", []uint8{idxReg})
+			}
+			for _, pn := range s.LazyStaticProps {
+				mc.curLine = s.Line
+				mc.chunk.SetLine(s.Line)
+				idxReg := mc.alloc()
+				mc.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: idxReg,
+					C: int32(mc.chunk.AddConst(vm.IntConst(int64(mc.classIdx[s.Name]))))})
+				nmReg := mc.alloc()
+				mc.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nmReg,
+					C: int32(mc.chunk.AddConst(vm.StrConst(pn)))})
+				mc.emitCall("__php_static_prop_init", []uint8{idxReg, nmReg})
 			}
 			if s.IfaceDeprecation != "" {
 				mc.curLine = s.Line
@@ -10557,6 +10590,9 @@ func (c *compiler) compileConstThunk(cls vm.ClassInfo, e Expr) (*vm.Function, er
 	cc.nvars0 = 0
 	cc.tmp = 0
 	cc.max = 0
+	if ln := c.exprLine(e); ln > 0 {
+		cc.chunk.SetLine(ln)
+	}
 	r, err := cc.expr(e)
 	if err != nil {
 		return nil, err
@@ -13614,6 +13650,7 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 				if _, ok := c.idx[constFn]; ok {
 					nameReg := c.alloc()
 					c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nameReg, C: int32(c.chunk.AddConst(vm.StrConst(x.Name)))})
+					c.emitLine(c.exprLine(x))
 					return c.emitCall(constFn, []uint8{nameReg}), nil
 				}
 				return 0, err
@@ -13647,6 +13684,7 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nameReg, C: int32(c.chunk.AddConst(vm.StrConst(x.Name)))})
 			fbReg := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: fbReg, C: int32(c.chunk.AddConst(vm.StrConst(x.Fallback)))})
+			c.emitLine(c.exprLine(x))
 			return c.emitCall(constFn, []uint8{nameReg, fbReg}), nil
 		}
 		return 0, fmt.Errorf("компилятор: неизвестная константа %q", x.Name)

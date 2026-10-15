@@ -299,7 +299,21 @@ func (vm *VM) iterValid(state Slot) (bool, error) {
 	a := deref(state).AsArray()
 	switch deref(stateGet(a, "mode")).Int() {
 	case iterModeArrayRef:
-		return iterArrayRefValid(state), nil
+		if iterArrayRefValid(state) {
+			return true, nil
+		}
+		// Источник by-ref обхода перестал быть массивом: Zend перепроверяет
+		// источник на каждой выборке и для не-array печатает Warning (объект
+		// исключением не является — по нему обход продолжался бы).
+		if sa := deref(state).AsArray(); sa != nil {
+			if _, _, arr := iterArrayRefParts(state); arr == nil {
+				if v := deref(stateGet(sa, "cell")); v.typ != ObjectType {
+					vm.Warning("foreach() argument must be of type array|object, " +
+						vm.arrayOffsetTypeName(v) + " given")
+				}
+			}
+		}
+		return false, nil
 	case iterModeProps:
 		return vm.iterPropsValid(a), nil
 	case iterModeWeakMap:

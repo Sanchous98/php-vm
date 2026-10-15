@@ -187,6 +187,9 @@ type Chunk struct {
 	// отображённые в их ключ таблицы глобалов. compact()/extract() видят их
 	// значения из таблицы глобалов.
 	globalVars map[string]string
+	// defRegs — карта имя→регистр-флаг «определена» (compiler.defRegs); нужна
+	// extract()/SymtabSet, чтобы запись в рантайме опускала флаг.
+	defRegs map[string]int
 }
 
 // SetLocalVars задаёт карту имя→регистр локальных переменных чанка.
@@ -210,6 +213,21 @@ func (c *Chunk) SetVarRegs(vars, refs map[string]uint8) {
 }
 
 func (c *Chunk) SetNamedRegs(m map[string]int) { c.namedRegs = m }
+
+// SetDefRegs фиксирует карту имя→регистр-флаг «переменная определена»
+// (см. compiler.defRegs): нужно extract()/SymtabSet, чтобы запись переменной
+// в рантайме опускала флаг (иначе чтение после extract() давало бы ложное
+// «Undefined variable»).
+func (c *Chunk) SetDefRegs(m map[string]int) { c.defRegs = m }
+
+// DefReg возвращает регистр-флаг определённости переменной name.
+func (c *Chunk) DefReg(name string) (int, bool) {
+	if c.defRegs == nil {
+		return 0, false
+	}
+	r, ok := c.defRegs[name]
+	return r, ok
+}
 
 // SetUserVarRegs фиксирует регистры только пользовательских переменных (имена
 // без внутреннего префикса "\x00").

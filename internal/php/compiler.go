@@ -276,8 +276,11 @@ func isThisVar(e Expr) bool {
 type loopCtx struct {
 	continueJumps []int
 	breakJumps    []int
-	regDepth      int     // глубина c.regions (включая сам цикл) на входе
-	freeRegs      []uint8 // временные регистры foreach: освобождаются при выходе
+	regDepth      int // глубина c.regions (включая сам цикл) на входе
+	// isSwitch — уровень принадлежит switch (continue в switch эквивалентен
+	// break; Zend печатает Warning).
+	isSwitch bool
+	freeRegs []uint8 // временные регистры foreach: освобождаются при выходе
 }
 
 // pendingGoto — прямой goto на ещё не определённую метку.
@@ -431,6 +434,15 @@ type compiler struct {
 	// hasYield — тело содержало `yield`; после компиляции функция помечается
 	// как генератор (compileBody вызывает SetGenerator).
 	hasYield bool
+	// usesThisVar — тело обращается к $this вне обычного чтения (isset($this)
+	// компилируется в вызов __php_isset_this без OpThis): нужно для флага
+	// ZEND_ACC_USES_THIS у замыканий (Closure::bindTo(null) диагностика).
+	usesThisVar bool
+	// undefInit — регистры-флаги defRegs, которые в прологе тела получают
+	// true («переменная ещё не определена»): переменные, у которых в теле
+	// есть и чтение, и запись. Чтение до первой записи печатает
+	// «Undefined variable»; запись опускает флаг (clearUndef).
+	undefInit []uint8
 	// discardResult — результат верхнеуровневого присваивания-оператора не
 	// используется (`$a[$i] = $v;`): можно писать значение напрямую, не
 	// материализуя результат присваивания (для строковых offset'ов Zend
@@ -1428,6 +1440,13 @@ func (c *compiler) prescan(stmts []Stmt) {
 		c.writes = map[string]bool{}
 	}
 	undefTargets := map[string]bool{}
+	// readCnt — счётчик чтений переменной в теле (см. undefInit).
+	readCnt := map[string]int{}
+	markRead := func(name string) {
+		if name != "" {
+			readCnt[name]++
+		}
+	}
 	// markWrite отмечает переменную как записываемую: только такие локальные
 	// читаются из своего регистра, остальные (только читаемые) в Zend остаются
 	// UNDEF и дают "Undefined variable".
@@ -1467,11 +1486,15 @@ func (c *compiler) prescan(stmts []Stmt) {
 	}
 	var walkE func(Expr)
 	var walkS func(Stmt)
+	// walkTarget обходит lvalue-позицию (цель присваивания/unset/isset):
+	// база-переменная здесь НЕ чтение, но вложенные ключи/имена читаются.
+	var walkTarget func(Expr)
 	walkE = func(e Expr) {
 		switch x := e.(type) {
 		case nil:
 		case *VarExpr:
 			add(x.Name)
+			markRead(x.Name)
 			if x.NameExpr != nil {
 				walkE(x.NameExpr)
 			}
@@ -1482,7 +1505,7 @@ func (c *compiler) prescan(stmts []Stmt) {
 					markWriteTarget(el.Target, markWrite)
 				}
 			}
-			walkE(x.Target)
+			walkTarget(x.Target)
 			walkE(x.Value)
 			if x.ByRef {
 				if v, ok := x.Target.(*VarExpr); ok {
@@ -1504,24 +1527,41 @@ func (c *compiler) prescan(stmts []Stmt) {
 		case *UnaryExpr:
 			walkE(x.X)
 		case *IncDecExpr:
+			markWriteTarget(x.X, markWrite)
 			walkE(x.X)
 		case *TernaryExpr:
 			walkE(x.Cond)
 			walkE(x.Then)
 			walkE(x.Else)
 		case *CoalesceExpr:
-			walkE(x.L)
+			// `$x ?? ...` не печатает «Undefined variable» (isset-семантика).
+			walkTarget(x.L)
 			walkE(x.R)
 		case *YieldExpr:
 			walkE(x.Key)
 			walkE(x.Val)
 		case *CallExpr:
-			for _, a := range x.Args {
-				walkE(a)
+			// compact()/extract()/get_defined_vars(): переменные живут в
+			// таблице символов кадра; пометка нужна уже на этапе prescan —
+			// от неё зависит выделение флагов определённости (undefInit).
+			for _, nm := range []string{x.Name, x.Fallback} {
+				switch strings.ToLower(strings.TrimLeft(nm, "\\")) {
+				case "compact", "extract", "get_defined_vars":
+					c.usesSymtab = true
+				}
 			}
+			var cmask []bool
 			if fi, ok := c.idx[x.Name]; ok {
-				markByRef(x.Args, c.funcs[fi].ByRefArgs, addRef)
+				cmask = c.funcs[fi].ByRefArgs
 			}
+			for i, a := range x.Args {
+				if i < len(cmask) && cmask[i] {
+					walkTarget(a)
+				} else {
+					walkE(a)
+				}
+			}
+			markByRef(x.Args, cmask, addRef)
 		case *NamedArgExpr:
 			walkE(x.X)
 		case *MethodCallExpr:
@@ -1529,26 +1569,41 @@ func (c *compiler) prescan(stmts []Stmt) {
 			if x.NameExpr != nil {
 				walkE(x.NameExpr)
 			}
-			for _, a := range x.Args {
-				walkE(a)
+			mmask := c.methodRefs[x.Name]
+			for i, a := range x.Args {
+				if i < len(mmask) && mmask[i] {
+					walkTarget(a)
+				} else {
+					walkE(a)
+				}
 			}
-			markByRef(x.Args, c.methodRefs[x.Name], addRef)
+			markByRef(x.Args, mmask, addRef)
 		case *StaticCallExpr:
 			if x.NameExpr != nil {
 				walkE(x.NameExpr)
 			}
-			for _, a := range x.Args {
-				walkE(a)
+			smask := c.methodRefs[x.Name]
+			for i, a := range x.Args {
+				if i < len(smask) && smask[i] {
+					walkTarget(a)
+				} else {
+					walkE(a)
+				}
 			}
-			markByRef(x.Args, c.methodRefs[x.Name], addRef)
+			markByRef(x.Args, smask, addRef)
 		case *NewExpr:
 			if x.ClassExpr != nil {
 				walkE(x.ClassExpr)
 			}
-			for _, a := range x.Args {
-				walkE(a)
+			nmask := c.methodRefs["__construct"]
+			for i, a := range x.Args {
+				if i < len(nmask) && nmask[i] {
+					walkTarget(a)
+				} else {
+					walkE(a)
+				}
 			}
-			markByRef(x.Args, c.methodRefs["__construct"], addRef)
+			markByRef(x.Args, nmask, addRef)
 		case *NewAnonClassExpr:
 			for _, a := range x.Args {
 				walkE(a)
@@ -1589,14 +1644,14 @@ func (c *compiler) prescan(stmts []Stmt) {
 		case *ListExpr:
 			for _, el := range x.Elems {
 				walkE(el.Key)
-				walkE(el.Target)
+				walkTarget(el.Target)
 			}
 		case *IssetExpr:
 			for _, a := range x.Args {
-				walkE(a)
+				walkTarget(a)
 			}
 		case *EmptyExpr:
-			walkE(x.X)
+			walkTarget(x.X)
 		case *PrintExpr:
 			walkE(x.X)
 		case *ExitExpr:
@@ -1622,6 +1677,27 @@ func (c *compiler) prescan(stmts []Stmt) {
 			for _, n := range arrowFreeVars(x.Body, x.Params) {
 				add(n)
 			}
+		}
+	}
+	walkTarget = func(e Expr) {
+		switch x := e.(type) {
+		case nil:
+		case *VarExpr:
+			add(x.Name)
+			if x.NameExpr != nil {
+				walkE(x.NameExpr)
+			}
+		case *IndexExpr:
+			walkTarget(x.Arr)
+			walkE(x.Key)
+		case *ListExpr:
+			for _, el := range x.Elems {
+				walkE(el.Key)
+				walkTarget(el.Target)
+			}
+		default:
+			// Чтение базы (свойство объекта, статическое свойство и т.п.).
+			walkE(e)
 		}
 	}
 	walkS = func(st Stmt) {
@@ -1725,7 +1801,7 @@ func (c *compiler) prescan(stmts []Stmt) {
 					// обязано напечатать «Undefined variable $x».
 					undefTargets[v.Name] = true
 				}
-				walkE(a)
+				walkTarget(a)
 			}
 		}
 	}
@@ -1734,16 +1810,62 @@ func (c *compiler) prescan(stmts []Stmt) {
 	}
 	// Регистры-флаги «определена» для целей unset(). Выделяются последними,
 	// чтобы временные регистры выражений их не перекрыли.
-	for name := range undefTargets {
+	allocDef := func(name string) bool {
 		if _, ok := c.defRegs[name]; ok {
-			continue
+			return true
 		}
 		if _, ok := c.vars[name]; !ok {
 			// Переменной нет в кадре (main-скоуп/global) — флаг не нужен.
-			continue
+			return false
+		}
+		if c.nvars >= 240 {
+			// Защита от переполнения uint8-регистров в очень больших
+			// функциях: без флага диагностика просто не печатается.
+			return false
 		}
 		c.defRegs[name] = c.nvars
 		c.nvars++
+		return true
+	}
+	undefNames := make([]string, 0, len(undefTargets))
+	for name := range undefTargets {
+		undefNames = append(undefNames, name)
+	}
+	sort.Strings(undefNames)
+	for _, name := range undefNames {
+		allocDef(name)
+	}
+	// Переменные с чтением до записи (и записью где-то в теле): в Zend такая
+	// CV в первой точке чтения находится в состоянии UNDEF и печатает
+	// «Undefined variable». Флаг инициализируется true в прологе, каждая
+	// запись его опускает (clearUndef).
+	if !c.isMain {
+		initNames := make([]string, 0, len(readCnt))
+		for name, cnt := range readCnt {
+			// В функциях с extract()/compact() переменная может быть
+			// определена в рантайме: флаг нужен и без статической записи
+			// (SymtabSet опускает его), иначе чтение недиагностируется.
+			if cnt == 0 || (!c.writes[name] && !c.usesSymtab) || c.isRef(name) || c.useGlobal(name) {
+				continue
+			}
+			// Параметры/захваты определены всегда (регистры ниже nvars0).
+			if r, ok := c.vars[name]; ok && int(r) < int(c.nvars0) {
+				continue
+			}
+			if name == "$this" || name == "this" || name == "$GLOBALS" || name == "GLOBALS" {
+				continue
+			}
+			if _, isStatic := c.staticKeys[name]; isStatic || c.localStatics[name] {
+				continue
+			}
+			initNames = append(initNames, name)
+		}
+		sort.Strings(initNames)
+		for _, name := range initNames {
+			if allocDef(name) {
+				c.undefInit = append(c.undefInit, c.defRegs[name])
+			}
+		}
 	}
 	if c.nvars > c.max {
 		c.max = c.nvars
@@ -2646,6 +2768,13 @@ func inlineEval(x *CallExpr, file string, inc map[string]bool) (Expr, []Stmt, er
 		return nil, nil, err
 	}
 	val, pre := splitTopReturn(stmts, &NullLit{})
+	// Предупреждения компиляции eval-фрагмента (напр. use некомпаундного
+	// имени) печатаются в момент выполнения eval, а не как startup-диагностика
+	// охватывающего файла (Zend компилирует eval в рантайме).
+	for _, tw := range sub.TypeWarnings {
+		pre = append(pre, &ExprStmt{X: &CallExpr{Name: "__php_parse_warn",
+			Args: []Expr{&StrLit{V: tw.Msg}}}})
+	}
 	return val, pre, nil
 }
 
@@ -2801,6 +2930,18 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_new_named", newNamedBuiltin),
 		vm.Register("__php_class_of", classOfBuiltin),
 		vm.Register("__php_close_gen", closeGenBuiltin),
+		vm.Register("__php_parse_warn", func(ctx *vm.Context) vm.Value {
+			// Предупреждение компиляции eval-фрагмента (выводится в точке
+			// выполнения eval, в т.ч. через set_error_handler).
+			ctx.VM().Warn(arg(ctx, 0).ToString())
+			return vm.MakeNull()
+		}),
+		vm.Register("__php_unset_dyn", func(ctx *vm.Context) vm.Value {
+			// unset($$x): динамическое имя удаляет саму переменную (а не
+			// записывает null) — последующее чтение даёт «Undefined variable».
+			ctx.VM().GlobalsUnsetDyn(arg(ctx, 0).ToString())
+			return vm.MakeNull()
+		}),
 		vm.Register("__php_warn_undef", func(ctx *vm.Context) vm.Value {
 			// Чтение локальной переменной после unset(): Zend печатает
 			// «Undefined variable $x».
@@ -3685,7 +3826,10 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	}
 	if !ok {
 		if require {
-			ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
+			// Zend: сначала Warning о потоке, затем Error (include_path в
+			// тексте исключения).
+			ctx.VM().Warning(fmt.Sprintf("require(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
+			ctx.Throw(vm.NewThrowable("Error", fmt.Sprintf("Failed opening required '%s' (include_path='%s')", p, fsIncludePath)))
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
 			}
@@ -8603,6 +8747,10 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	}
 	cc := newCompiler(c.funcs, c.idx)
 	cc.file = c.file
+	// Текущая строка в начале тела — строка объявления функции: синтезированные
+	// операторы (return стрелочной функции, неявный возврат) ссылаются на неё,
+	// как Zend.
+	cc.curLine = line
 	cc.classes = c.classes
 	cc.classIdx = c.classIdx
 	cc.curClass = c.curClass
@@ -8693,6 +8841,12 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 			}
 		}
 	}
+	// Возврат по ссылке из void-функции: Deprecated на объявлении (Zend
+	// печатает его как startup-диагностику компиляции).
+	if byrefReturn && normalizedType(retType) == "void" {
+		compilerDeprecations = append(compilerDeprecations, fmt.Sprintf(
+			"Returning by reference from a void function is deprecated in %s on line %d", c.file, line))
+	}
 	for i, p := range params {
 		cc.vars[p.Name] = uint8(i)
 		if p.ByRef {
@@ -8769,6 +8923,22 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 		cc.writes[captures[i].Name] = true
 	}
 	cc.prescan(body)
+	// Пролог: переменные с чтением до записи стартуют как UNDEF (флаг true);
+	// запись опускает флаг (clearUndef), чтение при флаге печатает
+	// «Undefined variable» и сбрасывает флаг.
+	for _, reg := range cc.undefInit {
+		cc.chunk.Emit(vm.Instruction{Op: vm.OpTrue, A: reg})
+	}
+	if len(cc.defRegs) > 0 {
+		dr := make(map[string]int, len(cc.defRegs))
+		for n, r := range cc.defRegs {
+			dr[n] = int(r)
+			if t := strings.TrimPrefix(n, "$"); t != n {
+				dr[t] = int(r)
+			}
+		}
+		cc.chunk.SetDefRegs(dr)
+	}
 	for _, sv := range statics {
 		if sv.Conditional {
 			continue
@@ -8836,6 +9006,12 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 		return nil, err
 	}
 	r := cc.alloc()
+	if byrefReturn && !cc.hasYield {
+		// Неявный возврат NULL из by-ref функции: Notice как у `return;`
+		// (Zend печатает его в момент выхода, строка — конец тела).
+		cc.emitLine(line)
+		cc.emitRefNotice("Only variable references should be returned by reference")
+	}
 	cc.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: r})
 	cc.chunk.Emit(vm.Instruction{Op: vm.OpRet, A: r, C: 1})
 	{
@@ -8869,6 +9045,9 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	cc.setVarRegs()
 	cc.chunk.AllocateRegisters(pinned, cc.allocEnv())
 	cf := vm.NewCompiledFunction(cc.chunk)
+	if cc.usesThisVar {
+		cf.SetUsesThisVar()
+	}
 	cf.SetNumParams(len(params))
 	if fixed, ok := variadicFixed(params); ok {
 		cf.SetVariadic(fixed)
@@ -9028,6 +9207,7 @@ func collectClosures(prog *Program, classes []vm.ClassInfo, classIdx map[string]
 			ci.params = x.Params
 			ci.isArrow = true
 			ci.static = x.Static
+			ci.byrefRet = x.ByRefReturn
 			ci.retType = x.RetType
 			ci.expr = x.Body
 			ci.attrs = x.Attrs
@@ -10495,6 +10675,11 @@ func (c *compiler) stmt(st Stmt) error {
 			return c.newFatal("Cannot take reference of a nullsafe chain")
 		}
 		if s.X == nil {
+			if c.byrefReturn && !c.hasYield {
+				// Zend: возврат NULL из by-ref функции печатает Notice
+				// (RETURN_BY_REF с не-ссылкой).
+				c.emitRefNotice("Only variable references should be returned by reference")
+			}
 			if c.curRetType != "" && c.curRetType != "void" && c.curRetType != "never" {
 				if !c.hasYield {
 					if typeNullable(c.curRetType) {
@@ -10721,9 +10906,11 @@ func (c *compiler) stmt(st Stmt) error {
 				n := c.alloc()
 				c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: n})
 				if v.NameExpr != nil {
-					if err := c.storeVarDyn(v.NameExpr, n); err != nil {
+					ne, err := c.expr(v.NameExpr)
+					if err != nil {
 						return err
 					}
+					c.emitCall("__php_unset_dyn", []uint8{ne})
 				} else {
 					c.storeVar(v.Name, n)
 					c.setUndef(v.Name)
@@ -11394,6 +11581,19 @@ func (c *compiler) continueStmt(level, opKind int) error {
 	if err := c.unwindToRegions(c.loops[idx].regDepth); err != nil {
 		return err
 	}
+	// continue, нацеленный на switch, в PHP 7.3+ эквивалентен break:
+	// Zend печатает Warning с подсказкой continue N+1, если снаружи есть цикл.
+	if c.loops[idx].isSwitch {
+		lvl := ""
+		if level > 1 {
+			lvl = fmt.Sprintf(" %d", level)
+		}
+		msg := fmt.Sprintf(`"continue%s" targeting switch is equivalent to "break%s"`, lvl, lvl)
+		if level < len(c.loops) && !c.loops[idx-1].isSwitch {
+			msg += fmt.Sprintf(`. Did you mean to use "continue %d"?`, level+1)
+		}
+		compilerWarnings = append(compilerWarnings, fmt.Sprintf("%s in %s on line %d", msg, c.file, c.curLine))
+	}
 	j := c.chunk.Emit(vm.Instruction{Op: vm.OpJump})
 	c.loops[idx].continueJumps = append(c.loops[idx].continueJumps, j)
 	return nil
@@ -11745,6 +11945,7 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 		case *IndexExpr, *PropExpr, *StaticPropExpr:
 			// lvalue-источник: ячейка элемента/свойства — записи в источник из
 			// тела цикла идут туда же (как FETCH_W в Zend).
+			c.emitLine(c.exprLine(e))
 			cell, err := c.refCellForExpr(e)
 			if err != nil {
 				return err
@@ -12014,6 +12215,7 @@ func (c *compiler) switchStmt(s *SwitchStmt) error {
 	// Регистр subj должен дожить до конца сравнений: не сбрасываем tmp ниже.
 	base := c.tmp
 	lc := c.pushLoop()
+	lc.isSwitch = true
 	n := len(s.Cases)
 	jumps := make([]int, n)
 	defIdx := -1
@@ -16067,10 +16269,12 @@ func (c *compiler) indexBaseKeys(t *IndexExpr, keys []uint8, dimW bool) (uint8, 
 			}
 		}
 		return arr, func(r uint8) {
+			// Свойство могло быть получено через __get: OpPropSetOverload
+			// сам решает (Notice без эффекта либо обычная запись).
 			if base.NameExpr != nil {
-				c.chunk.Emit(vm.Instruction{Op: vm.OpPropSetDyn, A: obj, B: r, C: int32(nameReg)})
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPropSetOverloadDyn, A: obj, B: r, C: int32(nameReg)})
 			} else {
-				c.chunk.Emit(vm.Instruction{Op: vm.OpPropSet, A: obj, B: r, C: name})
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPropSetOverload, A: obj, B: r, C: name})
 			}
 		}, nil
 	case *StaticPropExpr:
@@ -16264,7 +16468,7 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 			return 0, err
 		}
 	}
-	silentBase := op == "=" || t.Key == nil
+	silentBase := (op == "=" || t.Key == nil) && !callLikeBase(t.Arr)
 	if silentBase {
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 	}
@@ -16571,6 +16775,9 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 		// Инкремент локальной/промотированной переменной прямо в её регистре.
 		if t.NameExpr == nil && !c.isRef(t.Name) && !c.useGlobal(t.Name) {
 			v := c.varReg(t.Name)
+			// ++/-- читает переменную: при флаге «не определена» Zend печатает
+			// «Undefined variable» (null -> 1), затем переменная определена.
+			c.emitUndefCheck(t.Name, c.exprLine(x))
 			if x.Pre {
 				c.emitIncDecReg(x.Op, v)
 				return v, nil
@@ -17653,6 +17860,7 @@ func (c *compiler) isset(x *IssetExpr) (uint8, error) {
 		} else if isThisVar(a) {
 			// isset($this) в статическом/несвязанном контексте — false, без
 			// ошибки "Using $this when not in object context".
+			c.usesThisVar = true
 			r = c.emitCall("__php_isset_this", nil)
 			nd := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLogicalAnd, A: nd, B: d, C: int32(r)})
@@ -17774,4 +17982,21 @@ func constValue(name string) (vm.Const, bool) {
 		return vm.FloatConst(math.Nextafter(1, 2) - 1), true
 	}
 	return vm.Const{}, false
+}
+
+// callLikeBase сообщает, что база write-цепочки — вызов функции/метода
+// (в т.ч. через промежуточные индексы). Подавление диагностик на такой базе
+// недопустимо: Zend не глушит код вызываемой функции, когда запись идёт в
+// результат вызова (`$foo->c()[0] = 1` — диагностики внутри c() видны).
+func callLikeBase(e Expr) bool {
+	for {
+		switch t := e.(type) {
+		case *IndexExpr:
+			e = t.Arr
+		case *CallExpr, *MethodCallExpr, *StaticCallExpr, *DynCallExpr, *NewExpr:
+			return true
+		default:
+			return false
+		}
+	}
 }

@@ -340,8 +340,21 @@ func (vm *VM) Cast(s Slot, kind CastKind) Slot { return castSlot(vm, s, int(kind
 // CastToObject — экспорт (object)-приведения (stdClass).
 func (vm *VM) CastToObject(s Slot) Slot { return castToObject(vm, s) }
 
-// castSlot выполняет приведение типа по правилам PHP. vm нужен только для
-// (object)-приведения (поиск stdClass); для остальных может быть nil.
+// slotClassName — имя класса значения для диагностик конверсии объекта
+// (Zend печатает имя класса, для анонимных — Parent@anonymous/class@anonymous).
+func (vm *VM) slotClassName(s Slot) string {
+	if s.typ == ClosureType {
+		return "Closure"
+	}
+	if ci := vm.classInfo(s); ci != nil {
+		return classDisplayName(ci)
+	}
+	return "object"
+}
+
+// castSlot выполняет приведение типа по правилам PHP. vm нужен для
+// (object)-приведения (поиск stdClass) и объектных диагностик; может быть nil
+// (тогда диагностики не печатаются).
 func castSlot(vm *VM, s Slot, kind int) Slot {
 	s = deref(s)
 	switch CastKind(kind) {
@@ -359,8 +372,29 @@ func castSlot(vm *VM, s Slot, kind int) Slot {
 			}
 			return MakeInt(1)
 		}
+		if s.typ == ObjectType || s.typ == ClosureType {
+			// Zend: объект -> int даёт 1 с Warning (zval_get_long).
+			if vm != nil {
+				vm.Warn("Object of class " + vm.slotClassName(s) + " could not be converted to int")
+			}
+			return MakeInt(1)
+		}
 		return MakeInt(s.ToInt())
 	case CastFloat:
+		if s.typ == ArrayType {
+			// Zend: непустой массив -> float даёт 1.0.
+			if s.AsArray().Len() > 0 {
+				return MakeFloat(1)
+			}
+			return MakeFloat(0)
+		}
+		if s.typ == ObjectType || s.typ == ClosureType {
+			// Zend: объект -> float даёт 1.0 с Warning (zval_get_double).
+			if vm != nil {
+				vm.Warn("Object of class " + vm.slotClassName(s) + " could not be converted to float")
+			}
+			return MakeFloat(1)
+		}
 		if s.typ == ArrayType {
 			if s.AsArray().Len() > 0 {
 				return MakeFloat(1)
@@ -386,6 +420,13 @@ func castSlot(vm *VM, s Slot, kind int) Slot {
 			if str, ok := vm.tryToString(s); ok {
 				return MakeString(str)
 			}
+		}
+		if s.typ == ArrayType {
+			// Zend: массив -> string даёт "Array" с Warning.
+			if vm != nil {
+				vm.Warn("Array to string conversion")
+			}
+			return MakeString("Array")
 		}
 		return MakeString(s.ToString())
 	case CastBool:

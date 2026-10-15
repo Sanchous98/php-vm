@@ -2411,6 +2411,20 @@ func reflIsInternal(ci ClassInfo) bool {
 	return false
 }
 
+// reflIsInternalScope — класс считается внутренним для привязки scope
+// замыкания (zend_valid_closure_binding): помимо флага internal учитываются
+// встроенные классы без объявления в userland (stdClass, исключения, SPL) —
+// у них defFile пуст.
+func reflIsInternalScope(ci ClassInfo) bool {
+	if reflIsInternal(ci) {
+		return true
+	}
+	if rc := asRC(ci); rc != nil {
+		return rc.defFile == ""
+	}
+	return false
+}
+
 // findMethodOrSig ищет метод (реализацию или сигнатуру) с учётом наследования,
 // возвращая функцию (nil для сигнатуры), класс-объявитель и видимость.
 func findMethodOrSig(ci ClassInfo, name string) (*Function, ClassInfo, Visibility, bool) {

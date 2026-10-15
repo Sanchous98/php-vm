@@ -538,6 +538,15 @@ func compareSlots(vm *VM, a, b Slot) int {
 			}
 			return -1
 		case IntType, FloatType:
+			// Zend: сравнение объекта с числом приводит объект к числу,
+			// печатая Notice (в отличие от явного каста — там Warning).
+			if vm != nil {
+				if other.typ == FloatType {
+					vm.Notice("Object of class " + vm.slotClassName(obj) + " could not be converted to float")
+				} else {
+					vm.Notice("Object of class " + vm.slotClassName(obj) + " could not be converted to int")
+				}
+			}
 			one := MakeInt(1)
 			if other.typ == FloatType {
 				one = MakeFloat(1)

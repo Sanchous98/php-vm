@@ -118,6 +118,9 @@ type CompiledFunction struct {
 	// Используется func_get_args()/func_get_arg() для различения объявленных
 	// параметров и лишних переданных аргументов.
 	numParams int
+	// usesThisVar — тело обращается к $this не через OpThis (isset($this));
+	// см. UsesThis.
+	usesThisVar bool
 }
 
 // SetNumParams задаёт число объявленных параметров.
@@ -133,6 +136,9 @@ func (f *CompiledFunction) NumParams() int { return f.numParams }
 // UsesThis сообщает, что тело функции обращается к $this (нужно для
 // диагностик Closure::bindTo(null) — аналог ZEND_ACC_USES_THIS).
 func (f *CompiledFunction) UsesThis() bool {
+	if f.usesThisVar {
+		return true
+	}
 	for i := 0; i < f.chunk.Len(); i++ {
 		if f.chunk.At(i).Op == OpThis {
 			return true
@@ -140,6 +146,10 @@ func (f *CompiledFunction) UsesThis() bool {
 	}
 	return false
 }
+
+// SetUsesThisVar помечает, что тело обращается к $this не через OpThis
+// (isset($this) компилируется в вызов __php_isset_this).
+func (f *CompiledFunction) SetUsesThisVar() { f.usesThisVar = true }
 
 // SetOwner связывает байткод с его *Function (для generator stack trace).
 func (f *CompiledFunction) SetOwner(o *Function) { f.owner = o }

@@ -579,6 +579,8 @@ type ArrowFnExpr struct {
 	Body    Expr
 	Static  bool
 	RetType string // объявленный тип возврата (`: T`), "" — не объявлен
+	// ByRefReturn — `fn& (...) => ...` (возврат по ссылке).
+	ByRefReturn bool
 	// Attrs — атрибуты `#[...]` перед `fn` (PHP 8).
 	Attrs []AttrDecl
 	// Line — строка объявления `fn ...`.
@@ -2013,7 +2015,6 @@ func hasDynamicGlobal(list []Stmt) bool {
 //	use const Foo\BAR;
 //	use Foo\{A, B as C, function f, const X};
 func (p *Parser) useStmt() (Stmt, error) {
-	usePos := p.cur().Pos
 	p.next() // use
 	kind := "class"
 	if p.kw("function") {
@@ -2024,6 +2025,7 @@ func (p *Parser) useStmt() (Stmt, error) {
 		p.next()
 	}
 	for {
+		line := p.lineAt(p.cur().Pos)
 		raw := p.rawQualifiedName()
 		// групповой импорт: `Prefix\{...}` (после имени остаётся `\{`)
 		if p.is(TOp, "\\") && p.peekAt(1).Val == "{" {
@@ -2112,7 +2114,7 @@ func (p *Parser) useStmt() (Stmt, error) {
 			// `as` ни на что не влияет (Zend: E_WARNING).
 			if p.ns == "" && !hasAs && !strings.Contains(trimmed, "\\") {
 				p.typeWarnings = append(p.typeWarnings, TypeWarning{
-					Line: p.lineAt(usePos),
+					Line: line,
 					Msg:  fmt.Sprintf("The use statement with non-compound name '%s' has no effect", trimmed),
 				})
 			}
@@ -3599,6 +3601,7 @@ func (p *Parser) arrowFnExpr(static bool) (Expr, error) {
 	line := p.lineAt(p.cur().Pos)
 	attrs := p.parseAttrs(p.takeAttrs())
 	p.next() // fn
+	byref := p.accept(TOp, "&")
 	params, err := p.paramList()
 	if err != nil {
 		return nil, err
@@ -3619,7 +3622,7 @@ func (p *Parser) arrowFnExpr(static bool) (Expr, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ArrowFnExpr{Params: params, Body: body, Static: static, RetType: retType, Attrs: attrs, Line: line, Ticks: p.ticks}, nil
+	return &ArrowFnExpr{Params: params, Body: body, Static: static, RetType: retType, ByRefReturn: byref, Attrs: attrs, Line: line, Ticks: p.ticks}, nil
 }
 
 // --- Выражения: приоритетный подъём ---
@@ -5342,7 +5345,8 @@ func (p *Parser) primary() (Expr, error) {
 				p.moveAttrsToNext(attrs)
 				return p.closureExpr(true)
 			}
-			if next, n2 := p.peekAt(1), p.peekAt(2); next.Kind == TIdent && next.Val == "fn" && n2.Val == "(" {
+			if next, n2 := p.peekAt(1), p.peekAt(2); next.Kind == TIdent && next.Val == "fn" &&
+				(n2.Val == "(" || (n2.Kind == TOp && n2.Val == "&" && p.peekAt(3).Val == "(")) {
 				attrs := p.takeAttrs()
 				p.next() // static
 				p.moveAttrsToNext(attrs)
@@ -5358,7 +5362,7 @@ func (p *Parser) primary() (Expr, error) {
 		if t.Val == "match" && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "(" {
 			return p.matchExpr()
 		}
-		if t.Val == "fn" && p.peekAt(1).Val == "(" {
+		if t.Val == "fn" && (p.peekAt(1).Val == "(" || (p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "&" && p.peekAt(2).Val == "(")) {
 			return p.arrowFnExpr(false)
 		}
 		return p.nameRefExpr()

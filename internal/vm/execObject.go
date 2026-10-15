@@ -695,12 +695,17 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 				shareSlot(val)
 				return execResult{}
 			}
-			if !vm.handleThrow(chunk, err) {
-				return execResult{err: err}
+			// Недоступное из текущей области свойство с __get читается через
+			// magic-метод (Zend magic_get_set); без __get — ошибка доступа.
+			if m := ci.lookupMethod("__get"); m == nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
 			}
-			return execResult{next: true}
+			declared = false
 		}
-		if pd.readonly && !readMode {
+		if declared && pd.readonly && !readMode {
 			// Косвенная запись в readonly-свойство:
 			// - промежуточное звено (OpPropGetRWInterm): инициализированное
 			//   свойство допустимо (модифицируется вложенный объект), пустое —
@@ -845,6 +850,38 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	}
 
 	return execResult{}
+}
+
+// opPropSetOverload — writeback контейнера `$obj->prop[...] = v`:
+// свойство могло быть получено через __get без ссылки — тогда запись не
+// имеет эффекта и печатается Notice (для объекта), __set не вызывается.
+func (vm *VM) opPropSetOverload(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	return vm.propSetOverloadCommon(regs, consts, chunk, in, false)
+}
+
+// opPropSetOverloadDyn — как opPropSetOverload для динамического имени.
+func (vm *VM) opPropSetOverloadDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	return vm.propSetOverloadCommon(regs, consts, chunk, in, true)
+}
+
+func (vm *VM) propSetOverloadCommon(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, dyn bool) execResult {
+	obj := deref(regs[in.A])
+	if ci := vm.classInfo(obj); ci != nil {
+		name := consts[in.C].StringVal()
+		if dyn {
+			name = deref(regs[in.C]).ToString()
+		}
+		if overloaded, byRef := vm.propRefOverloaded(ci, obj, name, true); overloaded && !byRef {
+			if v := deref(regs[in.B]); v.typ != ObjectType {
+				vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + name + " has no effect")
+			}
+			return execResult{}
+		}
+	}
+	if dyn {
+		return vm.opPropSetDyn(regs, consts, chunk, in)
+	}
+	return vm.opPropSet(regs, consts, chunk, in)
 }
 
 func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
@@ -1224,6 +1261,16 @@ func (vm *VM) propSetRefCommon(regs []Slot, chunk *Chunk, in Instruction, ci Cla
 	}
 	if ci.IsEnum() {
 		err := vm.enumWriteError(ci, o, pname)
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
+	if overloaded, byRef := vm.propRefOverloaded(ci, o, pname, true); overloaded && !byRef {
+		// `$obj->prop =& $x` для свойства из __get без ссылки: Zend печатает
+		// Notice и бросает Error (ссылка в overloaded-свойство невозможна).
+		vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		err := NewThrowable("Error", "Cannot assign by reference to overloaded object")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}

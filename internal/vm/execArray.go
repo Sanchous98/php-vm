@@ -379,6 +379,13 @@ func (vm *VM) listFetchRefWrite(regs []Slot, chunk *Chunk, in Instruction, r *Re
 		return vm.listFetchRefObject(regs, chunk, in, r, inner)
 	case StringType:
 		// Ссылку на байт строки создать нельзя (Zend: FETCH_DIM_W на строке).
+		// Диагностика ключа печатается до Error (Illegal string offset).
+		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
+			vm.Warn("String offset cast occurred")
+		}
+		if _, _, illegal := vm.stringOffsetKey(regs[in.C]); illegal {
+			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
+		}
 		err := NewThrowable("Error", "Cannot create references to/from string offsets")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
@@ -551,6 +558,14 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		return execResult{next: true}
 	}
 	if src.typ == StringType {
+		// FETCH_DIM_W на строке: сначала диагностика ключа, затем Error
+		// (Cannot create references to/from string offsets).
+		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
+			vm.Warn("String offset cast occurred")
+		}
+		if _, _, illegal := vm.stringOffsetKey(regs[in.C]); illegal {
+			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
+		}
 		err := NewThrowable("Error", "Cannot create references to/from string offsets")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
@@ -1405,6 +1420,12 @@ func (vm *VM) opUnset(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 		} else if k, ok := vm.KeyOfWarn(regs[in.B]); ok {
 			a := arr.AsArray().Unshare()
 			a.Unset(k)
+			// unset($GLOBALS['x']) удаляет и саму глобальную переменную $x:
+			// $GLOBALS в Zend — таблица символов main-скоупа (CV становится
+			// UNDEF, чтение печатает «Undefined variable»).
+			if g := deref(vm.globals["$GLOBALS"]); g.typ == ArrayType && g.AsArray() == arr.AsArray() {
+				delete(vm.globals, "$"+k.PHPString())
+			}
 			{
 				old := regs[in.A]
 				wv := MakeArray(a)

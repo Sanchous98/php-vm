@@ -192,7 +192,8 @@ func TestEvalParseError(t *testing.T) {
 }
 
 // TestRequireMissing проверяет фатал require для отсутствующего файла,
-// перехватываемый как Error.
+// перехватываемый как Error. Zend печатает Warning о потоке до throw
+// (сверено с php 8.3).
 func TestRequireMissing(t *testing.T) {
 	dir := t.TempDir()
 	main := filepath.Join(dir, "main.php")
@@ -201,7 +202,9 @@ func TestRequireMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("require missing: %v", err)
 	}
-	if got != "caught" {
-		t.Errorf("require missing: got %q want %q", got, "caught")
+	want := "\nWarning: require(nope-required.php): Failed to open stream: No such file or directory in " +
+		main + " on line 3\ncaught"
+	if got != want {
+		t.Errorf("require missing: got %q want %q", got, want)
 	}
 }

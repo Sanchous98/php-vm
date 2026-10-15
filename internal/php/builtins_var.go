@@ -248,7 +248,6 @@ func extractFn(ctx *vm.Context) vm.Value {
 		}
 	}
 	m := ctx.VM()
-	thisPresent := ctx.ThisSlot().Type() == vm.ObjectType
 	count := 0
 	for k, v := range arr.All() {
 		name := k.PHPString()
@@ -260,7 +259,9 @@ func extractFn(ctx *vm.Context) vm.Value {
 		}
 		valid := validVarName(name)
 		exists := m.SymtabHas(name)
-		isThis := name == "this" && thisPresent
+		// $this — особая переменная: extract() с ключом "this" бросает Error
+		// независимо от того, привязан ли $this (проверено на php 8.3).
+		isThis := name == "this"
 		if isThis {
 			// $this — особая переменная: переприсвоить нельзя.
 			switch extrType {

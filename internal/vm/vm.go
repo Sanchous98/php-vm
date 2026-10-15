@@ -961,6 +961,25 @@ func (vm *VM) syncGlobalsFromSnapshot() {
 	}
 }
 
+// GlobalsUnsetDyn удаляет глобальную переменную по динамическому имени
+// (unset($$x) в main-скоупе; имя — как у OpGlobalSetDyn, без `$`). Удаляет
+// также элемент снимка $GLOBALS, чтобы удаление было видно через массив.
+func (vm *VM) GlobalsUnsetDyn(name string) {
+	if vm.globals == nil || name == "" {
+		return
+	}
+	key := "$" + name
+	if _, ok := vm.globals[key]; !ok {
+		return
+	}
+	delete(vm.globals, key)
+	if g := deref(vm.globals["$GLOBALS"]); g.typ == ArrayType {
+		ga := g.AsArray().Unshare()
+		ga.Unset(globalsArrayKey(name))
+		vm.globals["$GLOBALS"] = MakeArray(ga)
+	}
+}
+
 // GlobalGet возвращает значение глобальной переменной.
 func (vm *VM) GlobalGet(name string) (Slot, bool) {
 	v, ok := vm.globals[name]
@@ -1071,6 +1090,7 @@ func (vm *VM) SymtabSet(name string, v Slot) error {
 						vm.wRegSlow(int(reg), old)
 					}
 				}
+				vm.clearDefFlag(name)
 				return nil
 			}
 		}
@@ -1095,6 +1115,20 @@ func (vm *VM) SymtabSet(name string, v Slot) error {
 	return vm.globalAssign("$"+name, deref(v))
 }
 
+// clearDefFlag опускает флаг «переменная определена» при записи в рантайме
+// (extract()/EXTR_REFS): без этого чтение после extract() давало бы ложное
+// «Undefined variable».
+func (vm *VM) clearDefFlag(name string) {
+	if vm.chunk == nil || vm.cur == nil {
+		return
+	}
+	fr, ok := vm.chunk.DefReg(name)
+	if !ok || fr < 0 || fr >= len(vm.cur.regs) {
+		return
+	}
+	vm.cur.regs[fr] = MakeBool(false)
+}
+
 // SymtabBindRef привязывает переменную name к Ref-ячейке ref (extract с
 // EXTR_REFS): последующие присваивания имени пишут сквозь ячейку, а общая
 // ячейка остаётся видимой в исходном массиве.
@@ -1110,6 +1144,7 @@ func (vm *VM) SymtabBindRef(name string, ref Slot) {
 						vm.wRegSlow(int(reg), old)
 					}
 				}
+				vm.clearDefFlag(name)
 				return
 			}
 		}
@@ -4836,6 +4871,22 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 		case OpIndexSetOverloadRaw:
 			if hr := vm.opIndexSetOverloadRaw(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpPropSetOverload:
+			if hr := vm.opPropSetOverload(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpPropSetOverloadDyn:
+			if hr := vm.opPropSetOverloadDyn(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
 				return nil

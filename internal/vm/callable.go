@@ -233,7 +233,7 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 			return MakeNull(), nil
 		}
 	}
-	if ce != nil && ce != cl.Scope && reflIsInternal(ce) {
+	if ce != nil && ce != cl.Scope && reflIsInternalScope(ce) {
 		vm.Warning("Cannot bind closure to scope of internal class " + ClassDisplayName(ce.Name()))
 		return MakeNull(), nil
 	}
@@ -274,6 +274,12 @@ func (vm *VM) closureCall(cl *Closure, args []Slot) (Slot, error) {
 	if cl.Fake && cl.Fn != nil && cl.Fn.Scope != nil && !vm.slotInstanceOfClass(recv, cl.Fn.Scope) {
 		vm.Warning(fmt.Sprintf("Cannot bind method %s::%s() to object of class %s",
 			ClassDisplayName(cl.Fn.Scope.Name()), cl.Fn.Name, ClassDisplayName(ci.Name())))
+		return MakeNull(), nil
+	}
+	// Смена scope на встроенный класс недопустима (zend_valid_closure_binding):
+	// stdClass и прочие internal-классы не могут стать scope замыкания.
+	if ci != cl.Scope && reflIsInternalScope(ci) {
+		vm.Warning("Cannot bind closure to scope of internal class " + ClassDisplayName(ci.Name()))
 		return MakeNull(), nil
 	}
 	nc := *cl

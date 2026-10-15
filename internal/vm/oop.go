@@ -1489,6 +1489,59 @@ func (vm *VM) propSetExisting(o Slot, pname string, val Slot) (bool, error) {
 // propRefCell возвращает ячейку-ссылку свойства recv->pname, создавая её (и
 // сохраняя в объекте) при необходимости. Для типизированного свойства ячейка
 // получает guard.
+// propRefOverloaded сообщает, что свойство читается/пишется через __get
+// (реального свойства нет). Второй результат — __get объявлен с возвратом по
+// ссылке (тогда модификация проходит через возвращённую ячейку).
+// magicAccess: недоступное из текущей области объявленное свойство тоже
+// считается overloaded (нужно write-контексту: magic_get_set, bug37667); для
+// ссылочного чтения (OpPropRef) такой случай обязан давать ошибку доступа.
+func (vm *VM) propRefOverloaded(ci ClassInfo, o Slot, pname string, magicAccess bool) (bool, bool) {
+	m := ci.lookupMethod("__get")
+	if m == nil {
+		return false, false
+	}
+	pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, pname)
+	key := vm.propKey(pd, decl, pname)
+	inaccessible := false
+	if declared {
+		if ob := vm.objectOf(o); ob != nil && ob.IsUnset(key) {
+			declared = false
+		} else if magicAccess && vm.propAccessErr(pd, decl, pname) != nil {
+			// Недоступное из текущей области свойство читается через __get
+			// (Zend magic_get_set), даже если запись в хранилище есть.
+			declared = false
+			inaccessible = true
+		}
+	}
+	if inaccessible {
+		return true, m.ByRefReturn
+	}
+	if declared {
+		return false, m.ByRefReturn
+	}
+	if _, ok := vm.getProp(o, key); ok {
+		return false, m.ByRefReturn
+	}
+	return true, m.ByRefReturn
+}
+
+// magicGetValue вызывает __get и проверяет результат (общая часть для
+// ссылочных выборок свойства).
+func (vm *VM) magicGetValue(ci ClassInfo, o Slot, pname string) (Slot, error) {
+	res, ok, err := vm.callMagicMethod(ci, o, "__get", []Slot{MakeString(pname)})
+	if err != nil {
+		return Slot{}, err
+	}
+	if !ok {
+		return MakeNull(), nil
+	}
+	res, gerr := vm.checkMagicGet(ci, pname, res)
+	if gerr != nil {
+		return Slot{}, gerr
+	}
+	return res, nil
+}
+
 func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 	ci := vm.classInfo(recv)
 	if ci == nil {
@@ -1496,6 +1549,22 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 	}
 	if ci.IsEnum() {
 		return Slot{}, vm.enumWriteError(ci, recv, pname)
+	}
+	if overloaded, byRef := vm.propRefOverloaded(ci, recv, pname, false); overloaded {
+		res, err := vm.magicGetValue(ci, recv, pname)
+		if err != nil {
+			return Slot{}, err
+		}
+		if byRef {
+			if res.typ == RefType {
+				return res, nil
+			}
+			return MakeRef(&Ref{v: deref(res)}), nil
+		}
+		// Косвенная модификация свойства из __get без ссылки: Notice и
+		// отделённая ячейка (запись через неё объект не затрагивает).
+		vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		return MakeRef(&Ref{v: deref(res)}), nil
 	}
 	if pd, decl, ok := vm.scopedProp(vm.ctx.self, ci, pname); ok && pd != nil {
 		if err := vm.propAccessErr(pd, decl, pname); err != nil {

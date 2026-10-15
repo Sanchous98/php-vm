@@ -489,10 +489,16 @@ const (
 	OpStaticGetRW // STATIC_GET_RW
 	// OpStaticGetRWDyn — то же для динамического имени (C — регистр-имя).
 	OpStaticGetRWDyn // STATIC_GET_RW_DYN
+	// OpPropSetOverload — writeback контейнера `$obj->prop[...] = v`: если
+	// свойство получено через __get без ссылки, запись не имеет эффекта
+	// (Notice для не-объекта), иначе — обычная запись (как OpPropSet).
+	OpPropSetOverload // PROP_SET_OVERLOAD
+	// OpPropSetOverloadDyn — то же для динамического имени (C — регистр-имя).
+	OpPropSetOverloadDyn // PROP_SET_OVERLOAD_DYN
 )
 
 // numOpcodes — число опкодов (для таблиц, индексируемых опкодом).
-const numOpcodes = int(OpStaticGetRWDyn) + 1
+const numOpcodes = int(OpPropSetOverloadDyn) + 1
 
 // IsUnconditionalTerminator сообщает, что после инструкции исполнение не
 // продолжается со следующей позиции (нет fallthrough): компилятор не ставит

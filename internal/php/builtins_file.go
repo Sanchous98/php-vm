@@ -85,6 +85,11 @@ func parseIniFn(ctx *vm.Context) vm.Value {
 // iniParseString разбирает INI-строку. При синтаксической ошибке возвращает
 // false (как PHP) и печатает Warning.
 func iniParseString(ctx *vm.Context, s string, sections bool, scanner int, file string) vm.Value {
+	// Zend (zend_parse_ini_file): недопустимый режим сканера — Warning и false.
+	if scanner < iniScannerNormal || scanner > iniScannerTyped {
+		ctx.VM().Warning("Invalid scanner mode")
+		return vm.Bool(false)
+	}
 	p := &iniParser{ctx: ctx, sections: sections, scanner: scanner, file: file, line: 1}
 	out := p.parse(s)
 	if p.failed {
@@ -510,6 +515,12 @@ func (p *iniParser) iniRawValue(s string, i int) (string, int) {
 	}
 	val := s[i:end]
 	val = strings.TrimRight(val, " \t")
+	if len(val) > 0 && val[0] == '"' && !(len(val) > 1 && val[len(val)-1] == '"') {
+		// RAW-сканер: незакрытая кавычка в строке — syntax error (Zend:
+		// unexpected '"'); значение с переносом строки не допускается.
+		p.syntaxError(`"`)
+		return val, j
+	}
 	if len(val) > 1 && val[0] == '"' && val[len(val)-1] == '"' {
 		val = val[1 : len(val)-1]
 	}

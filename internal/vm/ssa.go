@@ -213,6 +213,8 @@ func init() {
 	s(OpJumpIfLessIntImm, rNone, rUse, rNone)
 	s(OpIndexRef, rDef, rUseDef, rUse)
 	s(OpPropRef, rDef, rUse, rNone)
+	s(OpPropSetOverload, rUse, rUse, rNone)
+	s(OpPropSetOverloadDyn, rUse, rUse, rUse)
 	s(OpPropRefDyn, rDef, rUse, rUse)
 	s(OpPropUnrefDyn, rUse, rUse, rNone)
 	s(OpIterCurrentRef, rDef, rUse, rNone)

@@ -5652,7 +5652,7 @@ func (vm *VM) warnByRefArgs(fn *Function, args []Slot) {
 			if !tail && i < len(fn.ParamNames) && fn.ParamNames[i] != "" {
 				name = " ($" + fn.ParamNames[i] + ")"
 			}
-			vm.Warning(fmt.Sprintf("%s(): Argument #%d%s must be passed by reference, value given", fn.Name, i+1, name))
+			vm.Warning(fmt.Sprintf("%s(): Argument #%d%s must be passed by reference, value given", argFuncDisplayName(fn), i+1, name))
 		}
 	}
 }
@@ -5937,6 +5937,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 		vm.mergeNamedVariadic(args, fn)
 	}
 	vm.pendingFrameNamed = extras
+	callDepth := len(vm.callStack)
 	vm.pushCall(fn, rawArgs)
 	vm.pendingFrameNamed = nil
 	if extras != nil && isNativeFn && !fn.AcceptsExtraNamed {
@@ -5948,7 +5949,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedSuppress := vm.suppress
-	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet, callDepth); perr != nil {
 		err = perr
 	} else {
 		args = ck
@@ -6028,14 +6029,32 @@ func (vm *VM) CheckDefaultArg(val Slot, argNum int) (Slot, error) {
 
 // checkParams проверяет/приводит типы аргументов вызова (слабая типизация).
 func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
-	return vm.checkParamsN(fn, args, -1, 0, false)
+	return vm.checkParamsN(fn, args, -1, 0, false, -1)
 }
 
 // checkParamsN — checkParams с явным числом переданных вызывающим аргументов:
 // null-заглушки отсутствующих параметров не считаются явным null (bug68446:
 // `a(null)` при `array $a = FOO` — TypeError, а `a()` — дефолт). mask/maskSet —
-// маска реально переданных позиций при именованных аргументах.
-func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int, mask int64, maskSet bool) ([]Slot, error) {
+// маска реально переданных позиций при именованных аргументах. hideDepth —
+// глубина стека вызовов до pushCall этого кадра: на время проверки аргументы
+// кадра скрываются, чтобы трейс ошибки не показывал их (Zend не печатает
+// аргументы кадра, упавшего на проверке типов/дефолтов: typehints/or_null,
+// bug72101); при успешной проверке аргументы возвращаются. -1 — не скрывать.
+func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int, mask int64, maskSet bool, hideDepth int) (out []Slot, reterr error) {
+	if hideDepth >= 0 && len(vm.callStack) > hideDepth {
+		idx := len(vm.callStack) - 1
+		saved := vm.callStack[idx].args
+		vm.callStack[idx].args = nil
+		defer func() {
+			if reterr == nil {
+				vm.callStack[idx].args = saved
+			}
+		}()
+	}
+	return vm.checkParamsCore(fn, args, provided, mask, maskSet)
+}
+
+func (vm *VM) checkParamsCore(fn *Function, args []Slot, provided int, mask int64, maskSet bool) ([]Slot, error) {
 	types := fn.ParamTypes
 	if len(types) == 0 {
 		return args, nil
@@ -7083,6 +7102,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	}
 	vm.pendingThis = cl.BoundThis
 	vm.pendingFrameNamed = extras
+	callDepth := len(vm.callStack)
 	vm.pushCall(fn, display)
 	vm.pendingFrameNamed = nil
 	if deref(cl.BoundThis).typ == ObjectType {
@@ -7097,7 +7117,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	if namedCount >= 0 {
 		paramProvided = -1
 	}
-	if ck, perr := vm.checkParamsN(fn, full, paramProvided, pmask, pmaskSet); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, full, paramProvided, pmask, pmaskSet, callDepth); perr != nil {
 		err = perr
 	} else {
 		full = ck
@@ -7183,6 +7203,7 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		vm.suppressNextFrame = false
 	}
 	pushed := false
+	callDepth := len(vm.callStack)
 	if traced {
 		vm.pendingFrameNamed = extras
 		vm.pushCall(fn, rawArgs)
@@ -7204,7 +7225,7 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 			return Slot{}, vm.extraNamedNativeErr(fn)
 		}
 	}
-	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet, callDepth); perr != nil {
 		err = perr
 	} else {
 		args = ck

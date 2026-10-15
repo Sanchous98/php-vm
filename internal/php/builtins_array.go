@@ -1183,10 +1183,11 @@ func arraySliceFn(ctx *vm.Context) vm.Value {
 		idx++
 	}
 	for _, e := range vals {
+		v := derefLoneRef(ctx, e.v)
 		if preserve || e.k.IsStr() {
-			out.Set(e.k, e.v)
+			out.Set(e.k, v)
 		} else {
-			out.Append(e.v)
+			out.Append(v)
 		}
 	}
 	return vm.MakeArray(out)

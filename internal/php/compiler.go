@@ -15787,18 +15787,34 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: v, B: cur, C: int32(r)})
 			return v, nil
 		}
+		if t.NameExpr != nil {
+			// Динамическое имя (`$$n op= v`): Zend выполняет ASSIGN_OP после
+			// правого операнда — имя и текущее значение читаются в момент
+			// записи, ровно один раз (bug71300: `$$n .= (...)` видит уже
+			// изменённый $n).
+			r, verr := c.expr(value)
+			if verr != nil {
+				return 0, verr
+			}
+			ne, nerr := c.expr(t.NameExpr)
+			if nerr != nil {
+				return 0, nerr
+			}
+			cur := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(ne)})
+			d := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: d, C: int32(ne)})
+			return d, nil
+		}
 		var cur uint8
 		var err error
-		if t.NameExpr != nil {
-			cur, err = c.loadVarDyn(t.NameExpr)
-		} else {
-			cur = c.loadVarChecked(t.Name, c.exprLine(t))
-		}
+		cur = c.loadVarChecked(t.Name, c.exprLine(t))
 		if err != nil {
 			return 0, err
 		}
 		var r uint8
-		if t.NameExpr == nil && c.deferLeftGlobal(t, value) {
+		if c.deferLeftGlobal(t, value) {
 			// Глобальная переменная: читаем её после правого операнда
 			// (Zend читает CV в момент выполнения ASSIGN_OP).
 			r, err = c.expr(value)
@@ -15815,17 +15831,9 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 		// Для переменной (в т.ч. by-ref параметра) считаем прямо в регистр
 		// текущего значения: лишний временный регистр здесь не нужен и может
 		// конфликтовать с регистрами ссылочных опкодов.
-		if t.NameExpr == nil {
-			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: cur, B: cur, C: int32(r)})
-			c.storeVar(t.Name, cur)
-			return cur, nil
-		}
-		d := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
-		if err := c.storeVarDyn(t.NameExpr, d); err != nil {
-			return 0, err
-		}
-		return d, nil
+		c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: cur, B: cur, C: int32(r)})
+		c.storeVar(t.Name, cur)
+		return cur, nil
 	case *IndexExpr:
 		if op == "=" && byref {
 			return c.assignIndexRef(t, value)

@@ -195,9 +195,11 @@ func (vm *VM) stringIndexOfString(regs []Slot, in Instruction) error {
 // opIndexRawWrite — A = B[C] как база записи вложенной цепочки. Для строкового
 // контейнера Zend не отдаёт символ (временная строка): после диагностик о
 // ключе бросается Error "Cannot use string offset as an array" (bug53432,
-// bug70089, offset_assign). Для массивов/объектов — как OpIndexRaw.
+// bug70089, offset_assign). Для массивов пропущенный ключ автовивифицируется
+// молча (FETCH_DIM_W), в отличие от чтения (OpIndexRaw).
 func (vm *VM) opIndexRawWrite(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	if src := deref(regs[in.B]); src.typ == StringType {
+	src := deref(regs[in.B])
+	if src.typ == StringType {
 		if err := vm.stringIndexOfString(regs, in); err != nil {
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
@@ -209,6 +211,37 @@ func (vm *VM) opIndexRawWrite(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 			return execResult{err: err}
 		}
 		return execResult{next: true}
+	}
+	if src.typ == ArrayType {
+		// Тихий raw-fetch: отсутствующий ключ — не диагностика (запись).
+		if ks := deref(regs[in.C]); ks.typ == IntType {
+			v, _ := src.AsArray().GetInt(ks.Int())
+			{
+				old := regs[in.A]
+				regs[in.A] = v
+				if trackedType(old.typ) || trackedType(v.typ) {
+					vm.wRegSlow(int(in.A), old)
+				}
+			}
+			return execResult{}
+		}
+		k, ok := vm.KeyOfWarn(regs[in.C])
+		if !ok {
+			err := vm.offsetTypeErr("access", regs[in.C])
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		v, _ := src.AsArray().Get(k)
+		{
+			old := regs[in.A]
+			regs[in.A] = v
+			if trackedType(old.typ) || trackedType(v.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
 	}
 	return vm.opIndexRaw(regs, consts, chunk, in)
 }
@@ -1011,7 +1044,7 @@ func (vm *VM) opIndexRW(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 
 // opIndexAppendRaw — A = B[C] в режиме append-базы (`$x[][k] = v`, C — счетчик
 // count(B)): для классов с запретом append (WeakMap) — Error, иначе как
-// OpIndexRaw.
+// OpIndexRawWrite (тихий fetch базы записи).
 func (vm *VM) opIndexAppendRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	if src := deref(regs[in.B]); src.typ == ObjectType {
 		if rc, ok := asRuntimeClass(vm.classInfo(src)); ok && rc != nil && rc.noAppend {
@@ -1022,7 +1055,7 @@ func (vm *VM) opIndexAppendRaw(regs []Slot, consts []Slot, chunk *Chunk, in Inst
 			return execResult{next: true}
 		}
 	}
-	return vm.opIndexRaw(regs, consts, chunk, in)
+	return vm.opIndexRawWrite(regs, consts, chunk, in)
 }
 
 func (vm *VM) opIndexSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {

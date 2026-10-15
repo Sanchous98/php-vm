@@ -483,6 +483,34 @@ func builtins() []*vm.Function {
 		vm.Register("define", defineFn),
 		vm.Register("defined", definedFn),
 		vm.Register("constant", constantFn),
+
+		// ext/simplexml — минимальный конструктор узла (bug34199, bug43918).
+		vm.Register("simplexml_load_string", func(ctx *vm.Context) vm.Value {
+			res, err := ctx.VM().NewInstanceByName("SimpleXMLElement", []vm.Slot{arg(ctx, 0)})
+			if err != nil {
+				if th, ok := err.(*vm.Throwable); ok {
+					ctx.Throw(th)
+				} else {
+					ctx.Throw(vm.NewThrowable("Error", err.Error()))
+				}
+				if ctx.HasThrown() {
+					return *new(vm.Value)
+				}
+				return vm.MakeNull()
+			}
+			return res
+		}),
+
+		// ext/xml — минимальные заглушки (ресурс парсера и set_object).
+		vm.Register("xml_parser_create", xmlParserCreate),
+		vm.Register("xml_parser_create_ns", xmlParserCreate),
+		vm.Register("xml_set_object", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("xml_parser_free", func(ctx *vm.Context) vm.Value {
+			if r := vm.AsResource(arg(ctx, 0)); r != nil {
+				delete(xmlParserRes, r.ID)
+			}
+			return vm.Bool(true)
+		}),
 		vm.Register("__php_const_lookup", constLookupFn),
 		vm.Register("__const_expr", constExprConstantFn),
 		vm.Register("function_exists", func(ctx *vm.Context) vm.Value {

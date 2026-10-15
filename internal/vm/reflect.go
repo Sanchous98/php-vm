@@ -19,6 +19,15 @@ func (c *runtimeClass) IsTrait() bool { return c != nil && (c.isTrait || c.declT
 // SetDeclaredTrait помечает дескриптор как объявленный через `trait`.
 func (c *runtimeClass) SetDeclaredTrait() ClassInfo { c.declTrait = true; return c }
 
+// SetDocComment задаёт doc-комментарий объявления класса.
+func (c *runtimeClass) SetDocComment(doc string) ClassInfo {
+	c.docComment = doc
+	return c
+}
+
+// DocComment возвращает doc-комментарий объявления класса.
+func (c *runtimeClass) DocComment() string { return c.docComment }
+
 // ParentName возвращает имя родительского класса ("" если нет).
 func (c *runtimeClass) ParentName() string {
 	if c == nil || c.parent == nil {

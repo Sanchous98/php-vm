@@ -4131,6 +4131,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		if cd.IsTrait {
 			ci.SetDeclaredTrait()
 		}
+		if cd.Doc != "" {
+			ci.SetDocComment(cd.Doc)
+		}
 		if cd.IsEnum {
 			ci.SetEnumBacking(cd.EnumBacking)
 			// Виртуальные readonly-свойства enum-кейса (видны рефлексии).

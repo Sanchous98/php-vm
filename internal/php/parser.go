@@ -179,6 +179,8 @@ type ClassDecl struct {
 	TraitAdapt []*TraitAdapt
 	// Line — 1-based строка объявления класса (для диагностик компилятора).
 	Line int
+	// Doc — doc-комментарий `/** ... */` перед объявлением (рефлексия).
+	Doc string
 	// MissingParent/MissingInterface — имя родителя/интерфейса, неизвестного
 	// на этапе компиляции (может быть определён автозагрузкой в рантайме).
 	MissingParent    string
@@ -2368,11 +2370,13 @@ modsDone:
 		}
 	}
 	classLine := p.lineAt(p.cur().Pos)
+	classPos := p.cur().Pos
 	classAttrs := p.parseAttrs(p.takeAttrs())
 	p.next()
 
 	cd := &ClassDecl{IsInterface: kind == "interface", IsTrait: kind == "trait", IsAbstract: isAbstract, IsFinal: isFinal,
-		IsReadonly: isReadonly, ReadonlyDup: readonlyCount > 1, FinalDup: finalCount > 1, Line: classLine, Attrs: classAttrs}
+		IsReadonly: isReadonly, ReadonlyDup: readonlyCount > 1, FinalDup: finalCount > 1, Line: classLine, Attrs: classAttrs,
+		Doc: p.docCommentBefore(classPos)}
 	if kind == "enum" {
 		cd.IsEnum = true
 	}

@@ -601,6 +601,14 @@ func registerReflectionClassMembers(ci ClassInfo) {
 		}
 		return MakeString(n), nil
 	})
+	reflMethodReg(ci, "getDocComment", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		if d.class != nil {
+			if doc := d.class.DocComment(); doc != "" {
+				return MakeString(doc), nil
+			}
+		}
+		return MakeBool(false), nil
+	})
 	reflMethodReg(ci, "getNamespaceName", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		n := d.class.Name()
 		if i := strings.LastIndexByte(n, '\\'); i >= 0 {
@@ -1635,6 +1643,9 @@ func registerReflectionPropertyMembers(ci ClassInfo) {
 		return MakeArray(arr), nil
 	})
 	reflMethodReg(ci, "getAttributes", reflGetAttributes(func(d *reflectionData) []AttributeInfo { return propAttrs(d.class, d.name) }))
+	reflMethodReg(ci, "getDocComment", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		return MakeBool(false), nil
+	})
 	reflMethodReg(ci, "__toString", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		return MakeString("Property [ " + visWord(d.vis) + " $" + d.name + " ]\n"), nil
 	})

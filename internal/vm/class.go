@@ -122,6 +122,10 @@ type ClassInfo interface {
 
 	// SetDeclaredTrait помечает дескриптор как объявленный через `trait`.
 	SetDeclaredTrait() ClassInfo
+	// SetDocComment задаёт doc-комментарий объявления класса (рефлексия).
+	SetDocComment(doc string) ClassInfo
+	// DocComment возвращает doc-комментарий объявления класса.
+	DocComment() string
 
 	// Рефлексия (используется builtins пакета php).
 	IsInterface() bool

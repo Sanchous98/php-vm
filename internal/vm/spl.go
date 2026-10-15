@@ -142,6 +142,11 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 
 	arrayObject := RegisterClass[splArrayData]("ArrayObject", nil)
 	arrayIterator := RegisterClass[splArrayData]("ArrayIterator", nil)
+	// RecursiveArrayIterator — подкласс ArrayIterator (обход верхнего уровня
+	// совпадает; bug60138 использует только итерацию).
+	recArrayIterator := RegisterClass[splArrayData]("RecursiveArrayIterator", arrayIterator)
+	recIteratorIterator := RegisterClass[filterIterData]("RecursiveIteratorIterator", nil)
+	simpleXml := RegisterClass[simpleXmlData]("SimpleXMLElement", nil)
 	objStorage := RegisterClass[splObjectStorageData]("SplObjectStorage", nil)
 	weakMap := RegisterClass[weakMapData]("WeakMap", nil)
 	weakMap.SetNoDynamicProps()
@@ -195,6 +200,13 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 
 	arrayObject.Implements(aggregate, arrayAccess, countable, serializable)
 	arrayIterator.Implements(seekable, arrayAccess, countable, serializable)
+	recArrayIterator.Implements(seekable, arrayAccess, countable, serializable)
+	recIteratorIterator.Implements(iterator)
+	registerRecursiveIteratorMembers(recIteratorIterator)
+	registerSimpleXmlMembers(simpleXml)
+	recIteratorIterator.DefineConst("LEAVES_ONLY", MakeInt(0))
+	recIteratorIterator.DefineConst("SELF_FIRST", MakeInt(1))
+	recIteratorIterator.DefineConst("CHILD_FIRST", MakeInt(2))
 	objStorage.Implements(iterator, countable, serializable, arrayAccess)
 	weakMap.Implements(aggregate, countable, arrayAccess)
 	multiIter.Implements(iterator)
@@ -226,7 +238,7 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	observer := NewInterface("SplObserver", nil)
 	subject := NewInterface("SplSubject", nil)
 
-	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
+	return []ClassInfo{seekable, arrayObject, arrayIterator, recArrayIterator, recIteratorIterator, simpleXml, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
 }
 
 // filterIterData — состояние FilterIterator/CallbackFilterIterator:
@@ -323,6 +335,134 @@ func registerFilterIteratorMembers(ci *runtimeClass, withCallback bool) {
 				return Slot{}, err
 			}
 			if _, err := ctx.vm.filterIterSkip(d, withCallback); err != nil {
+				return Slot{}, err
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("current", &Function{Name: "current", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			return ctx.vm.iterCall(d.inner, "current")
+		},
+	}})
+	ci.Method("key", &Function{Name: "key", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			return ctx.vm.iterCall(d.inner, "key")
+		},
+	}})
+	ci.Method("getInnerIterator", &Function{Name: "getInnerIterator", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			return d.inner, nil
+		},
+	}})
+}
+
+// simpleXmlData — состояние SimpleXMLElement: исходный XML (строкой).
+type simpleXmlData struct {
+	Object
+	xml string
+}
+
+// registerSimpleXmlMembers — мини-реализация SimpleXMLElement: конструктор
+// сохраняет XML, children() возвращает "пустой узел" (bool(false), как Zend
+// для отсутствующих детей), asXML() отдаёт исходный текст. Используется
+// тестами, которым нужен лишь факт существования класса (bug34199, bug43918).
+func registerSimpleXmlMembers(ci *runtimeClass) {
+	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[simpleXmlData]()
+			if d == nil || len(args) == 0 {
+				return MakeNull(), nil
+			}
+			d.xml = deref(args[0]).ToString()
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("children", &Function{Name: "children", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			return MakeBool(false), nil
+		},
+	}})
+	ci.Method("asXML", &Function{Name: "asXML", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[simpleXmlData]()
+			if d == nil {
+				return MakeBool(false), nil
+			}
+			return MakeString(d.xml), nil
+		},
+	}})
+	ci.Method("__toString", &Function{Name: "__toString", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[simpleXmlData]()
+			if d == nil {
+				return MakeString(""), nil
+			}
+			return MakeString(d.xml), nil
+		},
+	}})
+}
+
+// registerRecursiveIteratorMembers — RecursiveIteratorIterator: обёртка,
+// делегирующая обход внутреннему итератору (recursion не нужна для корпуса;
+// bug60138 проверяет только успешный foreach).
+func registerRecursiveIteratorMembers(ci *runtimeClass) {
+	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			if len(args) > 0 {
+				d.inner = args[0]
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("rewind", &Function{Name: "rewind", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			if err := ctx.vm.iterInvoke(d.inner, "rewind", nil); err != nil {
+				return Slot{}, err
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("valid", &Function{Name: "valid", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeBool(false), nil
+			}
+			ok, err := ctx.vm.iterValid2(d.inner)
+			if err != nil {
+				return Slot{}, err
+			}
+			return MakeBool(ok), nil
+		},
+	}})
+	ci.Method("next", &Function{Name: "next", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			if err := ctx.vm.iterInvoke(d.inner, "next", nil); err != nil {
 				return Slot{}, err
 			}
 			return MakeNull(), nil

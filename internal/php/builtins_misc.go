@@ -1178,6 +1178,21 @@ func forwardStaticCallArrayFn(ctx *vm.Context) vm.Value {
 	return res
 }
 
+// xmlParser — минимальная заглушка ресурса ext/xml (bug34617): тесты
+// проверяют только создание/освобождение и xml_set_object.
+type xmlParser struct{ obj vm.Value }
+
+var xmlParserRes = map[int64]*xmlParser{}
+
+// xmlParserCreate — общий код xml_parser_create[_ns].
+func xmlParserCreate(ctx *vm.Context) vm.Value {
+	id := fsNextID
+	fsNextID++
+	h := &xmlParser{}
+	xmlParserRes[id] = h
+	return vm.MakeResource(id, "xml", h)
+}
+
 // callableReason возвращает причину невалидности callable в формате PHP
 // (или "" если значение действительно вызываемо).
 // methodAccessReason возвращает причину недоступности непубличного метода

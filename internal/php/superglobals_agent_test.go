@@ -600,6 +600,13 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 			}
 		}
 	}
+	// auto_prepend_file: путь известен до компиляции — include_once этого файла
+	// в основном скрипте должен быть пропущен инлайнером (bug32924).
+	preIncludedFiles = map[string]bool{}
+	if ap := strings.TrimSpace(iniValues["auto_prepend_file"]); ap != "" {
+		preIncludedFiles[resolveIncludePath(ap, diagFile)] = true
+	}
+	defer func() { preIncludedFiles = map[string]bool{} }()
 	c, err := CompileFile(p.File+"\n", diagFile)
 	if err != nil {
 		return "", err
@@ -681,7 +688,36 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 			_ = os.Setenv(name, val)
 		}
 	}
-	err = m.Run()
+	// auto_prepend_file: как run-tests.php, сначала исполняется префиксный файл
+	// (exit в нём прерывает скрипт — bug79948; include_once видит его как уже
+	// подключённый — bug32924).
+	prependExited := false
+	if ap := strings.TrimSpace(iniValues["auto_prepend_file"]); ap != "" {
+		apFile := resolveIncludePath(ap, diagFile)
+		if data, rerr := os.ReadFile(apFile); rerr == nil {
+			funcs0, classes0 := m.FunctionsTable(), m.Classes()
+			incompleteIdx := -1
+			for i, c := range classes0 {
+				if c.Name() == incompleteClassName {
+					incompleteIdx = i
+					break
+				}
+			}
+			base := &Compiled{Funcs: funcs0, Classes: classes0, IncompleteIdx: incompleteIdx}
+			if pc, perr := compileFileModeLink(string(data), apFile, false, base); perr == nil {
+				_ = m.MarkIncluded(apFile)
+				if _, _, rerr2 := m.RunLinked(pc.Main, pc.Funcs, pc.Classes, len(funcs0), len(classes0)); rerr2 != nil {
+					if vm.IsExitSignal(rerr2) {
+						m.RequestHalt()
+						prependExited = true
+					}
+				}
+			}
+		}
+	}
+	if !prependExited {
+		err = m.Run()
+	}
 	for i := len(envRestore) - 1; i >= 0; i-- {
 		if envRestore[i].had {
 			_ = os.Setenv(envRestore[i].name, envRestore[i].old)

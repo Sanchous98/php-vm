@@ -358,6 +358,7 @@ func exceptionCode(o *Object) int64 {
 
 // findClass ищет класс по имени среди зарегистрированных в VM.
 func (vm *VM) findClass(name string) ClassInfo {
+	name = strings.TrimLeft(name, "\\")
 	for _, ci := range vm.classes {
 		if ClassHidden(ci) {
 			continue
@@ -366,7 +367,16 @@ func (vm *VM) findClass(name string) ClassInfo {
 			return ci
 		}
 	}
-	if ci, ok := vm.classAliases[strings.ToLower(strings.TrimLeft(name, "\\"))]; ok {
+	// PHP: имена классов регистронезависимы (bug78502: тип `closure`).
+	for _, ci := range vm.classes {
+		if ClassHidden(ci) {
+			continue
+		}
+		if strings.EqualFold(ci.Name(), name) {
+			return ci
+		}
+	}
+	if ci, ok := vm.classAliases[strings.ToLower(name)]; ok {
 		return ci
 	}
 	return nil
@@ -582,14 +592,28 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 			vm.dropDeadRegs(chunk, pc)
 			// Если при списании умер объект с деструктором, уничтожаем его
 			// прямо здесь (Zend освобождает операнды до раскрутки): ошибка
-			// деструктора заменяет текущую (gh20183_001, bug73338).
+			// деструктора заменяет текущую и встаёт в цепочку previous
+			// (gh20183_001, bug73338). Остальные мёртвые операнды тоже
+			// уничтожаются сейчас, их ошибки прицепляются дальше (bug73337:
+			// `new d + new d` — оба деструктора бросают).
 			if vm.lifeUrgent && !vm.sweepBusy {
-				out := vm.sweepLifetime(false, chunk, pc)
-				if out.err != nil {
+				for iter := 0; iter < 256; iter++ {
+					out := vm.sweepLifetime(false, chunk, pc)
+					if out.err == nil {
+						break
+					}
 					if nth, ok := asThrowable(out.err); ok {
+						if cur, ok2 := asThrowable(err); ok2 {
+							vm.chainPrevious(nth, cur)
+						}
 						err = nth
 						vm.inFlightTh = nth
+					} else {
+						err = out.err
 					}
+					// Списки регистров могли измениться: liveness в точке pc
+					// остаётся прежней, но регистры уже погашены dropDeadRegs.
+					vm.dropDeadRegs(chunk, pc)
 				}
 			}
 			if vm.pendingDestroyErr != nil {

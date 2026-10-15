@@ -698,6 +698,12 @@ func (vm *VM) AppendErrorLog(path, text string) {
 	if path == "" {
 		return
 	}
+	// CLI: error_log с пустой директивой пишет в stderr без префикса времени
+	// (run-tests объединяет потоки — bug79919).
+	if path == "php://stderr" || path == "php://stdout" {
+		fmt.Fprintln(vm.out, text)
+		return
+	}
 	tz := "UTC"
 	if vm.iniLookup != nil {
 		if t, ok := vm.iniLookup("date.timezone"); ok && t != "" {
@@ -859,8 +865,22 @@ func ErrorReportingBuiltin(ctx *Context) Slot {
 	if len(ctx.args) == 0 {
 		return MakeInt(ctx.vm.errReporting)
 	}
+	a := deref(ctx.args[0])
+	switch a.typ {
+	case IntType, NullType, BoolType, FloatType, StringType:
+	default:
+		// Zend ZPP: error_reporting(): Argument #1 ($error_level) must be of
+		// type ?int, stdClass given (bug72162).
+		ctx.Throw(NewThrowable("TypeError",
+			"error_reporting(): Argument #1 ($error_level) must be of type ?int, "+
+				valueTypeName(ctx.vm, a)+" given"))
+		if ctx.HasThrown() {
+			return *new(Slot)
+		}
+		return MakeInt(0)
+	}
 	old := ctx.vm.errReporting
-	ctx.vm.errReporting = ctx.args[0].ToInt()
+	ctx.vm.errReporting = a.ToInt()
 	// Zend: error_reporting($n) меняет и INI-директиву (PHP_INI_USER) —
 	// файберы, стартующие позже, видят новое значение.
 	ctx.vm.errReportingIni = ctx.vm.errReporting

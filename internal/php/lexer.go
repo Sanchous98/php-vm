@@ -179,8 +179,8 @@ type Lexer struct {
 	pos  int
 	toks []Token
 	php  bool // true — сейчас в режиме PHP-кода, false — HTML-текст
-	// braceDepth — глубина фигурных скобок (для __halt_compiler(): вне блока
-	// он усекает код, внутри — Fatal error на этапе выполнения).
+	// braceDepth — глубина `{}` в PHP-коде: нужна для проверки, что
+	// __halt_compiler() стоит на верхнем уровне скрипта.
 	braceDepth int
 	// pendingAttrs — тексты атрибутов, ожидающие прикрепления к следующему
 	// значащему токену.
@@ -202,6 +202,10 @@ func (l *Lexer) emit(tok Token) {
 // HaltOffset — смещение данных после `__halt_compiler();` (byte offset в
 // исходнике текущего файла); -1 — конструкция не встречалась.
 var HaltOffset int64 = -1
+
+// pendingHaltErr — __halt_compiler() внутри блока: ошибка сообщается после
+// успешного разбора (при синтаксической ошибке приоритет у неё, bug60099).
+var pendingHaltErr *fatalError
 
 // Lex разбирает исходник на токены (PHP-режим).
 func Lex(src string) ([]Token, error) { return lexMode(src, true) }
@@ -423,40 +427,46 @@ func (l *Lexer) runPHP() error {
 			}
 			w := l.src[start:l.pos]
 			// __halt_compiler(): всё после него — данные, не разбираем.
-			// Внутри блока (глубина фигурных скобок > 0) Zend вместо
-			// усечения сообщает Fatal error на этапе выполнения: оставляем
-			// имя как обычный идентификатор, ошибку даёт встроенная функция.
-			if strings.EqualFold(w, "__halt_compiler") && l.braceDepth == 0 {
-				j := l.pos
-				for j < len(l.src) && isSpaceByte(l.src[j]) {
-					j++
-				}
-				if j < len(l.src) && l.src[j] == '(' {
-					depth := 0
-					for j < len(l.src) {
-						if l.src[j] == '(' {
-							depth++
-						} else if l.src[j] == ')' {
-							depth--
-							if depth == 0 {
-								j++
-								break
-							}
-						}
+			if strings.EqualFold(w, "__halt_compiler") {
+				// Zend допускает конструкцию только на верхнем уровне
+				// скрипта (bug75218, halt03). Внутри блока ошибку запоминаем
+				// и разбираем как обычный идентификатор: синтаксическая
+				// ошибка (например, незакрытая `{`, bug60099) сообщается
+				// раньше.
+				if l.braceDepth > 0 {
+					pendingHaltErr = &fatalError{msg: "__HALT_COMPILER() can only be used from the outermost scope", line: 1 + strings.Count(l.src[:start], "\n")}
+				} else {
+					j := l.pos
+					for j < len(l.src) && isSpaceByte(l.src[j]) {
 						j++
 					}
-					// Смещение данных — сразу после `;` (как
-					// zend_get_scanned_file_offset после редукции).
-					off := j
-					for off < len(l.src) && isSpaceByte(l.src[off]) {
-						off++
+					if j < len(l.src) && l.src[j] == '(' {
+						depth := 0
+						for j < len(l.src) {
+							if l.src[j] == '(' {
+								depth++
+							} else if l.src[j] == ')' {
+								depth--
+								if depth == 0 {
+									j++
+									break
+								}
+							}
+							j++
+						}
+						// Смещение данных — сразу после `;` (как
+						// zend_get_scanned_file_offset после редукции).
+						off := j
+						for off < len(l.src) && isSpaceByte(l.src[off]) {
+							off++
+						}
+						if off < len(l.src) && l.src[off] == ';' {
+							off++
+						}
+						HaltOffset = int64(off)
+						l.pos = len(l.src)
+						return nil
 					}
-					if off < len(l.src) && l.src[off] == ';' {
-						off++
-					}
-					HaltOffset = int64(off)
-					l.pos = len(l.src)
-					return nil
 				}
 			}
 			k := TIdent
@@ -491,13 +501,10 @@ func (l *Lexer) runPHP() error {
 			if op == "" {
 				return l.parseErrf("syntax error, unexpected character 0x%02X", c)
 			}
-			switch op {
-			case "{":
+			if op == "{" {
 				l.braceDepth++
-			case "}":
-				if l.braceDepth > 0 {
-					l.braceDepth--
-				}
+			} else if op == "}" && l.braceDepth > 0 {
+				l.braceDepth--
 			}
 			l.emit(Token{Kind: TOp, Val: op, Pos: start})
 		}
@@ -1197,13 +1204,21 @@ func (l *Lexer) heredoc() error {
 	if label == "" {
 		return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 	}
-	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
+	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t') {
 		l.pos++
 	}
-	if l.pos >= len(l.src) || l.src[l.pos] != '\n' {
+	// Перевод строки после открывающей метки: \n, \r\n или \r (bug79934).
+	switch {
+	case l.pos < len(l.src) && l.src[l.pos] == '\r':
+		l.pos++
+		if l.pos < len(l.src) && l.src[l.pos] == '\n' {
+			l.pos++
+		}
+	case l.pos < len(l.src) && l.src[l.pos] == '\n':
+		l.pos++
+	default:
 		return fmt.Errorf("lexer: heredoc: ожидался перевод строки на позиции %d", l.pos)
 	}
-	l.pos++
 	contentStart := l.pos
 
 	lineStart := contentStart
@@ -1224,11 +1239,11 @@ func (l *Lexer) heredoc() error {
 				break
 			}
 		}
-		nl := strings.IndexByte(l.src[lineStart:], '\n')
-		if nl < 0 {
+		_, next := nextLineBreak(l.src, lineStart)
+		if next <= lineStart {
 			break
 		}
-		lineStart = lineStart + nl + 1
+		lineStart = next
 	}
 	if closing < 0 {
 		if contentStart >= len(l.src) {
@@ -1278,21 +1293,38 @@ func mixedIndent(s string) bool {
 	return hasSpace && hasTab
 }
 
+// nextLineBreak возвращает (конец содержимого строки, начало следующей):
+// переводы строк — \n, \r\n и \r (как в Zend).
+func nextLineBreak(src string, from int) (int, int) {
+	for j := from; j < len(src); j++ {
+		switch src[j] {
+		case '\n':
+			return j, j + 1
+		case '\r':
+			if j+1 < len(src) && src[j+1] == '\n' {
+				return j, j + 2
+			}
+			return j, j + 1
+		}
+	}
+	return len(src), len(src) + 1
+}
+
 // checkHeredocBodyIndent проверяет отступы строк тела гибкого heredoc
 // (повторяет strip_multiline_string_indentation из Zend).
 func checkHeredocBodyIndent(src string, from, to int, indent string) error {
 	usingSpaces := !strings.ContainsRune(indent, '\t')
 	i := from
 	for i < to {
-		rel := strings.IndexByte(src[i:to], '\n')
-		nl := to
-		if rel >= 0 {
-			nl = i + rel
+		nl, next := nextLineBreak(src, i)
+		if nl > to {
+			nl = to
 		}
 		pos := i
 		for skip := 0; skip < len(indent); skip++ {
-			if pos == nl {
-				// Строка только из пробелов: неполный отступ допустим.
+			if pos >= nl {
+				// Строка только из пробелов (или пустая, в т.ч. CRLF):
+				// неполный отступ допустим.
 				break
 			}
 			if pos >= to {
@@ -1307,10 +1339,10 @@ func checkHeredocBodyIndent(src string, from, to int, indent string) error {
 			}
 			pos++
 		}
-		if nl >= to {
+		if next > to {
 			break
 		}
-		i = nl + 1
+		i = next
 	}
 	return nil
 }
@@ -1386,14 +1418,26 @@ func stripHeredocIndent(body, indent string) string {
 	if body == "" {
 		return body
 	}
-	lines := strings.Split(body, "\n")
 	n := len(indent)
-	for i, ln := range lines {
+	var b strings.Builder
+	b.Grow(len(body))
+	i := 0
+	for i < len(body) {
+		nl, next := nextLineBreak(body, i)
+		if nl > len(body) {
+			nl = len(body)
+		}
+		ln := body[i:nl]
 		k := 0
 		for k < n && k < len(ln) && (ln[k] == ' ' || ln[k] == '\t') {
 			k++
 		}
-		lines[i] = ln[k:]
+		b.WriteString(ln[k:])
+		if nl >= len(body) {
+			break
+		}
+		b.WriteString(body[nl:next])
+		i = next
 	}
-	return strings.Join(lines, "\n")
+	return b.String()
 }

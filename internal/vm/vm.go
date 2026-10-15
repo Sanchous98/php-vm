@@ -277,6 +277,23 @@ type VM struct {
 	// на каждом вызове функции: это давало 1 аллокацию на вызов).
 	retVal Slot
 
+	// provisionalClosures — замыкания, созданные встроенными функциями
+	// (getClosure и пр.): если к концу оператора ссылок на замыкание не
+	// осталось, его хендл возвращается в free-list (Zend освобождает
+	// временное замыкание в конце оператора; bug75290/bug69802_2).
+	provisionalClosures []*Closure
+
+	// pendingProvidedMask/Set — маска реально переданных позиционных
+	// аргументов следующего userland-вызова (именованные аргументы):
+	// пропуски заполнены заглушками и не считаются явным null.
+	pendingProvidedMask    int64
+	pendingProvidedMaskSet bool
+
+	// retVerifiedDepth — глубина callStack, для которой тип возврата уже
+	// проверен в точке return (__php_verify_return, bug72347): на выходе из
+	// функции повторная проверка пропускается. 0 — проверки не было.
+	retVerifiedDepth int
+
 	// resDropPending/resDrops — ресурсы с OnDrop, потерявшие последнего
 	// учтённого владельца: финализаторы выполняются в точке OpSweep (аналог
 	// детерминированного уничтожения при обнулении refcount в Zend).
@@ -1128,6 +1145,10 @@ func (vm *VM) globalEntry(key string) (Slot, bool) {
 	return v, ok
 }
 
+// GlobalByKey возвращает значение таблицы глобалов по ключу (дамп
+// static-переменных замыкания, bug79778).
+func (vm *VM) GlobalByKey(key string) (Slot, bool) { return vm.globalEntry(key) }
+
 // InDynamicCall сообщает, что текущий нативный вызов идёт не напрямую из
 // userland (CallCallable: call_user_func, ob-колбэки, set_error_handler и т.п.).
 // compact()/extract()/get_defined_vars() в Zend так вызывать нельзя.
@@ -1894,6 +1915,11 @@ type callEntry struct {
 	// this — получатель вызова метода (заполняется только для методов
 	// объектов, см. setTopThis); нужен debug_backtrace() ("object").
 	this Slot
+	// frameIdx — индекс кадра в vm.frames, созданного этим вызовом (-1, если
+	// кадр не создавался: вызов упал на проверке арности/типов до входа в
+	// функцию). Трейс читает живые регистры только по этому индексу
+	// (позиционное сопоставление брало бы регистры вызывающего).
+	frameIdx int32
 }
 
 // internFile возвращает стабильный id для имени файла. Вызывается в местах
@@ -1921,7 +1947,11 @@ func (vm *VM) setCurFile(name string) {
 }
 
 // info раскрывает компактную запись в callFrameInfo, вычисляя строку.
-func (vm *VM) info(e *callEntry) callFrameInfo {
+func (vm *VM) info(e *callEntry) callFrameInfo { return vm.infoAt(e, -1) }
+
+// infoAt — info с индексом кадра userland-функции: параметры читаются из его
+// живых регистров (Zend debug_backtrace показывает текущие значения CV).
+func (vm *VM) infoAt(e *callEntry, frame int) callFrameInfo {
 	line := int(e.fallback)
 	if e.callerChunk != 0 {
 		c := (*Chunk)(unsafe.Pointer(e.callerChunk))
@@ -1933,12 +1963,45 @@ func (vm *VM) info(e *callEntry) callFrameInfo {
 	if int(e.fileID) < len(vm.fileNames) {
 		file = vm.fileNames[e.fileID]
 	}
+	args := e.args
+	// Живой кадр: подменяем позиционные аргументы текущими значениями
+	// параметров (unset($arg) виден в debug_backtrace — bug70547). Кадры с
+	// #[SensitiveParameter] оставляем снимком (маскирование делается при
+	// вызове).
+	if frame >= 0 && frame <= vm.fp && frame < len(vm.frames) && e.callee != nil &&
+		e.callee.SensitiveParams == nil && !e.callee.SensitiveVariadic {
+		regs := vm.frames[frame].regs
+		n := e.callee.NumArgs
+		if n < 0 {
+			n = len(e.callee.ParamNames)
+			if cf, ok := e.callee.Executable.(*CompiledFunction); ok && cf.variadic && n > 0 {
+				// Вариативный параметр в кадре лежит упакованным массивом;
+				// Zend печатает позиционные «хвосты» отдельными аргументами
+				// (снимок e.args), а не массивом (named_params/backtrace).
+				n--
+			}
+		}
+		if n > len(args) {
+			n = len(args)
+		}
+		if n > len(regs) {
+			n = len(regs)
+		}
+		if n > 0 {
+			live := make([]Slot, len(args))
+			copy(live, args)
+			for i := 0; i < n; i++ {
+				live[i] = deref(regs[i])
+			}
+			args = live
+		}
+	}
 	return callFrameInfo{
 		callee:       e.callee,
 		callerFile:   file,
 		callerLine:   line,
 		objMethod:    e.callerPC&objMethodBit != 0,
-		args:         e.args,
+		args:         args,
 		named:        e.named,
 		this:         e.this,
 		includeFrame: isIncludeFrameFn(e.callee),
@@ -2002,6 +2065,7 @@ func (vm *VM) pushCall(fn *Function, args []Slot) {
 	entry := callEntry{
 		callee: fn, callerChunk: chunk,
 		callerPC: pc, fallback: fallback, fileID: fileID, args: args,
+		frameIdx: -1,
 	}
 
 	if vm.pendingFrameNamed != nil {
@@ -2129,6 +2193,7 @@ func (vm *VM) pushCallAt(fn *Function, file string, chunk *Chunk, pc int, fallba
 	vm.callStack = append(vm.callStack, callEntry{
 		callee: fn, callerChunk: cptr,
 		callerPC: p, fallback: int32(fallbackLine), fileID: vm.internFile(file), args: args,
+		frameIdx: -1,
 	})
 }
 
@@ -2470,7 +2535,7 @@ func (vm *VM) FramesArray(frames []callFrameInfo, options int64, limit int) Slot
 				_ = e.SetStr("type", MakeString(typ))
 			}
 		}
-		if options&2 == 0 {
+		if options&2 == 0 && !(fr.callee != nil && fr.callee.Name == "eval") {
 			ea := NewArray()
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
 			for _, a := range sargs {
@@ -3913,6 +3978,9 @@ func (vm *VM) exec(chunk *Chunk) error {
 				} else if vm.deadTrackedWide(chunk, pc) {
 					vm.dropDeadRegs(chunk, pc)
 				}
+			}
+			if len(vm.provisionalClosures) > 0 {
+				vm.releaseProvisionalClosures()
 			}
 			if (vm.lifeCandidate && (vm.lifeUrgent || vm.handlesArmed)) ||
 				(vm.handlesArmed && vm.zeroObjs > 0) {
@@ -5592,6 +5660,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 			} else if hr.next {
 				continue
 			}
+		case OpIndexRawWrite:
+			if hr := vm.opIndexRawWrite(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
 		case OpIndexRef:
 			if hr := vm.opIndexRef(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
@@ -5666,6 +5742,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 		case OpAppend:
 			if hr := vm.opAppend(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
+		case OpAppendCompound:
+			if hr := vm.opAppendCompound(regs, consts, chunk, in); hr.err != nil {
 				return hr.err
 			} else if hr.halt {
 				return nil
@@ -6469,6 +6553,23 @@ func (vm *VM) tooFewArgs(fn *Function, passed int) *Throwable {
 	return th
 }
 
+// SetPendingProvidedMask задаёт маску переданных позиций следующего вызова
+// (__php_set_provided_mask).
+func (vm *VM) SetPendingProvidedMask(m int64) {
+	vm.pendingProvidedMask = m
+	vm.pendingProvidedMaskSet = true
+}
+
+// takeProvidedMask забирает маску переданных позиций: её потребляет ровно
+// тот вызов, который следует за установкой (invoke/invokeMethod/
+// invokeClosure берут её в самом начале, чтобы маска не «протекла» на
+// следующий userland-вызов при раннем выходе).
+func (vm *VM) takeProvidedMask() (int64, bool) {
+	m, ok := vm.pendingProvidedMask, vm.pendingProvidedMaskSet
+	vm.pendingProvidedMaskSet = false
+	return m, ok
+}
+
 // checkArity проверяет минимальную арность userland-функции. Для вариативных
 // функций достаточно обязательных фиксированных параметров.
 func (vm *VM) checkArity(fn *Function, args []Slot) error {
@@ -6582,6 +6683,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided
 	vm.pendingNativeProvided = -1
+	pmask, pmaskSet := vm.takeProvidedMask()
 	extras := vm.pendingFrameNamed
 	vm.pendingFrameNamed = nil
 	// display — аргументы для кадра трейса: без NULL-заглушек отсутствующих
@@ -6690,7 +6792,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedSuppress := vm.suppress
-	if ck, perr := vm.checkParams(fn, args); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet); perr != nil {
 		err = perr
 	} else {
 		args = ck
@@ -6700,7 +6802,12 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 		res, err = fn.Executable.Call(vm, &vm.ctx, args)
 		if err == nil {
 			if fn.RetType != "" {
-				res, err = vm.checkReturnType(fn, res)
+				if vm.retVerifiedDepth == len(vm.callStack) {
+					// Тип уже проверен в точке return (__php_verify_return).
+					vm.retVerifiedDepth = 0
+				} else {
+					res, err = vm.checkReturnType(fn, res)
+				}
 			}
 		}
 	}
@@ -6765,6 +6872,24 @@ func (vm *VM) CheckDefaultArg(val Slot, argNum int) (Slot, error) {
 
 // checkParams проверяет/приводит типы аргументов вызова (слабая типизация).
 func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
+	return vm.checkParamsN(fn, args, -1, 0, false)
+}
+
+// checkParamsN — checkParams с явным числом переданных вызывающим аргументов:
+// null-заглушки отсутствующих параметров не считаются явным null (bug68446:
+// `a(null)` при `array $a = FOO` — TypeError, а `a()` — дефолт). mask/maskSet —
+// маска реально переданных позиций при именованных аргументах. hideDepth —
+// глубина стека вызовов до pushCall этого кадра: на время проверки аргументы
+// кадра скрываются, чтобы трейс ошибки не показывал их (Zend не печатает
+// аргументы кадра, упавшего на проверке типов/дефолтов: typehints/or_null,
+// bug72101); при успешной проверке аргументы возвращаются. -1 — не скрывать.
+func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int, mask int64, maskSet bool) ([]Slot, error) {
+	// Аргументы кадра не скрываются: трейс сам решает по frameIdx
+	// (вызов без кадра не подставляет живые регистры).
+	return vm.checkParamsCore(fn, args, provided, mask, maskSet)
+}
+
+func (vm *VM) checkParamsCore(fn *Function, args []Slot, provided int, mask int64, maskSet bool) ([]Slot, error) {
 	types := fn.ParamTypes
 	if len(types) == 0 {
 		return args, nil
@@ -6793,7 +6918,18 @@ func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
 		byref := i < len(fn.ByRefArgs) && fn.ByRefArgs[i]
 		// Null-заглушка для непереданного необязательного аргумента не является
 		// нарушением типа (значение подставится default'ом в теле функции).
-		if args[i].typ == NullType && (i >= fn.NumRequired || (variadic && i >= fixed)) {
+		// Явно переданный null (argNum < provided) — нарушение, если тип его
+		// не допускает.
+		// Пропуски именованных аргументов (маска) — не явный null; без маски
+		// null-аргумент считается переданным явно (прежнее правило).
+		omitted := false
+		if maskSet {
+			omitted = mask&(1<<uint(i)) == 0
+		} else if provided >= 0 {
+			omitted = i >= provided
+		}
+		if args[i].typ == NullType && omitted &&
+			(i >= fn.NumRequired || (variadic && i >= fixed)) {
 			continue
 		}
 		strict := vm.argStrict()
@@ -7200,6 +7336,16 @@ func (vm *VM) checkReturnType(fn *Function, res Slot) (Slot, error) {
 			vm.deprecateFloatToInt(line, chk)
 		}
 		if fn.ByRefReturn {
+			// Zend проверяет тип по значению ссылки, а приведение пишет в
+			// саму ячейку (bug70117: `&foo(): string` возвращает "1", и
+			// исходный элемент массива тоже становится строкой). Сама ссылка
+			// возвращается как ссылка — иначе `++$o['x']` инкрементировал бы
+			// копию (bug64417).
+			if res.typ == RefType {
+				if r := res.Ref(); r != nil {
+					r.Set(out)
+				}
+			}
 			return res, nil
 		}
 		return out, nil
@@ -7210,6 +7356,138 @@ func (vm *VM) checkReturnType(fn *Function, res Slot) (Slot, error) {
 	}
 	th := vm.returnTypeError(name, vm.displayTypeResolved(t), kind)
 	return res, loc(th)
+}
+
+// AddProvisionalClosure регистрирует замыкание, созданное встроенной функцией,
+// как временное: если в конце оператора на него нет ссылок, хендл освободится.
+func (vm *VM) AddProvisionalClosure(cl *Closure) {
+	if cl == nil {
+		return
+	}
+	vm.markClosure(cl)
+	vm.provisionalClosures = append(vm.provisionalClosures, cl)
+}
+
+// releaseProvisionalClosures освобождает хендлы временных замыканий, на
+// которые не осталось ссылок в регистрах/глобалах/аргументах кадров.
+func (vm *VM) releaseProvisionalClosures() {
+	live := vm.provisionalClosures[:0]
+	for _, cl := range vm.provisionalClosures {
+		if cl == nil || cl.objID == 0 {
+			continue
+		}
+		if vm.closureReferenced(cl) {
+			live = append(live, cl)
+			continue
+		}
+		if cl.objID == vm.nextObjID {
+			vm.nextObjID--
+		} else {
+			vm.freeObjIDs = append(vm.freeObjIDs, cl.objID)
+		}
+		cl.objID = 0
+	}
+	vm.provisionalClosures = live
+}
+
+// closureReferenced ищет ссылку на замыкание в живых регистрах, глобалах и
+// аргументах кадров (мелкий обход ссылок и массивов).
+func (vm *VM) closureReferenced(cl *Closure) bool {
+	check := func(s Slot) bool { return slotHasClosure(s, cl, 0) }
+	for i := 0; i <= vm.fp && i < len(vm.frames); i++ {
+		for _, s := range vm.frames[i].regs {
+			if check(s) {
+				return true
+			}
+		}
+	}
+	for _, s := range vm.globals {
+		if check(s) {
+			return true
+		}
+	}
+	for i := range vm.callStack {
+		for _, a := range vm.callStack[i].args {
+			if check(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func slotHasClosure(s Slot, cl *Closure, depth int) bool {
+	if depth > 2 {
+		return false
+	}
+	for i := 0; s.typ == RefType && i < 10; i++ {
+		r := s.Ref()
+		if r == nil {
+			return false
+		}
+		s = r.v
+	}
+	switch s.typ {
+	case ClosureType:
+		return s.asClosure() == cl
+	case ArrayType:
+		if a := s.AsArray(); a != nil {
+			for _, v := range a.All() {
+				if slotHasClosure(v, cl, depth+1) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// VerifyReturnAtPointBuiltin — приведение значения к объявленному типу
+// возврата в точке return (до раскрутки finally, как Zend VERIFY_RETURN).
+// Регистрируется как __php_verify_return.
+func VerifyReturnAtPointBuiltin(ctx *Context) Slot {
+	vm := ctx.vm
+	a := ctx.Args()
+	if len(a) == 0 {
+		return MakeNull()
+	}
+	// Кадр самой служебной функции может отсутствовать (быстрый прямой вызов):
+	// ищем кадр userland-функции и глубину, на которой её проверять.
+	n := len(vm.callStack)
+	fn := (*Function)(nil)
+	setDepth := n
+	if n > 0 {
+		if c := vm.callStack[n-1].callee; c != nil && c.Name == "__php_verify_return" {
+			setDepth = n - 1
+			if n >= 2 {
+				fn = vm.callStack[n-2].callee
+			}
+		} else {
+			fn = vm.callStack[n-1].callee
+		}
+	}
+	if fn == nil || fn.RetType == "" {
+		return a[0]
+	}
+	if l := vm.line(); l > 0 {
+		vm.retLine = l
+	}
+	// Это явный return: retImplicit принадлежит другому (предыдущему) кадру
+	// и не должен попасть в диагностику (bug72347: «none returned»).
+	savedImplicit := vm.retImplicit
+	vm.retImplicit = false
+	out, err := vm.checkReturnType(fn, a[0])
+	vm.retImplicit = savedImplicit
+	if err != nil {
+		if th, ok := err.(*Throwable); ok {
+			ctx.Throw(th)
+			return Slot{}
+		}
+		ctx.Throw(NewThrowable("Error", err.Error()))
+		return Slot{}
+	}
+	vm.retVerifiedDepth = setDepth
+	return out
 }
 
 // fnStrict сообщает, что функция объявлена в strict_types-файле.
@@ -7628,6 +7906,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided
 	vm.pendingNativeProvided = -1
+	pmask, pmaskSet := vm.takeProvidedMask()
 	extras := vm.pendingFrameNamed
 	vm.pendingFrameNamed = nil
 	display := args
@@ -7666,6 +7945,19 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	}
 	if aerr := vm.checkArityN(fn, args, provided); aerr != nil {
 		return Slot{}, aerr
+	}
+	// Неявные захваты стрелочной функции, не определённые в точке создания:
+	// Zend печатает "Undefined variable $x" при чтении в теле (bug81076,
+	// arrow_functions/002) — у нас при входе в замыкание.
+	for i, undef := range cl.capUndef {
+		if !undef || i >= len(fn.CaptureNames) {
+			continue
+		}
+		n := strings.TrimPrefix(fn.CaptureNames[i], "$")
+		if n == "" {
+			continue
+		}
+		vm.Warning("Undefined variable $" + n)
 	}
 	if len(fn.ByRefArgs) > 0 {
 		if berr := vm.checkByRefArgs(fn, args); berr != nil {
@@ -7724,7 +8016,14 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		vm.markTopObjMethod()
 		vm.setTopThis(cl.BoundThis)
 	}
-	if ck, perr := vm.checkParams(fn, full); perr != nil {
+	// Именованные аргументы раскладываются по позициям с null-заглушками
+	// отсутствующих параметров: считать их «переданными явно» нельзя
+	// (gh19653_1: func1(a3: 'm3+') с дефолтными a1/a2).
+	paramProvided := len(args)
+	if namedCount >= 0 {
+		paramProvided = -1
+	}
+	if ck, perr := vm.checkParamsN(fn, full, paramProvided, pmask, pmaskSet); perr != nil {
 		err = perr
 	} else {
 		full = ck
@@ -7736,7 +8035,12 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		res, err = fn.Executable.Call(vm, &vm.ctx, full)
 		if err == nil {
 			if fn.RetType != "" {
-				res, err = vm.checkReturnType(fn, res)
+				if vm.retVerifiedDepth == len(vm.callStack) {
+					// Тип уже проверен в точке return (__php_verify_return).
+					vm.retVerifiedDepth = 0
+				} else {
+					res, err = vm.checkReturnType(fn, res)
+				}
 			}
 		}
 	}
@@ -7753,10 +8057,17 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 // invokeMethod вызывает метод объекта: $this = recv, self = класс объявления,
 // static = класс получателя (late static binding).
 func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slot) (res Slot, err error) {
+	// Статический метод не получает $this, даже если вызван через объект
+	// (`$obj->staticMethod()`, [obj,'staticMethod']): Zend выдаёт «Using $this
+	// when not in object context» при обращении (bug77877).
+	if fn.IsStatic {
+		recv = Slot{}
+	}
 	namedCount := vm.pendingNamedCount
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided
 	vm.pendingNativeProvided = -1
+	pmask, pmaskSet := vm.takeProvidedMask()
 	extras := vm.pendingFrameNamed
 	vm.pendingFrameNamed = nil
 	display := args
@@ -7821,14 +8132,19 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 			return Slot{}, vm.extraNamedNativeErr(fn)
 		}
 	}
-	if ck, perr := vm.checkParams(fn, args); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet); perr != nil {
 		err = perr
 	} else {
 		args = ck
 		res, err = fn.Executable.Call(vm, &vm.ctx, args)
 		if err == nil {
 			if fn.RetType != "" {
-				res, err = vm.checkReturnType(fn, res)
+				if vm.retVerifiedDepth == len(vm.callStack) {
+					// Тип уже проверен в точке return (__php_verify_return).
+					vm.retVerifiedDepth = 0
+				} else {
+					res, err = vm.checkReturnType(fn, res)
+				}
 			}
 		}
 	}
@@ -8583,6 +8899,18 @@ func arrayKeyRepr(k ArrayKey) string {
 
 // arrayOffsetTypeName — имя типа значения для сообщения «Trying to access array
 // offset on value of type ...» (bool печатается как true/false).
+// stringOffsetBadKeyErr — Error для недопустимого ключа строкового offset'а:
+// массив/объект/ресурс дают «Cannot access offset of type X on string» без
+// Warning «String offset cast occurred» (bug81159). nil — ключ допустим.
+func (vm *VM) stringOffsetBadKeyErr(k Slot) error {
+	switch k.typ {
+	case ObjectType, ArrayType, ResourceType, ClosureType:
+		return NewThrowable("TypeError",
+			"Cannot access offset of type "+vm.arrayOffsetTypeName(k)+" on string")
+	}
+	return nil
+}
+
 func (vm *VM) arrayOffsetTypeName(s Slot) string {
 	switch s.typ {
 	case BoolType:
@@ -8621,6 +8949,10 @@ func (vm *VM) execCompiled(chunk *Chunk, args []Slot) (Slot, error) {
 	callerPC := vm.ip
 
 	vm.fp++
+	// Кадр создан этим вызовом: трейс читает его живые регистры (callEntry.frameIdx).
+	if n := len(vm.callStack); n > 0 && vm.callStack[n-1].frameIdx < 0 {
+		vm.callStack[n-1].frameIdx = int32(vm.fp)
+	}
 	vm.cur = &vm.frames[vm.fp]
 	vm.cur.dynLocals = nil
 	vm.cur.dynOrder = nil

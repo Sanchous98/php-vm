@@ -25,6 +25,10 @@ type Compiled struct {
 	// Нужно, чтобы eval() мог бросить перехватываемый ParseError вместо
 	// печати фатала (PHP: parse error в eval — исключение).
 	ParseFatal *parseError
+	// CatchableFatal — не nil, если чанк лишь печатает фатал, который в
+	// eval()/include Zend превращает в перехватываемый CompileError
+	// (диагностики фазы парсера, напр. «Multiple final modifiers…», bug75218).
+	CatchableFatal *fatalError
 }
 
 // compilerDeprecations — стартовые deprecation-сообщения, собранные при
@@ -35,6 +39,11 @@ var compilerDeprecations []string
 // compilerWarnings — стартовые Warning-сообщения компиляции (напр. final
 // private method). PHP печатает их до начала выполнения.
 var compilerWarnings []string
+
+// anonClassSeq — глобальный счётчик анонимных классов текущего запроса
+// (Zend: имя `class@anonymous\x00<file>:<line>$<n>`; не сбрасывается между
+// компиляциями require/eval).
+var anonClassSeq int
 
 // fatalError — фатальная ошибка уровня declare-времени (аналог zend fatal).
 // Вместо аварийного возврата при компиляции она превращается в программу-
@@ -553,6 +562,20 @@ type compiler struct {
 	// встроенные должны видеть локальную таблицу символов кадра. Регистры
 	// всех переменных pin'ятся, а в чанк пишется карта имя→регистр.
 	usesSymtab bool
+
+	// usesDynNames — тело использует динамические имена переменных
+	// (`$$x`, `${expr}`): чанк функции получает карту имя→регистр, чтобы
+	// динамический доступ работал с локальными переменными кадра, а не с
+	// таблицей глобалов (bug71300).
+	usesDynNames bool
+}
+
+// markDynName отмечает использование динамического имени переменной
+// (в функции для этого строится карта имя→регистр).
+func (c *compiler) markDynName() {
+	if !c.isMain {
+		c.usesDynNames = true
+	}
 }
 
 // closureInfo описывает анонимную/стрелочную функцию для компиляции.
@@ -833,6 +856,10 @@ type namedArgCheck struct {
 	// массив со строковыми ключами); вызов идёт через рантайм-биндинг
 	// (buildArgArray + __php_call_named).
 	namedRuntime bool
+	// providedMask/maskValid — маска переданных позиций: пропуски
+	// заполняются null-заглушками, которые не считаются явным null.
+	providedMask int64
+	maskValid    bool
 }
 
 // intrinsicDefaultExpr строит выражение для известного значения по умолчанию
@@ -963,6 +990,19 @@ func reorderNamedArgsChecked(args []Expr, names []string, required int, display 
 			return res
 		}
 	}
+	// Битовая маска реально переданных позиций: заполненные пропуски ниже
+	// получают null-заглушку, которая НЕ является явным null (bug68446 vs
+	// gh19653_1). В рантайм передаётся через __php_set_provided_mask.
+	if maxIdx < 63 {
+		m := int64(0)
+		for i := 0; i <= maxIdx; i++ {
+			if slots[i] != nil {
+				m |= 1 << uint(i)
+			}
+		}
+		res.providedMask = m
+		res.maskValid = true
+	}
 	// Пропуски (позиции между переданными аргументами): у встроенных функций
 	// Zend подставляет известное значение по умолчанию, а при неизвестном —
 	// ArgumentCountError (zend_handle_named_arg).
@@ -1043,6 +1083,16 @@ func reorderNamedArgs(args []Expr, names []string) []Expr {
 		out[i] = slots[i]
 	}
 	return out
+}
+
+// setProvidedMask запоминает для следующего вызова (userland-функции) маску
+// реально переданных позиционных аргументов: пропуски именованных аргументов
+// заполнены null-заглушками и не должны считаться явным null.
+func (c *compiler) setProvidedMask(m int64) {
+	r := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: r,
+		C: int32(c.chunk.AddConst(vm.IntConst(m)))})
+	c.emitCall("__php_set_provided_mask", []uint8{r})
 }
 
 // sensitiveMask возвращает маску параметров, помеченных #[SensitiveParameter],
@@ -1327,11 +1377,11 @@ func (c *compiler) storeVar(name string, reg uint8) {
 }
 
 // loadVarDyn читает переменную с динамическим именем ($$x, ${expr}).
-// Ограничение: динамические переменные всегда берутся из глобальной таблицы
-// (main-скоуп / global / static). В теле функции они тоже читают/пишут
-// глобальную таблицу, а не локальный кадр — это компромисс (см. README-заметку
-// в отчёте).
+// В main-области переменные берутся из таблицы глобалов; в функции — из
+// локального кадра (карта имя→регистр, при отсутствии имени — runtime-таблица
+// динамических локальных переменных кадра, см. opGlobalGetDyn).
 func (c *compiler) loadVarDyn(nameExpr Expr) (uint8, error) {
+	c.markDynName()
 	ne, err := c.expr(nameExpr)
 	if err != nil {
 		return 0, err
@@ -1343,6 +1393,7 @@ func (c *compiler) loadVarDyn(nameExpr Expr) (uint8, error) {
 
 // storeVarDyn пишет регистр в переменную с динамическим именем.
 func (c *compiler) storeVarDyn(nameExpr Expr, reg uint8) error {
+	c.markDynName()
 	ne, err := c.expr(nameExpr)
 	if err != nil {
 		return err
@@ -1436,17 +1487,9 @@ func (c *compiler) internalName(kind string) string {
 	return "\x00" + kind + fmt.Sprint(c.internal)
 }
 
-// buildSymtab записывает в чанк локальную таблицу символов (имя→регистр и
-// global/static имя→ключ глобалов) для compact()/extract()/get_defined_vars().
-// includeGlobals — включать ли global/static переменные (для функций). Имена
-// без ведущего `$`; внутренние (с `\x00`) исключаются.
-func (c *compiler) buildSymtab(includeGlobals bool) {
-	lv := c.namedRegsMap()
-	c.chunk.SetLocalVars(lv)
-	c.chunk.SetNamedRegs(lv)
-	if !includeGlobals {
-		return
-	}
+// globalVarsMap строит карту имя→ключ таблицы глобалов для global/static
+// переменных чанка (имена без ведущего `$`).
+func (c *compiler) globalVarsMap() map[string]string {
 	gv := make(map[string]string, len(c.globals)+len(c.staticKeys))
 	for name := range c.globals {
 		bn := strings.TrimPrefix(name, "$")
@@ -1462,7 +1505,21 @@ func (c *compiler) buildSymtab(includeGlobals bool) {
 		}
 		gv[bn] = c.staticKeys[name]
 	}
-	c.chunk.SetGlobalVars(gv)
+	return gv
+}
+
+// buildSymtab записывает в чанк локальную таблицу символов (имя→регистр и
+// global/static имя→ключ глобалов) для compact()/extract()/get_defined_vars().
+// includeGlobals — включать ли global/static переменные (для функций). Имена
+// без ведущего `$`; внутренние (с `\x00`) исключаются.
+func (c *compiler) buildSymtab(includeGlobals bool) {
+	lv := c.namedRegsMap()
+	c.chunk.SetLocalVars(lv)
+	c.chunk.SetNamedRegs(lv)
+	if !includeGlobals {
+		return
+	}
+	c.chunk.SetGlobalVars(c.globalVarsMap())
 }
 
 // namedRegsMap строит карту имя→регистр всех именованных переменных (без `$`,
@@ -2643,7 +2700,7 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 	if abs == "" || abs == filepath.Clean(file) || inliningNow[abs] {
 		return x, nil, nil
 	}
-	if x.Once && inc[abs] {
+	if x.Once && (inc[abs] || preIncludedFiles[abs]) {
 		return &IntLit{V: 1}, nil, nil
 	}
 	// Каталог нельзя инлайнить: PHP предупреждает «Failed to open stream»
@@ -2709,6 +2766,11 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 // рантайм-компиляции eval/include: alias (нижний регистр) → имя целевого
 // класса. Устанавливается на время compileFileModeLink в runSubCode.
 var runtimeClassAliases map[string]string
+
+// preIncludedFiles — файлы, уже подключённые до компиляции текущего скрипта
+// (auto_prepend_file): include_once/require_once с таким путём пропускается
+// инлайнером (bug32924).
+var preIncludedFiles = map[string]bool{}
 
 // inlineEvalParents — имена классов (в нижнем регистре), которые в текущем
 // компилируемом юните используются как родитель/интерфейс/трейт. Классы,
@@ -2907,6 +2969,13 @@ func inlineEval(x *CallExpr, file string, inc map[string]bool) (Expr, []Stmt, er
 		return nil, nil, err
 	}
 	val, pre := splitTopReturn(stmts, &NullLit{})
+	// Регион вклеенного eval(): кадры и диагностики относятся к
+	// "<file>(<line>) : eval()'d code" (bug_debug_backtrace), плюс
+	// синтетический кадр eval() в трейсе.
+	pre = append([]Stmt{&StrictStmt{Push: true, Strict: sub.StrictTypes, File: file,
+		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: "eval", CallNode: x,
+		EvalRegion: true}}, pre...)
+	pre = append(pre, &StrictStmt{Push: false})
 	// Предупреждения компиляции eval-фрагмента (напр. use некомпаундного
 	// имени) печатаются в момент выполнения eval, а не как startup-диагностика
 	// охватывающего файла (Zend компилирует eval в рантайме).
@@ -3058,6 +3127,8 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_sizeof", vm.SizeofBuiltin),
 		vm.Register("__php_is_countable", vm.IsCountableBuiltin),
 		vm.Register("__php_error_reporting", vm.ErrorReportingBuiltin),
+		vm.Register("__php_verify_return", vm.VerifyReturnAtPointBuiltin),
+		vm.Register("__php_closure_undef", vm.ClosureUndefBuiltin),
 		vm.Register("iterator_to_array", vm.IteratorToArrayBuiltin),
 		vm.Register("__php_yield_from_ret", vm.YieldFromRetBuiltin),
 		vm.Register("__php_yield_from_begin", vm.YieldFromBeginBuiltin),
@@ -3080,6 +3151,15 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_call_cb_named", callCbNamedBuiltin),
 		vm.Register("__php_forward_cb_named", forwardCbNamedBuiltin),
 		vm.Register("__php_incdec_prop", incDecPropBuiltin),
+		vm.Register("__php_incdec_prop_check", incDecPropCheckBuiltin),
+		vm.Register("__php_prop_write_check", propWriteCheckBuiltin),
+		vm.Register("__php_prop_ref_arg", propRefArgBuiltin),
+		vm.Register("__php_unset_prop_base", unsetPropBaseBuiltin),
+		vm.Register("__php_prop_uninit_read_check", propUninitReadCheckBuiltin),
+		vm.Register("__php_set_provided_mask", func(ctx *vm.Context) vm.Value {
+			ctx.VM().SetPendingProvidedMask(arg(ctx, 0).ToInt())
+			return vm.MakeNull()
+		}),
 		vm.Register("__php_incdec_ref", incDecRefBuiltin),
 		vm.Register("__php_incdec_val", incDecValBuiltin),
 		vm.Register("__php_incdec_global", incDecGlobalBuiltin),
@@ -3217,7 +3297,11 @@ func listIndexBuiltin(ctx *vm.Context) vm.Slot {
 // closeGenBuiltin закрывает генератор в слоте (при unset), прогоняя finally.
 func closeGenBuiltin(ctx *vm.Context) vm.Value {
 	if args := ctx.Args(); len(args) > 0 {
-		if err := ctx.VM().CloseIfGenerator(args[0]); err != nil {
+		var exclude []int
+		for _, a := range args[1:] {
+			exclude = append(exclude, int(a.ToInt()))
+		}
+		if err := ctx.VM().CloseIfGeneratorEx(args[0], exclude...); err != nil {
 			if th, ok := err.(*vm.Throwable); ok {
 				ctx.Throw(th)
 				if ctx.HasThrown() {
@@ -3987,6 +4071,18 @@ func runSubCode(ctx *vm.Context, src, file string, phpMode bool) (vm.Slot, bool)
 		}
 		return vm.MakeNull(), false
 	}
+	// Компиляционные диагностики фазы парсера в eval()/include — тоже
+	// перехватываемый CompileError (bug75218), а не печать Fatal error.
+	if c.CatchableFatal != nil {
+		th := vm.NewThrowable("ParseError", c.CatchableFatal.msg)
+		th.LocFile = c.Main.File
+		th.LocLine = c.CatchableFatal.line
+		ctx.Throw(th)
+		if ctx.HasThrown() {
+			return *new(vm.Slot), *new(bool)
+		}
+		return vm.MakeNull(), false
+	}
 	// Линкуем новые функции/классы и исполняем подключённый файл в той же VM,
 	// что и вызывающий код (общие globals, видимость объявлений).
 	res, returned, err := vmc.RunLinked(c.Main, c.Funcs, c.Classes, len(funcs), len(classes))
@@ -4221,6 +4317,10 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 // CompileFile — как Compile, но позволяет указать путь к исходному файлу:
 // он используется магическими константами __FILE__ и __DIR__.
 func CompileFile(src, file string) (*Compiled, error) {
+	// Новый «запрос»: счётчик анонимных классов Zend начинает с нуля (внутри
+	// запроса require/eval продолжают нумерацию — compileFileModeLink не
+	// сбрасывает его).
+	anonClassSeq = 0
 	return compileFileMode(src, file, false)
 }
 
@@ -4242,7 +4342,11 @@ func compileFileModeLink(src, file string, phpMode bool, linkBase *Compiled) (*C
 	c, err := compileProgramLink(src, file, phpMode, linkBase)
 	if err != nil {
 		if fe, ok := err.(*fatalError); ok {
-			return fatalCompiled(fe, file), nil
+			c := fatalCompiled(fe, file)
+			if evalCatchableCompileError(fe.msg) {
+				c.CatchableFatal = fe
+			}
+			return c, nil
 		}
 		if pe, ok := err.(*parseError); ok {
 			// Рантайм-include/eval (linkBase != nil): синтаксическая ошибка —
@@ -4256,6 +4360,26 @@ func compileFileModeLink(src, file string, phpMode bool, linkBase *Compiled) (*C
 		return nil, err
 	}
 	return c, nil
+}
+
+// evalCatchableCompileError сообщает, что диагностика компиляции в Zend
+// относится к фазе парсера и потому в eval()/include превращается в
+// перехватываемый CompileError (а в основном скрипте остаётся Fatal error).
+func evalCatchableCompileError(msg string) bool {
+	switch msg {
+	case "Multiple final modifiers are not allowed",
+		"Multiple readonly modifiers are not allowed",
+		"Multiple access type modifiers are not allowed",
+		"Multiple abstract modifiers are not allowed",
+		"Multiple static modifiers are not allowed",
+		"Cannot use the final modifier on an abstract class",
+		"Cannot use the final modifier on an abstract method",
+		"Cannot use the final modifier on a property",
+		"Encoding must be a literal",
+		"__HALT_COMPILER() can only be used from the outermost scope":
+		return true
+	}
+	return false
 }
 
 // stripScriptBOM убирает ведущий UTF-8 BOM скрипта при включённом
@@ -4350,7 +4474,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		funcs = append([]*vm.Function(nil), linkBase.Funcs...)
 	} else {
 		funcs = builtins()
-		funcs = append(funcs, internalFuncs()...)
+		ifn := internalFuncs()
+		applyIntrinsicSignatures(ifn)
+		funcs = append(funcs, ifn...)
 		// Перехватываем var_dump, чтобы enum-кейсы печатались как `enum(C::X)`
 		// (иначе они выглядят как обычные объекты). Остальные значения
 		// обрабатываются исходной встроенной функцией.
@@ -4517,6 +4643,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		classes = append(classes, vm.NewSensitiveParameterValueClass())
 		classes = append(classes, vm.NewDateClasses()...)
 		classes = append(classes, vm.NewSplClasses(builtinIfaces)...)
+		classes = append(classes, vm.NewExtClasses()...)
 		classes = append(classes, vm.NewStreamClasses()...)
 		classes = append(classes, vm.NewReflectionClasses()...)
 	}
@@ -5082,6 +5209,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				// PHP 8.3: анонимные классы запрещены к (де)сериализации.
 				ci.SetNotSerializable()
 			}
+			if cd.AnonSite != "" {
+				vm.SetAnonSite(ci, cd.AnonSite)
+			}
 			if cd.ReadonlyDup {
 				return nil, base.newFatal("Multiple readonly modifiers are not allowed")
 			}
@@ -5341,6 +5471,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						return nil, base.newFatal("Cannot use the readonly modifier on a method")
 					}
 					if m.Final {
+						if cd.IsInterface {
+							return nil, base.newFatal(fmt.Sprintf("Interface method %s::%s() must not be final", ci.Name(), m.MName))
+						}
 						return nil, base.newFatal("Cannot use the final modifier on an abstract method")
 					}
 					if cd.IsInterface && visOf(m.Vis) != vm.Public {
@@ -5499,6 +5632,20 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		}
 	}
 
+	// Классы, объявляемые в рантайме (в теле функции/под условием), Zend
+	// резолвит трейты в момент объявления: отсутствующий трейт — фатал только
+	// если объявление выполнится (bug69174). Возвращает true, если ошибку
+	// нужно отложить.
+	deferMissingTrait := func(cd *ClassDecl, tn string) bool {
+		if !nestedSet[cd] {
+			return false
+		}
+		if declByName0(classDecls, tn) == nil && cd.RuntimeFatal == "" {
+			cd.RuntimeFatal = fmt.Sprintf("Trait %q not found", tn)
+		}
+		return true
+	}
+
 	// 2b. Примешиваем трейты (после компиляции всех тел) с учётом адаптаций.
 classLoop:
 	for i, cd := range classDecls {
@@ -5532,6 +5679,9 @@ classLoop:
 			if ta.Trait != "" {
 				td := declByName0(classDecls, ta.Trait)
 				if td == nil {
+					if deferMissingTrait(cd, ta.Trait) {
+						continue classLoop
+					}
 					return nil, base.newFatal(fmt.Sprintf("Could not find trait %s", ta.Trait))
 				}
 				if !td.IsTrait {
@@ -5584,6 +5734,9 @@ classLoop:
 			}
 			td := declByName0(classDecls, ta.Trait)
 			if td == nil {
+				if deferMissingTrait(cd, ta.Trait) {
+					continue classLoop
+				}
 				return nil, base.newFatal(fmt.Sprintf("Could not find trait %s", ta.Trait))
 			}
 			if !td.IsTrait {
@@ -5757,6 +5910,9 @@ classLoop:
 				}
 			}
 			if !ok {
+				if td == nil && deferMissingTrait(cd, tn) {
+					continue classLoop
+				}
 				return nil, base.newFatal(fmt.Sprintf("Trait %q not found", tn))
 			}
 			// Конфликты свойств и констант между классом/трейтом и трейтом.
@@ -5891,7 +6047,7 @@ classLoop:
 				srcName := ta.Trait
 				if srcName == "" {
 					for _, tn := range cd.Uses {
-						if td := declByName0(classDecls, tn); td != nil && declHasMethod(td, ta.Method) {
+						if td := declByName0(classDecls, tn); td != nil && (declHasMethod(td, ta.Method) || declHasSignature(td, ta.Method)) {
 							srcName = tn
 							break
 						}
@@ -5927,8 +6083,25 @@ classLoop:
 						}
 					}
 				}
+				// Источник — абстрактная сигнатура трейта: псевдоним тоже
+				// сигнатура (требование к классу), а не реализация (bug69084:
+				// «Class Bar contains 1 abstract method ... (Bar::doOtherStuff)»).
+				srcDecl := declByName0(classDecls, srcName)
+				if srcDecl == nil || !declHasSignature(srcDecl, ta.Method) || declHasMethod(srcDecl, ta.Method) {
+					// Псевдоним без явного трейта: ищем сигнатуру в use-трейтах.
+					for _, tn := range cd.Uses {
+						if td := declByName0(classDecls, tn); td != nil && declHasSignature(td, ta.Method) && !declHasMethod(td, ta.Method) {
+							srcDecl = td
+							break
+						}
+					}
+				}
+				srcIsAbstractSig := srcDecl != nil && declHasSignature(srcDecl, ta.Method) && !declHasMethod(srcDecl, ta.Method)
+				if srcIsAbstractSig && !classDeclaresMethod(cd, ta.AliasName) {
+					ci.AddSignature(ta.AliasName, visOf(ta.Vis))
+				}
 				// Псевдоним не перекрывает метод, объявленный в самом классе.
-				if fn != nil && !classDeclaresMethod(cd, ta.AliasName) {
+				if fn != nil && !srcIsAbstractSig && !classDeclaresMethod(cd, ta.AliasName) {
 					// Коллизия псевдонима с методом другого трейта.
 					if srcName != "" {
 						if other := traitProvidingMethod(classDecls, cd, ta.AliasName, srcName); other != "" {
@@ -6056,7 +6229,16 @@ compatLoop:
 				sgm := *sg.mem
 				sgm.Vis = childMember.Vis
 				resolveSelfTypes(&sgm, cd.Name, cd.Parent)
-				if err := base.checkOverrideCompatible(childDecl, childMember, sg.decl, &sgm); err != nil {
+				// self трейтового метода резолвится в контексте класса-композиции
+				// (bug80055: AbstractTrait::selfReturner(): self выполняется
+				// ConcreteTrait::selfReturner(): self).
+				cm := childMember
+				if childDecl != cd && childDecl.IsTrait {
+					cp := *childMember
+					resolveSelfTypes(&cp, cd.Name, cd.Parent)
+					cm = &cp
+				}
+				if err := base.checkOverrideCompatible(childDecl, cm, sg.decl, &sgm); err != nil {
 					if deferClassFatal(cd, err) {
 						continue compatLoop
 					}
@@ -8477,6 +8659,20 @@ func classDeclaresMethod(cd *ClassDecl, name string) bool {
 
 // declOrTraitHasMethod рекурсивно ищет метод в объявлении класса/трейта и во
 // всех примешиваемых им трейтах (nested traits). seen защищает от циклов.
+// declHasSignature сообщает, что в классе/трейте объявлена абстрактная
+// сигнатура метода (Kind "signature").
+func declHasSignature(cd *ClassDecl, name string) bool {
+	if cd == nil {
+		return false
+	}
+	for _, m := range cd.Members {
+		if m.Kind == "signature" && strings.EqualFold(m.MName, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func declOrTraitHasMethod(decls []*ClassDecl, cd *ClassDecl, name string, seen map[string]bool) bool {
 	if cd == nil {
 		return false
@@ -8486,7 +8682,7 @@ func declOrTraitHasMethod(decls []*ClassDecl, cd *ClassDecl, name string, seen m
 		return false
 	}
 	seen[key] = true
-	if declHasMethod(cd, name) {
+	if declHasMethod(cd, name) || declHasSignature(cd, name) {
 		return true
 	}
 	for _, tn := range cd.Uses {
@@ -9615,7 +9811,7 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 		if p.Default != nil && p.Type != "" {
 			if k, ok := defaultKind(p.Default); ok && k != "null" && !typeAllowsDefault(p.Type, k) {
 				return nil, c.newFatal(fmt.Sprintf("Cannot use %s as default value for parameter $%s of type %s",
-					k, strings.TrimPrefix(p.Name, "$"), displayType(p.Type)))
+					k, strings.TrimPrefix(p.Name, "$"), defaultTypeDisplay(p.Type)))
 			}
 			// Promoted-параметр с дефолтом null и ненулевым типом — ошибка
 			// компиляции (в отличие от обычного параметра, где null дефолт
@@ -9872,6 +10068,12 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	// (Zend делит область видимости с eval).
 	cc.chunk.SetNamedRegs(cc.namedRegsMap())
 	cc.setVarRegs()
+	// Динамические имена переменных ($$x): карта имя→регистр делает доступ к
+	// локальным переменным кадра, а не к таблице глобалов (bug71300).
+	if cc.usesDynNames {
+		cc.chunk.SetDynVarRegs(cc.namedRegsMap())
+		cc.chunk.SetGlobalVars(cc.globalVarsMap())
+	}
 	cc.chunk.AllocateRegisters(pinned, cc.allocEnv())
 	cf := vm.NewCompiledFunction(cc.chunk)
 	if cc.usesThisVar {
@@ -9880,6 +10082,19 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	cf.SetNumParams(len(params))
 	if fixed, ok := variadicFixed(params); ok {
 		cf.SetVariadic(fixed)
+	}
+	// Собственные static-переменные — в debug-информацию замыкания (bug79778).
+	if len(cc.staticKeys) > 0 {
+		sv := make([]vm.StaticVarInfo, 0, len(cc.staticKeys))
+		for _, s := range statics {
+			if s.Conditional {
+				continue
+			}
+			if key, ok := cc.staticKeys[s.Name]; ok {
+				sv = append(sv, vm.StaticVarInfo{Name: strings.TrimPrefix(s.Name, "$"), Key: key})
+			}
+		}
+		cf.SetStaticVars(sv)
 	}
 	if cc.hasYield {
 		if nrt := normalizedType(retType); nrt != "" && !generatorRetAllowed(nrt) {
@@ -10332,7 +10547,16 @@ func collectAnonClasses(prog *Program, file string) ([]anonClassInfo, map[Expr]s
 		if _, ok := m[x]; ok {
 			return
 		}
-		name := fmt.Sprintf("\x00anon#%d", len(infos))
+		// Zend: имя анонимного класса — глобальный счётчик компиляции
+		// (`class@anonymous\x00<file>:<line>$<n>`); счётчик не сбрасывается
+		// между компиляциями одного запроса (require/eval того же файла
+		// получают разные классы, bug72594/bug73816).
+		name := fmt.Sprintf("\x00anon#%d", anonClassSeq)
+		anonClassSeq++
+		dfile := x.Decl.DefFile
+		if dfile == "" {
+			dfile = file
+		}
 		x.Decl.Name = name
 		// Суффикс Zend-имени анонимного класса для get_class():
 		// "\x00<file>:<line>$<N>" (PHP: class@anonymous\0/path:3$0).
@@ -10341,6 +10565,7 @@ func collectAnonClasses(prog *Program, file string) ([]anonClassInfo, map[Expr]s
 			ln = 1
 		}
 		x.Decl.AnonSuffix = fmt.Sprintf("\x00%s:%d$%d", file, ln, len(infos))
+		x.Decl.AnonSite = fmt.Sprintf("%s:%d", dfile, x.Decl.Line)
 		infos = append(infos, anonClassInfo{decl: x.Decl, name: name})
 		m[x] = name
 	}
@@ -10903,6 +11128,21 @@ func displayType(t string) string {
 	return vm.TypeString(t)
 }
 
+// defaultTypeDisplay — тип для диагностики «Cannot use X as default value for
+// parameter ... of type T»: встроенные имена Zend печатает в нижнем регистре
+// (`String` -> `string`), классы — как написаны.
+func defaultTypeDisplay(t string) string {
+	s := displayType(t)
+	if !strings.ContainsAny(s, "|&?") {
+		switch strings.ToLower(s) {
+		case "int", "float", "string", "bool", "array", "object", "callable",
+			"iterable", "mixed", "void", "never", "null", "false", "true":
+			return strings.ToLower(s)
+		}
+	}
+	return s
+}
+
 // canonicalUnionType приводит union-тип к каноническому порядку Zend для
 // сообщений об ошибках (напр. `int|string` -> `string|int`). Порядок частей
 // соответствует zend_type_to_string: встроенные типы в фиксированном порядке
@@ -11402,9 +11642,62 @@ func containsStaticClassKeyword(e Expr) bool {
 	return false
 }
 
+// emptyIndexRead ищет чтение с пустым индексом `[]` (IndexExpr с Key == nil):
+// Zend запрещает его на компиляции («Cannot use [] for reading»), в том числе
+// внутри константных выражений (bug70912).
+func emptyIndexRead(e Expr) Expr {
+	switch x := e.(type) {
+	case *IndexExpr:
+		if x.Key == nil {
+			return x
+		}
+		if r := emptyIndexRead(x.Arr); r != nil {
+			return r
+		}
+		return emptyIndexRead(x.Key)
+	case *BinExpr:
+		if r := emptyIndexRead(x.L); r != nil {
+			return r
+		}
+		return emptyIndexRead(x.R)
+	case *UnaryExpr:
+		return emptyIndexRead(x.X)
+	case *TernaryExpr:
+		if r := emptyIndexRead(x.Cond); r != nil {
+			return r
+		}
+		if x.Then != nil {
+			if r := emptyIndexRead(x.Then); r != nil {
+				return r
+			}
+		}
+		return emptyIndexRead(x.Else)
+	case *CoalesceExpr:
+		if r := emptyIndexRead(x.L); r != nil {
+			return r
+		}
+		return emptyIndexRead(x.R)
+	case *ArrayLit:
+		for _, el := range x.Elems {
+			if el.Key != nil {
+				if r := emptyIndexRead(el.Key); r != nil {
+					return r
+				}
+			}
+			if r := emptyIndexRead(el.Val); r != nil {
+				return r
+			}
+		}
+	}
+	return nil
+}
+
 func (c *compiler) makeConstValue(cls vm.ClassInfo, e Expr, name string) (vm.Value, *vm.Thunk, error) {
 	if containsStaticClassKeyword(e) {
 		return nil, nil, c.newFatal("static::class cannot be used for compile-time class name resolution")
+	}
+	if idx := emptyIndexRead(e); idx != nil {
+		return nil, nil, &fatalError{msg: "Cannot use [] for reading", line: c.exprLine(idx)}
 	}
 	if v, err := constValueOf(e); err == nil {
 		return v, nil, nil
@@ -11671,6 +11964,14 @@ func (c *compiler) stmt(st Stmt) error {
 				return err
 			}
 		}
+		// Zend верифицирует объявленный тип возврата в точке return — до
+		// выполнения finally (VERIFY_RETURN; bug72347: Deprecated о float->int
+		// печатается раньше тела finally).
+		if s.X != nil && c.curRetType != "" && !c.byrefReturn && !c.hasYield && c.hasFinallyRegion() {
+			if _, isVoid := s.X.(*NullLit); !isVoid {
+				r = c.emitCall("__php_verify_return", []uint8{r})
+			}
+		}
 		r = c.saveAcrossUnwind(r)
 		if err := c.unwindToRegions(0); err != nil {
 			return err
@@ -11694,14 +11995,27 @@ func (c *compiler) stmt(st Stmt) error {
 				if isTemporaryExpr(v.Arr) {
 					return c.newFatal("Cannot use temporary expression in write context")
 				}
-				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
-				oldUnset := c.chainUnset
-				c.chainUnset = true
-				arr, wb, err := c.indexBase(v, false)
-				c.chainUnset = oldUnset
-				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
-				if err != nil {
-					return err
+				var arr uint8
+				var wb func(uint8)
+				var err error
+				if pe, ok := v.Arr.(*PropExpr); ok && isPropChain(pe) {
+					// `unset($a->b->c['d'])`: промежуточные свойства — через
+					// null-терпимый write-fetch (bug78644). Для одиночного
+					// `$a->prop[k]` обычный путь с writeback (bug33512).
+					arr, err = c.exprUnsetBase(pe)
+					if err != nil {
+						return err
+					}
+				} else {
+					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+					oldUnset := c.chainUnset
+					c.chainUnset = true
+					arr, wb, err = c.indexBase(v, false)
+					c.chainUnset = oldUnset
+					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+					if err != nil {
+						return err
+					}
 				}
 				// `unset($x[0])` при неопределённом $x: Zend читает $x (и
 				// печатает «Undefined variable»), но запись не выполняется.
@@ -11722,9 +12036,25 @@ func (c *compiler) stmt(st Stmt) error {
 				}
 				// База unset-цепочки читается в IS-режиме: неинициализированное
 				// типизированное свойство не диагностируется (variation_nested).
-				obj, err := c.exprIssetBase(v.Recv)
-				if err != nil {
-					return err
+				// Цепочка через null не ошибка: промежуточное свойство
+				// создаётся как null (bug78644).
+				var obj uint8
+				var err error
+				if pe, ok := v.Recv.(*PropExpr); ok {
+					base, berr := c.exprUnsetBase(pe.Recv)
+					if berr != nil {
+						return berr
+					}
+					nameReg, nerr := c.propNameReg(pe)
+					if nerr != nil {
+						return nerr
+					}
+					obj = c.emitCall("__php_unset_prop_base", []uint8{base, nameReg})
+				} else {
+					obj, err = c.exprIssetBase(v.Recv)
+					if err != nil {
+						return err
+					}
 				}
 				if v.NameExpr != nil {
 					ne, err := c.expr(v.NameExpr)
@@ -11798,7 +12128,17 @@ func (c *compiler) stmt(st Stmt) error {
 					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 					cur := c.loadVar(v.Name)
 					c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
-					c.emitCall("__php_close_gen", []uint8{cur})
+					// Регистры, держащие то же значение (сама переменная и
+					// загруженная копия), не считаются «другой ссылкой»:
+					// unset закрывает генератор, только если на него больше
+					// никто не смотрит (bug69221).
+					ex1 := c.alloc()
+					c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: ex1,
+						C: int32(c.chunk.AddConst(vm.IntConst(int64(c.vars[v.Name]))))})
+					ex2 := c.alloc()
+					c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: ex2,
+						C: int32(c.chunk.AddConst(vm.IntConst(int64(cur))))})
+					c.emitCall("__php_close_gen", []uint8{cur, ex1, ex2})
 				}
 				if v.NameExpr == nil && c.useGlobal(v.Name) {
 					// Внутри функции unset() статической/глобальной
@@ -11847,6 +12187,12 @@ func (c *compiler) stmt(st Stmt) error {
 					c.storeVar(v.Name, n)
 					c.setUndef(v.Name)
 				}
+			case *DynCallExpr, *CallExpr:
+				// Zend требует «переменную» в unset(): прямой вызов функции —
+				// ошибка компиляции (bug70240).
+				return c.newFatal("Can't use function return value in write context")
+			case *MethodCallExpr, *StaticCallExpr:
+				return c.newFatal("Can't use method return value in write context")
 			}
 		}
 	case *StaticVarStmt:
@@ -11950,13 +12296,18 @@ func (c *compiler) stmt(st Stmt) error {
 				}
 			}
 			c.pushStrict(s.Strict)
-			c.pushFile(s.File)
-			if s.File != "" {
+			fileName := s.File
+			if s.EvalRegion {
+				// Zend: код eval() относится к "<file>(<line>) : eval()'d code".
+				fileName = fmt.Sprintf("%s(%d) : eval()'d code", callFile, callLine)
+			}
+			c.pushFile(fileName)
+			if fileName != "" {
 				parent := int32(-1)
 				if n := len(c.inlineStack); n > 0 {
 					parent = c.inlineStack[n-1].region
 				}
-				region := c.chunk.AddInlineRegion(s.File, callFile, callLine, s.CallName, parent)
+				region := c.chunk.AddInlineRegion(fileName, callFile, callLine, s.CallName, parent)
 				c.inlineStack = append(c.inlineStack, inlineCtx{lines: s.Lines, exprs: s.ExprLines, region: region})
 			}
 		} else {
@@ -12729,6 +13080,17 @@ func (c *compiler) unwindToRegions(keep int) error {
 	}
 	c.regions = saved
 	return nil
+}
+
+// hasFinallyRegion сообщает, что текущая точка компиляции находится внутри
+// try-региона с finally (раскрутка выполнит его тело при return).
+func (c *compiler) hasFinallyRegion() bool {
+	for _, reg := range c.regions {
+		if reg.try != nil && reg.try.hasFinally {
+			return true
+		}
+	}
+	return false
 }
 
 // saveAcrossUnwind сохраняет значение r в стабильный регистр, если предстоит
@@ -14170,6 +14532,20 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		c.chunk.Emit(vm.Instruction{Op: vm.OpNewRef, A: cell, B: valReg})
 		return cell, nil, nil
 	}
+	if pe, ok := e.(*PropExpr); ok && !info.silent {
+		// Свойство как by-ref аргумент: у overloaded-свойства из __get
+		// Notice «Indirect modification» не печатается (bug70288).
+		recv, err := c.exprForWrite(pe.Recv)
+		if err != nil {
+			return 0, nil, err
+		}
+		nameReg, err := c.propNameReg(pe)
+		if err != nil {
+			return 0, nil, err
+		}
+		cell := c.emitCall("__php_prop_ref_arg", []uint8{recv, nameReg})
+		return cell, nil, nil
+	}
 	if a, ok := e.(*VarExpr); ok {
 		if (a.Name == "$GLOBALS" || a.Name == "GLOBALS") && !info.silent {
 			c.emitByRefError(info, pos)
@@ -14274,7 +14650,7 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		}
 		return cell, nil, nil
 	}
-	if !info.silent && refableExpr(e) && info.name != "array_multisort" {
+	if !info.silent && c.refableExprC(e) && info.name != "array_multisort" {
 		// Вызов/new в by-ref позиции: если результат — ссылка, она
 		// пробрасывается; иначе Notice и временная ячейка.
 		// array_multisort — исключение: он не эмитит Notice для временных
@@ -14299,7 +14675,7 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 	// неизвестны), включая скаляры-флаги, которые в Zend by-value: для него
 	// не эмитим диагностику передачи не-переменной.
 	if info.name != "array_multisort" && !info.silent {
-		if refableExpr(e) {
+		if c.refableExprC(e) {
 			c.emitRefNotice("Only variables should be passed by reference")
 		} else {
 			c.emitByRefError(info, pos)
@@ -14379,6 +14755,29 @@ func refableExpr(e Expr) bool {
 		return true
 	}
 	return false
+}
+
+// refableExprC — как refableExpr, но для вызова известной ВСТРОЕННОЙ функции
+// значение не может быть передано по ссылке: Zend бросает «could not be passed
+// by reference» (bug79783), а не Notice «Only variables should be passed by
+// reference» (та — для результатов пользовательских вызовов).
+func (c *compiler) refableExprC(e Expr) bool {
+	if ce, ok := e.(*CallExpr); ok {
+		// Результат специализированного опкода встроенной функции
+		// (specialFuncNames, Zend IS_TMP_VAR) по ссылке не передаётся: Zend
+		// бросает «could not be passed by reference» (bug79783), а для
+		// обычных вызовов — Notice «Only variables should be passed by
+		// reference» (by_ref_optimization: f(function_exists(...))).
+		for _, name := range []string{ce.Name, ce.Fallback} {
+			if name == "" {
+				continue
+			}
+			if specialFuncNames[strings.ToLower(strings.TrimPrefix(name, "\\"))] {
+				return false
+			}
+		}
+	}
+	return refableExpr(e)
 }
 
 // emitByRefError эмитит фатальную ошибку "could not be passed by reference".
@@ -14979,6 +15378,14 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			if na.throwMsg != "" {
 				return c.emitNamedArgError("Error", na.throwMsg), nil
 			}
+			if na.maskValid {
+				if _, isNative := fn.Executable.(*vm.NativeFunction); !isNative {
+					// Пропуски именованных аргументов — заглушки, а не явный
+					// null (gh19653_1); явный null проверяется по типу
+					// (bug68446).
+					c.setProvidedMask(na.providedMask)
+				}
+			}
 			return c.emitCallRegs(fi, argRegs, wbs, x.Discard), nil
 		}
 	case *YieldExpr:
@@ -15338,6 +15745,46 @@ func (c *compiler) propGetRW(x *PropExpr) (uint8, error) {
 // записи (`$o->p->q = ...`, `$o->p[] = ...`): свойство читается в режиме
 // OpPropGetRWInterm (инициализированное readonly допустимо), остальные
 // приёмники — как база записи.
+// exprChainBaseForCheck вычисляет получателя-объект для проверки uninit:
+// для `$a->b->c` — значение `$a->b`, для `$a->b` — значение `$a`.
+func (c *compiler) exprChainBaseForCheck(e Expr) (uint8, error) {
+	if pe, ok := e.(*PropExpr); ok {
+		return c.exprIssetBase(pe.Recv)
+	}
+	return c.exprIssetBase(e)
+}
+
+// isPropChain сообщает, что выражение — цепочка свойств/индексов длиной
+// больше одного звена (`$a->b->c`, `$a->b[0]->c`).
+func isPropChain(e Expr) bool {
+	switch x := e.(type) {
+	case *PropExpr:
+		switch x.Recv.(type) {
+		case *PropExpr, *IndexExpr:
+			return true
+		}
+	case *IndexExpr:
+		return isPropChain(x.Arr)
+	}
+	return false
+}
+
+// chainBaseVar находит базовую простую переменную цепочки записи
+// (`$u4->a->b[...]` -> $u4), для диагностики «Undefined variable».
+func chainBaseVar(e Expr) *VarExpr {
+	switch x := e.(type) {
+	case *PropExpr:
+		return chainBaseVar(x.Recv)
+	case *IndexExpr:
+		return chainBaseVar(x.Arr)
+	case *VarExpr:
+		if x.NameExpr == nil {
+			return x
+		}
+	}
+	return nil
+}
+
 func (c *compiler) exprChainRecv(e Expr) (uint8, error) {
 	if pe, ok := e.(*PropExpr); ok {
 		recv, err := c.exprChainRecv(pe.Recv)
@@ -15493,18 +15940,36 @@ func (c *compiler) newExpr(x *NewExpr) (uint8, error) {
 	if strings.EqualFold(x.Class, "static") && c.curClass != nil {
 		return c.newStatic(x.Args)
 	}
+	// Без области класса Zend резолвит self/parent/static в рантайме и бросает
+	// перехватываемый Error (bug70918), а не «Class "static" not found».
+	if c.curClass == nil {
+		switch strings.ToLower(strings.TrimLeft(x.Class, "\\")) {
+		case "self":
+			return c.newScopeSel(0, x.Args)
+		case "static":
+			return c.newScopeSel(1, x.Args)
+		case "parent":
+			return c.newScopeSel(2, x.Args)
+		}
+	}
 	return c.newNamed(x.Class, x.Args)
 }
 
 // newStatic компилирует `new static` с поздним статическим связыванием:
 // класс-получатель берётся в рантайме (OpClassName с селектором called).
 func (c *compiler) newStatic(args []Expr) (uint8, error) {
+	return c.newScopeSel(1, args)
+}
+
+// newScopeSel — `new self/static/parent`: класс резолвится в рантайме по
+// селектору (0/1/2); без области класса OpClassName бросает Error.
+func (c *compiler) newScopeSel(sel uint8, args []Expr) (uint8, error) {
 	if hasNamedArg(args) {
 		if msg := argOrderError(args); msg != "" {
 			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
 		}
 		nameReg := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: 1})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel, C: 1})
 		arr, err := c.buildArgArray(args, true, nil)
 		if err != nil {
 			return 0, err
@@ -15512,7 +15977,7 @@ func (c *compiler) newStatic(args []Expr) (uint8, error) {
 		return c.emitCall("__php_new_named", []uint8{nameReg, arr}), nil
 	}
 	nameReg := c.alloc()
-	c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: 1})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel, C: 1})
 	argRegs, wbs, err := c.evalArgs(c.methodRefs["__construct"], args, byRefInfo{})
 	if err != nil {
 		return 0, err
@@ -15752,12 +16217,31 @@ func (c *compiler) closureExpr(e Expr) (uint8, error) {
 	for range specs {
 		c.alloc()
 	}
+	// Для неявных захватов стрелочных функций: неопределённые переменные не
+	// диагностируются в точке создания (Zend печатает "Undefined variable"
+	// при чтении в теле — bug81076/arrow_functions). Флаги «не определена»
+	// передаются в замыкание и проверяются при вызове.
+	var flagArgs []uint8
 	for i, sp := range specs {
 		var r uint8
 		if sp.byref {
 			r = c.refCell(sp.name)
 		} else {
+			if ci.isArrow && simpleVarName(sp.name) {
+				u := c.undefFlagFor(sp.name)
+				if u == 0 {
+					u = c.alloc()
+					c.chunk.Emit(vm.Instruction{Op: vm.OpFalse, A: u})
+				}
+				idx := c.alloc()
+				c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: idx, C: int32(c.chunk.AddConst(vm.IntConst(int64(i))))})
+				flagArgs = append(flagArgs, idx, u)
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+			}
 			r = c.loadVar(sp.name)
+			if ci.isArrow {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+			}
 		}
 		if dst := base + uint8(i); dst != r {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: dst, B: r})
@@ -15765,8 +16249,60 @@ func (c *compiler) closureExpr(e Expr) (uint8, error) {
 	}
 	d := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpClosure, A: d, B: base, C: int32(ci.idx)})
+	if len(flagArgs) > 0 {
+		c.emitCall("__php_closure_undef", append([]uint8{d}, flagArgs...))
+	}
 	c.tmp = d + 1
 	return d, nil
+}
+
+// simpleVarName сообщает, что имя — простая переменная `$ident` (не
+// переменная-переменная вида `$$x`, для которых флаг определённости не имеет
+// смысла).
+func simpleVarName(name string) bool {
+	if !strings.HasPrefix(name, "$") || len(name) < 2 {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		ch := name[i]
+		if ch == '_' || ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= 0x80 || (i > 1 && ch >= '0' && ch <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// undefFlagFor возвращает регистр-флаг «переменная была снята/не определена»
+// для захвата стрелочной функции (0 — переменная определена всегда). В main
+// переменные живут в таблице глобалов — проверяем OpGlobalIsset.
+func (c *compiler) undefFlagFor(name string) uint8 {
+	if c.isMain {
+		// Промотированные main-переменные живут в регистрах и статически
+		// определены; остальные — в VM.globals, где OpGlobalIsset проверяет
+		// именно наличие (null-значение тоже «определено»).
+		if c.promote[name] {
+			return 0
+		}
+		key := c.globalKey(name)
+		isset := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: isset, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+		u := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpNot, A: u, B: isset})
+		return u
+	}
+	// В функции флаг defRegs: TRUE — переменная снята/не определена. Флаг
+	// существует только для переменных из undefInit (остальные определены).
+	if def, ok := c.defRegs[name]; ok {
+		for _, r := range c.undefInit {
+			if r == def {
+				u := c.alloc()
+				c.chunk.Emit(vm.Instruction{Op: vm.OpNot, A: u, B: def})
+				return u
+			}
+		}
+	}
+	return 0
 }
 
 // dynCall компилирует `$f(args)`: имя функции — динамическое (строка из
@@ -16816,6 +17352,7 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 				if err != nil {
 					return 0, err
 				}
+				c.markDynName()
 				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: r, C: int32(ne)})
 				return r, nil
 			}
@@ -16848,18 +17385,35 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: v, B: cur, C: int32(r)})
 			return v, nil
 		}
+		if t.NameExpr != nil {
+			// Динамическое имя (`$$n op= v`): Zend выполняет ASSIGN_OP после
+			// правого операнда — имя и текущее значение читаются в момент
+			// записи, ровно один раз (bug71300: `$$n .= (...)` видит уже
+			// изменённый $n).
+			r, verr := c.expr(value)
+			if verr != nil {
+				return 0, verr
+			}
+			ne, nerr := c.expr(t.NameExpr)
+			if nerr != nil {
+				return 0, nerr
+			}
+			c.markDynName()
+			cur := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(ne)})
+			d := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: d, C: int32(ne)})
+			return d, nil
+		}
 		var cur uint8
 		var err error
-		if t.NameExpr != nil {
-			cur, err = c.loadVarDyn(t.NameExpr)
-		} else {
-			cur = c.loadVarChecked(t.Name, c.exprLine(t))
-		}
+		cur = c.loadVarChecked(t.Name, c.exprLine(t))
 		if err != nil {
 			return 0, err
 		}
 		var r uint8
-		if t.NameExpr == nil && c.deferLeftGlobal(t, value) {
+		if c.deferLeftGlobal(t, value) {
 			// Глобальная переменная: читаем её после правого операнда
 			// (Zend читает CV в момент выполнения ASSIGN_OP).
 			r, err = c.expr(value)
@@ -16876,17 +17430,9 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 		// Для переменной (в т.ч. by-ref параметра) считаем прямо в регистр
 		// текущего значения: лишний временный регистр здесь не нужен и может
 		// конфликтовать с регистрами ссылочных опкодов.
-		if t.NameExpr == nil {
-			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: cur, B: cur, C: int32(r)})
-			c.storeVar(t.Name, cur)
-			return cur, nil
-		}
-		d := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
-		if err := c.storeVarDyn(t.NameExpr, d); err != nil {
-			return 0, err
-		}
-		return d, nil
+		c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: cur, B: cur, C: int32(r)})
+		c.storeVar(t.Name, cur)
+		return cur, nil
 	case *IndexExpr:
 		if op == "=" && byref {
 			return c.assignIndexRef(t, value)
@@ -16903,11 +17449,32 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			// промежуточное звено (инициализированное readonly-свойство
 			// допустимо, variation_nested).
 			obj, err = c.writeChainRecv(t.Recv)
+		} else if ve, ok := t.Recv.(*VarExpr); ok && ve.NameExpr == nil {
+			// Составное присваивание читает приёмник с диагностикой
+			// «Undefined variable» (bug78531: `$u->a += 5`).
+			obj = c.loadVarChecked(ve.Name, c.exprLine(ve))
 		} else {
-			// Составное присваивание сначала читает приёмник (обычное
-			// чтение): неинициализированное типизированное свойство даёт
-			// ошибку доступа (variation_nested).
-			obj, err = c.exprChainRead(t.Recv)
+			// Цепочка записи: базовая переменная читается с диагностикой
+			// «Undefined variable», промежуточные свойства — в RW-режиме
+			// («Attempt to modify property ... on null», bug78531).
+			if b := chainBaseVar(t.Recv); b != nil {
+				c.emitUndefReadWarn(b.Name, c.exprLine(b))
+			}
+			if pe2, ok := t.Recv.(*PropExpr); ok {
+				// Неинициализированное объявленное свойство в приёмнике
+				// составного присваивания: ошибка uninit до write-fetch
+				// (variation_nested).
+				base, berr := c.exprChainBaseForCheck(t.Recv)
+				if berr != nil {
+					return 0, berr
+				}
+				nameReg, nerr := c.propNameReg(pe2)
+				if nerr != nil {
+					return 0, nerr
+				}
+				c.emitCall("__php_prop_uninit_read_check", []uint8{base, nameReg})
+			}
+			obj, err = c.exprChainRecv(t.Recv)
 		}
 		if err != nil {
 			return 0, err
@@ -17052,18 +17619,19 @@ func (c *compiler) writeCtxBuiltinFatal(e Expr) error {
 // специализированные опкоды с временным результатом (IS_TMP_VAR). Запись в
 // результат такой функции (в т.ч. в его индекс) — компайл-фатал
 // "Cannot use result of built-in function in write context".
+// chr/ord/in_array/call_user_func*/array_slice Zend так не компилирует:
+// запись в их результат даёт рантайм-ошибки (bug70089).
 var specialFuncNames = map[string]bool{
 	"strlen": true, "is_null": true, "is_bool": true,
 	"is_long": true, "is_int": true, "is_integer": true,
 	"is_float": true, "is_double": true, "is_string": true,
 	"is_array": true, "is_object": true, "is_resource": true, "is_scalar": true,
 	"boolval": true, "intval": true, "floatval": true, "doubleval": true,
-	"strval": true, "defined": true, "chr": true, "ord": true,
-	"call_user_func_array": true, "call_user_func": true, "in_array": true,
+	"strval": true, "defined": true,
 	"count": true, "sizeof": true,
 	"get_class": true, "get_called_class": true, "gettype": true,
 	"func_num_args": true, "func_get_args": true,
-	"array_slice": true, "array_key_exists": true,
+	"array_key_exists": true,
 }
 
 // builtinCallBase сообщает, что выражение — цепочка индексов от вызова
@@ -17640,6 +18208,22 @@ func (c *compiler) refCellForExpr(value Expr) (uint8, error) {
 			}
 			return c.refCell(v.Name), nil
 		}
+		// Динамическая переменная (`$$x`) в ref-контексте: переменная
+		// создаётся как ссылка на null без диагностики (Zend; bug78182: после
+		// `... =& $$x` переменная определена).
+		nameReg, err := c.expr(v.NameExpr)
+		if err != nil {
+			return 0, err
+		}
+		c.markDynName()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+		cur := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(nameReg)})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+		cell := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpNewRef, A: cell, B: cur})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: cell, C: int32(nameReg)})
+		return cell, nil
 	case *IndexExpr:
 		if v.Key == nil {
 			break
@@ -18090,7 +18674,7 @@ func (c *compiler) indexBaseKeys(t *IndexExpr, keys []uint8, dimW bool) (uint8, 
 			}
 		}
 		arr := c.alloc()
-		op := vm.OpIndexRaw
+		op := vm.OpIndexRawWrite
 		if c.chainUnset {
 			op = vm.OpIndexUnsetRaw
 		}
@@ -18235,10 +18819,21 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 	if t.Key == nil {
 		r := valReg
 		if op != "=" {
+			bc, ok := binOp(strings.TrimSuffix(op, "="))
+			if !ok {
+				return 0, fmt.Errorf("компилятор: неизвестный оператор %q", op)
+			}
 			r, err = c.expr(value)
 			if err != nil {
 				return 0, err
 			}
+			// `$x[] op= v`: для массива — append, для ArrayAccess —
+			// offsetGet(null)/offsetSet(null) (bug69955).
+			c.chunk.Emit(vm.Instruction{Op: vm.OpAppendCompound, A: arr, B: r, C: int32(compoundOp(bc))})
+			if wb != nil {
+				wb(arr)
+			}
+			return r, nil
 		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpAppend, A: arr, B: r})
 		if wb != nil {
@@ -18401,36 +18996,47 @@ func (c *compiler) assignPropRef(t *PropExpr, value Expr) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Zend сначала берёт адрес свойства (FETCH_OBJ_W/REF) и лишь затем
-	// вычисляет RHS: диагностика не-объекта-приёмника срабатывает раньше
-	// (bug75241: «Attempt to modify property» вместо ошибки из RHS).
-	{
-		nm := c.alloc()
-		if t.NameExpr != nil {
-			r, nerr := c.expr(t.NameExpr)
-			if nerr != nil {
-				return 0, nerr
-			}
-			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: nm, B: r})
-		} else {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nm,
-				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
-		}
-		c.emitCall("__php_prop_ref_check", []uint8{obj, nm})
-	}
-	if err != nil {
-		return 0, err
-	}
-	srcCell, err := c.refCellForExpr(value)
-	if err != nil {
-		return 0, err
-	}
-	srcCell = c.decoupleCallRef(value, srcCell)
+	var nameReg uint8
 	if t.NameExpr != nil {
-		nameReg, err := c.expr(t.NameExpr)
+		nameReg, err = c.expr(t.NameExpr)
 		if err != nil {
 			return 0, err
 		}
+	}
+	// Правая часть-переменная: Zend выполняет FETCH_W (создание ячейки)
+	// раньше проверки левой части (bug78182: `$x->p =& $$n` создаёт $$n,
+	// даже если левая часть падает).
+	var srcCell uint8
+	preCreated := false
+	if _, isVar := value.(*VarExpr); isVar {
+		srcCell, err = c.refCellForExpr(value)
+		if err != nil {
+			return 0, err
+		}
+		preCreated = true
+	}
+	// Zend выполняет FETCH_OBJ_W левой части до вычисления RHS: запись в
+	// свойство null — «Attempt to modify property ... on null» ещё до правой
+	// части (bug75241).
+	{
+		var nr uint8
+		if t.NameExpr != nil {
+			nr = nameReg
+		} else {
+			nr = c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nr,
+				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
+		}
+		obj = c.emitCall("__php_prop_write_check", []uint8{obj, nr})
+	}
+	if !preCreated {
+		srcCell, err = c.refCellForExpr(value)
+		if err != nil {
+			return 0, err
+		}
+	}
+	srcCell = c.decoupleCallRef(value, srcCell)
+	if t.NameExpr != nil {
 		c.chunk.Emit(vm.Instruction{Op: vm.OpPropSetRefDyn, A: obj, B: srcCell, C: int32(nameReg)})
 	} else {
 		name := int32(c.chunk.AddConst(vm.StrConst(t.Name)))
@@ -18723,6 +19329,11 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nameReg,
 				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
 		}
+		decReg := c.incDecFlagReg(x.Op)
+		// Не-объект-приёмник: Zend бросает «Attempt to increment/decrement
+		// property» до чтения значения (bug78531), объект-приёмник читается
+		// как обычно (Warning «Undefined property», bug60536_001).
+		obj = c.emitCall("__php_incdec_prop_check", []uint8{obj, nameReg, decReg})
 		// Zend читает свойство в write-контексте (FETCH_OBJ_RW): для
 		// необъявленного свойства сначала Deprecated создания, затем
 		// обычное чтение с Warning «Undefined property».
@@ -18735,14 +19346,12 @@ func (c *compiler) incDec(x *IncDecExpr) (uint8, error) {
 				C: int32(c.chunk.AddConst(vm.StrConst(t.Name)))})
 		}
 		if x.Pre {
-			dec := c.incDecFlagReg(x.Op)
-			newv := c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, dec})
+			newv := c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, decReg})
 			return newv, nil
 		}
 		oldv := c.alloc()
 		c.chunk.Emit(vm.Instruction{Op: vm.OpRefGet, A: oldv, B: cur})
-		dec := c.incDecFlagReg(x.Op)
-		c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, dec})
+		c.emitCall("__php_incdec_prop", []uint8{obj, nameReg, cur, decReg})
 		return oldv, nil
 	case *StaticPropExpr:
 		if t.ClassExpr != nil || c.classRefUnresolved(t.Class) {
@@ -19516,6 +20125,34 @@ func (c *compiler) exprCoalesceBase(a Expr) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
+	return r, nil
+}
+
+// exprUnsetBase — база цепочки unset(): промежуточные свойства читаются
+// write-fetch'ем через __php_unset_prop_base (через null — no-op, bug78644).
+func (c *compiler) exprUnsetBase(e Expr) (uint8, error) {
+	if pe, ok := e.(*PropExpr); ok {
+		base, err := c.exprUnsetBase(pe.Recv)
+		if err != nil {
+			return 0, err
+		}
+		nameReg, err := c.propNameReg(pe)
+		if err != nil {
+			return 0, err
+		}
+		return c.emitCall("__php_unset_prop_base", []uint8{base, nameReg}), nil
+	}
+	return c.exprIssetBase(e)
+}
+
+// propNameReg — регистр с именем свойства (для динамического имени —
+// выражение).
+func (c *compiler) propNameReg(pe *PropExpr) (uint8, error) {
+	if pe.NameExpr != nil {
+		return c.expr(pe.NameExpr)
+	}
+	r := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: r, C: int32(c.chunk.AddConst(vm.StrConst(pe.Name)))})
 	return r, nil
 }
 

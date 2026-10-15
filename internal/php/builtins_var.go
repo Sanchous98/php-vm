@@ -1091,6 +1091,12 @@ func stdConst(name string) (vm.Slot, bool) {
 		return vm.MakeInt(0), true
 	case "CASE_UPPER":
 		return vm.MakeInt(1), true
+	case "CURLOPT_HEADERFUNCTION":
+		return vm.MakeInt(10079), true
+	case "CURLOPT_URL":
+		return vm.MakeInt(10002), true
+	case "CURLOPT_RETURNTRANSFER":
+		return vm.MakeInt(19913), true
 	case "SORT_REGULAR":
 		return vm.MakeInt(0), true
 	case "SORT_NUMERIC":
@@ -1705,6 +1711,14 @@ func (st *dumpState) objID(o *vm.Object) int {
 	if id := o.ID(); id > 0 {
 		return id
 	}
+	if o.IsLazyHandle() && st.vm != nil {
+		// Материализация lazy-объекта (ReflectionParameter): Zend выдаёт
+		// хендл из общего счётчика в этот момент.
+		st.vm.MaterializeLazyObj(o)
+		if id := o.ID(); id > 0 {
+			return id
+		}
+	}
 	if id, ok := st.objIDs[o]; ok {
 		return id
 	}
@@ -1800,6 +1814,12 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			defer delete(st.closures, cl)
 		}
 		id := s.ClosureID()
+		if id == 0 && st.vm != nil {
+			// Замыкание из встроенной функции (Reflection::getClosure и т.п.)
+			// получило бы хендл при создании — печатаем следующий свободный,
+			// не занимая его (иначе поехали бы номера последующих объектов).
+			id = st.vm.PeekNextObjID() + 1
+		}
 		if id == 0 {
 			st.nextID++
 			id = st.nextID
@@ -1810,7 +1830,6 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		var capVals []vm.Slot
 		var staticNames []string
 		var staticKeys []string
-		var staticDefaults []vm.Slot
 		hasThis := false
 		if cl != nil {
 			if cl.Fake && cl.Fn != nil && cl.Fn.Name != "" && cl.Fn.Name != "{closure}" {
@@ -1818,6 +1837,10 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 				if cl.Fn.Scope != nil {
 					funcName = cl.Fn.Scope.Name() + "::" + funcName
 				}
+			}
+			// Список параметров Zend печатает и для литеральных замыканий
+			// (bug75290): ["parameter"] => ["$x"] => "<required>"/"<optional>".
+			if cl.Fn != nil {
 				paramNames = cl.Fn.ParamNames
 			}
 			if cl.Fn != nil && len(cl.Fn.CaptureNames) == len(cl.Captures) {
@@ -1828,7 +1851,6 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			capVals = cl.Captures
 			if cl.Fn != nil && len(cl.Fn.StaticNames) > 0 {
 				staticNames = cl.Fn.StaticNames
-				staticDefaults = cl.Fn.StaticDefaults
 				// Ключи копии метода могут отличаться от исходных
 				// (trait-миксин/alias, см. Function.RebindStaticKeys).
 				staticKeys = make([]string, len(staticNames))
@@ -1845,7 +1867,27 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if len(paramNames) > 0 {
 			n++
 		}
-		if len(capVals) > 0 || len(staticNames) > 0 {
+		// Неявные захваты стрелочной функции, не определённые в точке
+		// создания, в дамп не попадают и не считаются (bug81076).
+		keepCaps := len(capVals)
+		if cl != nil {
+			keepCaps = 0
+			for i := range capVals {
+				if f := cl.CapUndefFlags(); i < len(f) && f[i] {
+					continue
+				}
+				keepCaps++
+			}
+		}
+		// Собственные static-переменные функции входят в тот же раздел
+		// (bug79778).
+		var fnStatics []vm.StaticVarInfo
+		if cl != nil && cl.Fn != nil {
+			if cf, isCompiled := cl.Fn.Executable.(*vm.CompiledFunction); isCompiled {
+				fnStatics = cf.StaticVars()
+			}
+		}
+		if keepCaps+len(fnStatics) > 0 {
 			n++
 		}
 		if hasThis {
@@ -1862,43 +1904,55 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if len(paramNames) > 0 {
 			b.WriteString(inner + `["parameter"]=>` + "\n")
 			parr := vm.NewArray()
-			for _, pn := range paramNames {
+			req := 0
+			if cl != nil && cl.Fn != nil {
+				req = cl.Fn.NumRequired
+				if req == 0 {
+					req = cl.Fn.MinArgs
+				}
+			}
+			for i, pn := range paramNames {
 				name := pn
 				if !strings.HasPrefix(name, "$") {
 					name = "$" + name
 				}
-				_ = parr.SetStr(name, vm.MakeString("<required>"))
+				kind := "<required>"
+				if i >= req {
+					kind = "<optional>"
+				}
+				_ = parr.SetStr(name, vm.MakeString(kind))
 			}
 			b.WriteString(inner)
 			dumpElem(b, vm.MakeArray(parr), indent+1, st)
 		}
-		if len(capVals) > 0 || len(staticNames) > 0 {
-			b.WriteString(inner + `["static"]=>` + "\n")
+		if keepCaps > 0 || len(fnStatics) > 0 {
 			sarr := vm.NewArray()
 			for i, v := range capVals {
+				// Неявный захват стрелочной функции, не определённый в точке
+				// создания, в дамп не попадает (bug81076).
+				if cl != nil && i < len(cl.CapUndefFlags()) && cl.CapUndefFlags()[i] {
+					continue
+				}
 				name := ""
 				if i < len(capNames) {
 					name = capNames[i]
 				}
+				// Zend печатает имена захватов без ведущего `$`.
+				name = strings.TrimPrefix(name, "$")
 				_ = sarr.SetStr(name, v)
 			}
-			// Статические переменные функции: текущее значение ячейки в
-			// globals, иначе значение по умолчанию (Zend static_variables).
-			for i, name := range staticNames {
+			for _, sv := range fnStatics {
 				val := vm.MakeNull()
-				got := false
-				if i < len(staticKeys) && st.vm != nil {
-					if v, ok := st.vm.GlobalRef(staticKeys[i]); ok {
-						val, got = v, true
-					}
+				if g, ok := st.vm.GlobalByKey(sv.Key); ok {
+					val = derefSlot(g)
 				}
-				if !got && i < len(staticDefaults) {
-					val = staticDefaults[i]
-				}
-				_ = sarr.SetStr(name, val)
+				_ = sarr.SetStr(sv.Name, val)
 			}
-			b.WriteString(inner)
-			dumpElem(b, vm.MakeArray(sarr), indent+1, st)
+			if sarr.Len() > 0 {
+				b.WriteString(inner + `["static"]=>` + "\n")
+				b.WriteString(inner)
+				dumpElem(b, vm.MakeArray(sarr), indent+1, st)
+			}
 		}
 		if hasThis {
 			b.WriteString(inner + `["this"]=>` + "\n")
@@ -2357,6 +2411,9 @@ type printState struct {
 	vm   *vm.VM
 	arrs map[*vm.Array]bool
 	objs map[*vm.Object]bool
+	// closures — замыкания на текущем пути печати: захват замыкания самим
+	// собой печатается как *RECURSION* (Zend).
+	closures map[*vm.Closure]bool
 }
 
 func (st *printState) recursive(s vm.Slot) bool {
@@ -2442,16 +2499,87 @@ func printR(b *strings.Builder, s vm.Slot, lvl int, st *printState) {
 			}
 		}
 		b.WriteString(pad + ")\n")
+	case vm.ClosureType:
+		// print_r замыкания: раздел [static] с захватами и собственными
+		// static-переменными (Zend; bug79778).
+		cl := s.AsClosure()
+		if cl != nil {
+			if st.closures == nil {
+				st.closures = map[*vm.Closure]bool{}
+			}
+			if st.closures[cl] {
+				b.WriteString("Closure Object\n *RECURSION*\n")
+				return
+			}
+		}
+		pad := strings.Repeat(" ", lvl)
+		b.WriteString("Closure Object\n" + pad + "(\n")
+		if cl != nil {
+			st.closures[cl] = true
+			arr := closureStaticArray(st.vm, cl)
+			if arr != nil {
+				plain := vm.NewArray()
+				for k, v := range arr.All() {
+					_ = plain.Set(k, derefSlot(v))
+				}
+				b.WriteString(strings.Repeat(" ", lvl+4) + "[static] => ")
+				printRValue(b, vm.MakeArray(plain), lvl, st)
+			}
+			delete(st.closures, cl)
+		}
+		b.WriteString(pad + ")\n")
 	default:
 		b.WriteString(s.ToString())
 	}
+}
+
+// closureStaticArray собирает раздел static дампа замыкания: захваченные
+// переменные (неопределённые неявные захваты стрелочной функции не попадают —
+// bug81076) и собственные static-переменные функции (bug79778). nil, если
+// раздел пуст.
+func closureStaticArray(v *vm.VM, cl *vm.Closure) *vm.Array {
+	if cl == nil {
+		return nil
+	}
+	capVals := cl.Captures
+	capNames := make([]string, len(capVals))
+	if cl.Fn != nil && len(cl.Fn.CaptureNames) == len(capVals) {
+		capNames = cl.Fn.CaptureNames
+	}
+	sarr := vm.NewArray()
+	undef := cl.CapUndefFlags()
+	for i, cv := range capVals {
+		if i < len(undef) && undef[i] {
+			continue
+		}
+		name := ""
+		if i < len(capNames) {
+			name = capNames[i]
+		}
+		_ = sarr.SetStr(strings.TrimPrefix(name, "$"), cv)
+	}
+	if cl.Fn != nil {
+		if cf, ok := cl.Fn.Executable.(*vm.CompiledFunction); ok {
+			for _, sv := range cf.StaticVars() {
+				val := vm.MakeNull()
+				if g, ok := v.GlobalByKey(sv.Key); ok {
+					val = derefSlot(g)
+				}
+				_ = sarr.SetStr(sv.Name, val)
+			}
+		}
+	}
+	if sarr.Len() == 0 {
+		return nil
+	}
+	return sarr
 }
 
 // printRValue печатает значение после "key => " и добавляет пустую строку
 // после вложенного массива/объекта (но не после *RECURSION*).
 func printRValue(b *strings.Builder, v vm.Slot, lvl int, st *printState) {
 	switch v.Type() {
-	case vm.ArrayType, vm.ObjectType:
+	case vm.ArrayType, vm.ObjectType, vm.ClosureType:
 		rec := st.recursive(v)
 		printR(b, v, lvl+8, st)
 		if !rec {

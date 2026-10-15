@@ -513,10 +513,23 @@ const (
 	OpPropGetCompound // PROP_GET_COMPOUND
 	// OpPropGetCompoundDyn — то же для динамического имени (C — регистр-имя).
 	OpPropGetCompoundDyn // PROP_GET_COMPOUND_DYN
+
+	// OpAppendCompound — A[] op= B (C — опкод бинарной операции, см.
+	// compoundSlow): для массива Zend просто дописывает правый операнд (как
+	// OpAppend), для ArrayAccess — offsetGet(null) op B, затем
+	// offsetSet(null, результат). Регистр B получает результат присваивания
+	// (bug69955).
+	OpAppendCompound // APPEND_COMPOUND
+
+	// OpIndexRawWrite — A = B[C] как база ЗАПИСИ (nested write chain): как
+	// OpIndexRaw, но для строкового контейнера Zend не отдаёт символ-временный,
+	// а бросает Error "Cannot use string offset as an array" (после диагностик
+	// о нелегальном ключе): bug53432, bug70089, offset_assign.
+	OpIndexRawWrite // INDEX_RAW_WRITE
 )
 
 // numOpcodes — число опкодов (для таблиц, индексируемых опкодом).
-const numOpcodes = int(OpPropGetCompoundDyn) + 1
+const numOpcodes = int(OpIndexRawWrite) + 1
 
 // IsUnconditionalTerminator сообщает, что после инструкции исполнение не
 // продолжается со следующей позиции (нет fallthrough): компилятор не ставит

@@ -20,6 +20,46 @@ func (vm *VM) addSlow(a, b Slot) (Slot, error) {
 	return Add(a, b), nil
 }
 
+// compoundSlow применяет бинарную операцию составного присваивания по опкоду
+// операции (OpAppendCompound; op — OpAdd/OpSub/.../OpConcatApp).
+func (vm *VM) compoundSlow(op Opcode, a, b Slot) (Slot, error) {
+	switch op {
+	case OpAdd:
+		return vm.addSlow(a, b)
+	case OpSub:
+		return vm.subSlow(a, b)
+	case OpMul:
+		return vm.mulSlow(a, b)
+	case OpDiv:
+		return vm.divSlow(a, b)
+	case OpMod:
+		return vm.modSlow(a, b)
+	case OpPow:
+		return vm.powSlow(a, b)
+	case OpConcat, OpConcatApp:
+		ls, err := vm.stringify(a)
+		if err != nil {
+			return Slot{}, err
+		}
+		rs, err := vm.stringify(b)
+		if err != nil {
+			return Slot{}, err
+		}
+		return MakeString(ls + rs), nil
+	case OpBitAnd:
+		return vm.bitwiseSlow(a, b, bitAnd)
+	case OpBitOr:
+		return vm.bitwiseSlow(a, b, bitOr)
+	case OpBitXor:
+		return vm.bitwiseSlow(a, b, bitXor)
+	case OpShl:
+		return vm.shiftSlow(a, b, true)
+	case OpShr:
+		return vm.shiftSlow(a, b, false)
+	}
+	return Slot{}, NewThrowable("Error", "unsupported compound operation")
+}
+
 //go:noinline
 func (vm *VM) subSlow(a, b Slot) (Slot, error) {
 	if _, _, err := vm.coerceArith(a, b, "-"); err != nil {

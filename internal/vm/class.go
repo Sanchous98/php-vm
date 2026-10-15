@@ -391,6 +391,13 @@ type runtimeClass struct {
 	isTrait bool
 	// declTrait — дескриптор объявлен ключевым словом `trait`.
 	declTrait bool
+	// anonSite — сайт (file:line) объявления анонимного класса: get_class()
+	// печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+	anonSite string
+	// methDeclOverride — объявивший класс для методов, зарегистрированных
+	// повторно в наследнике (например, SplStack::count объявлен в
+	// SplDoublyLinkedList): Zend называет объявивший класс в диагностиках.
+	methDeclOverride map[string]ClassInfo
 
 	// hidden — дескриптор построен компилятором для объявления, находящегося
 	// вне верхнего уровня (в теле функции/замыкания, под условием и т.п.).
@@ -565,6 +572,12 @@ func (vm *VM) SetDisabledFunctions(names []string) {
 		f.Disabled = true
 		display := f.Name
 		f.NumArgs = 0
+		// Отключённая функция не проверяет арность: Zend не знает её вовсе
+		// (bug69315: is_string() с 0 аргументов — тоже «undefined function»).
+		f.MinArgs = 0
+		f.MaxArgs = 0
+		f.NumRequired = 0
+		f.NativeVariadic = true
 		f.Executable = &NativeFunction{fn: func(ctx *Context, args []Slot) (Slot, error) {
 			return Slot{}, NewThrowable("Error", "Call to undefined function "+display+"()")
 		}}
@@ -911,6 +924,46 @@ func (c *runtimeClass) objectSlot(o *Object, idx int) Slot {
 	return Slot{typ: ObjectType, num: uint64(idx), ptr: unsafe.Pointer(o)}
 }
 
+// UnmarkObjHandle снимает преждевременно выданный хендл (Zend lazy object:
+// ReflectionParameter не занимает #N до материализации).
+func (vm *VM) UnmarkObjHandle(o *Object) {
+	if o == nil {
+		return
+	}
+	o.lazyID = true
+	if o.objID == 0 {
+		return
+	}
+	if o.objID == vm.nextObjID {
+		vm.nextObjID--
+	} else {
+		vm.freeObjIDs = append(vm.freeObjIDs, o.objID)
+	}
+	o.objID = 0
+	for i, x := range vm.liveObjs {
+		if x == o {
+			vm.liveObjs[i] = vm.liveObjs[len(vm.liveObjs)-1]
+			vm.liveObjs = vm.liveObjs[:len(vm.liveObjs)-1]
+			break
+		}
+	}
+	if o.refs <= 0 {
+		vm.zeroObjs--
+	}
+}
+
+// IsLazyHandle сообщает, что объект — lazy object (хендл не выдан).
+func (o *Object) IsLazyHandle() bool { return o != nil && o.lazyID }
+
+// MaterializeLazyObj выдаёт хендл lazy-объекту (первое использование).
+func (vm *VM) MaterializeLazyObj(o *Object) {
+	if o == nil || !o.lazyID {
+		return
+	}
+	o.lazyID = false
+	vm.markObj(o)
+}
+
 // markObj присваивает объекту PHP-хендл (#N), если он ещё не задан.
 // Хендл берётся из free-list уничтоженных объектов (как в Zend) либо
 // выделяется следующим номером.
@@ -980,6 +1033,10 @@ func (c *runtimeClass) markAllEnumCases() {
 		}
 	}
 }
+
+// PeekNextObjID — следующий свободный PHP-хендл (без его занятия); var_dump
+// печатает его для замыканий, созданных встроенными функциями.
+func (vm *VM) PeekNextObjID() int { return vm.nextObjID }
 
 // markClosure присваивает замыканию PHP-хендл (#N), если он ещё не задан.
 // Замыкания — объекты в Zend, поэтому занимают общий счётчик хендлов.
@@ -1229,7 +1286,11 @@ func (c *runtimeClass) link() {
 				vis = v
 			}
 		}
-		fm := flatMethod{fn: fn, decl: c, vis: vis}
+		declC := ClassInfo(c)
+		if o := c.methDeclOverride[name]; o != nil {
+			declC = o
+		}
+		fm := flatMethod{fn: fn, decl: declC, vis: vis}
 		// Переопределение унаследованного метода: запоминаем корневой
 		// прототип (Zend GH-14009 — проверка protected-доступа идёт по нему).
 		// Приватный метод родителя не наследуется и прототипом не является
@@ -1728,6 +1789,9 @@ func (vm *VM) IsDumpPlainObject(o *Object) bool {
 		// У ReflectionParameter Zend показывает единственное свойство name
 		// (ObjectDumpEntries).
 		return true
+	case "ReflectionClass":
+		// Zend debug-info ReflectionClass: ["name"].
+		return true
 	}
 	return false
 }
@@ -1807,6 +1871,19 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 		}
 		return nil
 	}
+	// ReflectionClass в var_dump показывает ["name"] (Zend debug info).
+	if rc.Name() == "ReflectionClass" {
+		if d := (*reflectionData)(unsafe.Pointer(o)); d != nil {
+			name := d.name
+			if d.class != nil {
+				name = classDisplayName(d.class)
+			}
+			if name != "" {
+				return []DumpEntry{{Key: "name", Val: MakeString(name)}}
+			}
+		}
+		return nil
+	}
 	var chain []*runtimeClass
 	for k := rc; k != nil; k = k.parent {
 		chain = append(chain, k)
@@ -1841,6 +1918,8 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 			if hasPd && pd.vis == Private {
 				key := mangledPropKey(c, name)
 				seen[key] = true
+				// Анонимные классы в var_dump печатаются как class@anonymous
+				// (или Parent@anonymous).
 				suffix := `:"` + classDisplayName(c) + `":private`
 				if v, ok := o.propValueRaw(key); ok {
 					out = append(out, DumpEntry{Key: name, Val: v, Suffix: suffix, Decl: c.name})

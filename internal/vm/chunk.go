@@ -199,6 +199,22 @@ type Chunk struct {
 	// defRegs — карта имя→регистр-флаг «определена» (compiler.defRegs); нужна
 	// extract()/SymtabSet, чтобы запись в рантайме опускала флаг.
 	defRegs map[string]int
+	// dynVarRegs — карта имя→регистр для чанков, использующих динамические
+	// имена переменных ($$x/${expr}): динамический доступ в функции идёт по
+	// локальным переменным кадра, а не по таблице глобалов (bug71300).
+	dynVarRegs map[string]int
+}
+
+// SetDynVarRegs задаёт карту имя→регистр для динамического доступа.
+func (c *Chunk) SetDynVarRegs(m map[string]int) { c.dynVarRegs = m }
+
+// DynVarReg возвращает регистр локальной переменной по имени (без `$`).
+func (c *Chunk) DynVarReg(name string) (int, bool) {
+	if c.dynVarRegs == nil {
+		return 0, false
+	}
+	r, ok := c.dynVarRegs[name]
+	return r, ok
 }
 
 // SetLocalVars задаёт карту имя→регистр локальных переменных чанка.
@@ -649,7 +665,7 @@ func buildArgRegs() [][]byte {
 	}
 	// опкоды, где C — тоже регистр (ключ)
 	for _, op := range []Opcode{OpIndex, OpIndexSet, OpIndexSetOverload, OpIndexIsset, OpIndexRef, OpPropRefDyn, OpPropSetRefDyn,
-		OpIndexRaw, OpIndexSetRaw, OpIndexSetOverloadRaw, OpConcatApp, OpListFetchRef, OpIndexUnsetRaw, OpPropGetIncDecDyn, OpPropGetCompoundDyn} {
+		OpIndexRaw, OpIndexRawWrite, OpIndexSetRaw, OpIndexSetOverloadRaw, OpConcatApp, OpListFetchRef, OpIndexUnsetRaw, OpPropGetIncDecDyn, OpPropGetCompoundDyn} {
 		m[op] = []byte("ABC")
 	}
 	// статическое свойство по динамическому имени: A — ссылка, C — регистр-имя

@@ -41,6 +41,12 @@ type Object struct {
 	// objID — PHP-хендл объекта (#N в var_dump), присваивается при создании
 	// (порядковый номер в рамках запуска VM).
 	objID int
+	// lazyID — объект-обёртка рефлексии (Zend lazy object): хендл выдаётся не
+	// при создании, а при материализации (первый дамп/использование).
+	lazyID bool
+	// bareObj — объект класса из disable_classes: объявленных свойств нет,
+	// чтение/запись идут как для динамических (bug77494).
+	bareObj bool
 	// dead — объект уничтожен сборщиком (lifetime.go): __destruct вызван,
 	// хендл возвращён в free-list. Повторный markObj хендл не выдаёт.
 	dead bool
@@ -428,6 +434,19 @@ type Closure struct {
 	MagicName string
 	// objID — PHP-хендл объекта замыкания (#N в var_dump), как у zend_object.
 	objID int
+	// capUndef — неявные захваты стрелочной функции, не определённые в точке
+	// создания: Zend печатает "Undefined variable" при чтении в теле (у нас —
+	// при первом вызове), bug81076.
+	capUndef []bool
+}
+
+// CapUndefFlags возвращает флаги «неявный захват не определён» (стрелочные
+// функции): такие захваты не печатаются в var_dump (bug81076).
+func (c *Closure) CapUndefFlags() []bool {
+	if c == nil {
+		return nil
+	}
+	return c.capUndef
 }
 
 // ID возвращает PHP-хендл замыкания (#N) или 0, если он ещё не присвоен.
@@ -737,6 +756,35 @@ func (vm *VM) objectTypeName(s Slot) string {
 		return ClassDisplayName(ci.Name())
 	}
 	return "object"
+}
+
+// anonSiteHolder — дескриптор с сайтом объявления анонимного класса.
+type anonSiteHolder interface{ anonSiteOf() string }
+
+// SetAnonSite запоминает сайт (file:line) объявления анонимного класса:
+// get_class() печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+func SetAnonSite(ci ClassInfo, site string) {
+	if rc, ok := ci.(*runtimeClass); ok && rc != nil {
+		rc.anonSite = site
+	}
+}
+
+// GetClassNameOf — имя класса для get_class()/ReflectionClass::getName().
+// Для анонимных классов Zend печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+func GetClassNameOf(ci ClassInfo) string {
+	if ci == nil {
+		return ""
+	}
+	name := ci.Name()
+	if strings.HasPrefix(name, "\x00anon#") {
+		num := strings.TrimPrefix(name, "\x00anon#")
+		site := ""
+		if h, ok := ci.(anonSiteHolder); ok {
+			site = h.anonSiteOf()
+		}
+		return classDisplayName(ci) + "\x00" + site + "$" + num
+	}
+	return name
 }
 
 // ClassDisplayName преобразует внутреннее имя анонимного класса в

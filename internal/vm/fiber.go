@@ -295,12 +295,16 @@ func (vm *VM) resolveStack() []callFrameInfo {
 		return nil
 	}
 	out := make([]callFrameInfo, 0, n)
+	// Живые регистры кадра читаются только по индексу, записанному вызовом
+	// при входе в функцию (callEntry.frameIdx): у вызовов, упавших на проверке
+	// арности/типов, кадра нет, и позиционное сопоставление подставляло бы
+	// регистры вызывающего (attributes/030).
 	for i := range vm.callStack {
 		e := &vm.callStack[i]
 		if e.callerChunk != 0 && len((*Chunk)(unsafe.Pointer(e.callerChunk)).inlineRegions) > 0 {
 			out = vm.appendInlineFrames(out, e)
 		}
-		out = append(out, vm.info(e))
+		out = append(out, vm.infoAt(e, int(e.frameIdx)))
 	}
 	return out
 }

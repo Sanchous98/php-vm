@@ -203,7 +203,22 @@ type CompiledFunction struct {
 	// usesThisVar — тело обращается к $this не через OpThis (isset($this));
 	// см. UsesThis.
 	usesThisVar bool
+	// staticVars — собственные static-переменные функции (имя + ключ таблицы
+	// глобалов): Zend включает их в debug-информацию замыкания (bug79778).
+	staticVars []StaticVarInfo
 }
+
+// StaticVarInfo описывает static-переменную функции для дампа замыкания.
+type StaticVarInfo struct {
+	Name string // имя без `$`
+	Key  string // ключ в таблице глобалов
+}
+
+// SetStaticVars сохраняет список static-переменных функции.
+func (f *CompiledFunction) SetStaticVars(v []StaticVarInfo) { f.staticVars = v }
+
+// StaticVars возвращает static-переменные функции (для дампа замыкания).
+func (f *CompiledFunction) StaticVars() []StaticVarInfo { return f.staticVars }
 
 // SetNumParams задаёт число объявленных параметров.
 func (f *CompiledFunction) SetNumParams(n int) { f.numParams = n }

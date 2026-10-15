@@ -667,6 +667,14 @@ func (c *runtimeClass) MethodFunction(name string) (*Function, bool) {
 }
 
 // AliasMethod регистрирует псевдоним метода (копия с новым именем).
+// anonSiteOf возвращает сайт (file:line) объявления анонимного класса.
+func (c *runtimeClass) anonSiteOf() string {
+	if c == nil {
+		return ""
+	}
+	return c.anonSite
+}
+
 func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) ClassInfo {
 	if fn == nil {
 		return c
@@ -998,7 +1006,19 @@ func (vm *VM) staticPropAccessErr(cls ClassInfo, name string) error {
 	}
 	for k := rc; k != nil; k = k.parent {
 		if pd, ok := k.ownProps[name]; ok && pd.static {
-			return vm.propAccessErr(pd, k, name)
+			// Zend называет класс из выражения доступа (self::$x в B при
+			// private A::$x — «B::$x», bug70873), а не объявивший.
+			switch pd.vis {
+			case Private:
+				if vm.ctx.self != k {
+					return NewThrowable("Error", "Cannot access private property "+classDisplayName(cls)+"::$"+name)
+				}
+			case Protected:
+				if !canAccess(Protected, k, vm.ctx.self) {
+					return NewThrowable("Error", "Cannot access protected property "+classDisplayName(cls)+"::$"+name)
+				}
+			}
+			return nil
 		}
 	}
 	return nil
@@ -1577,6 +1597,16 @@ func (vm *VM) magicGetValue(ci ClassInfo, o Slot, pname string) (Slot, error) {
 }
 
 func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
+	return vm.propRefCellMode(recv, pname, false)
+}
+
+// PropRefCellArg — ячейка свойства для передачи by-ref аргумента: у
+// overloaded-свойства из __get — временная ячейка БЕЗ Notice (bug70288).
+func (vm *VM) PropRefCellArg(recv Slot, pname string) (Slot, error) {
+	return vm.propRefCellMode(recv, pname, true)
+}
+
+func (vm *VM) propRefCellMode(recv Slot, pname string, argMode bool) (Slot, error) {
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		// Zend: взятие ячейки свойства у не-объекта — Error
@@ -1598,8 +1628,11 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 			return MakeRef(&Ref{v: deref(res)}), nil
 		}
 		// Косвенная модификация свойства из __get без ссылки: Notice и
-		// отделённая ячейка (запись через неё объект не затрагивает).
-		vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		// отделённая ячейка (запись через неё объект не затрагивает). Для
+		// by-ref аргумента Notice не печатается (bug70288).
+		if !argMode {
+			vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		}
 		return MakeRef(&Ref{v: deref(res)}), nil
 	}
 	if pd, decl, ok := vm.scopedProp(vm.ctx.self, ci, pname); ok && pd != nil {
@@ -1782,10 +1815,78 @@ func (vm *VM) magicGetInaccessible(ci ClassInfo, recv Slot, pname string) (Slot,
 // свойства (может быть ссылкой с guard). При переполнении int и типе, не
 // допускающем float, поднимается TypeError "past its maximal/minimal value";
 // иначе результат становится float. Возвращает новое значение.
+// PropUninitReadCheck — проверка промежуточного свойства цепочки составного
+// присваивания: объявленное неинициализированное свойство даёт Zend-ошибку
+// «Typed property ... must not be accessed before initialization» ещё до
+// write-fetch (variation_nested: `$test->prop->prop += 1`).
+func (vm *VM) PropUninitReadCheck(o Slot, name string) error {
+	o = deref(o)
+	ci := vm.classInfo(o)
+	if ci == nil {
+		return nil
+	}
+	if pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name); declared && pd != nil {
+		key := vm.propKey(pd, decl, name)
+		if ob := vm.objectOf(o); ob != nil && !ob.IsUnset(key) {
+			if _, init := vm.getProp(o, key); !init {
+				if err := vm.uninitPropErr(ci, name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// UnsetPropBase — приёмник промежуточного звена цепочки unset()
+// (`unset($a->b->c->d)`): не-объект даёт null без диагностик, у объекта
+// свойство создаётся как null (write-fetch) и возвращается его значение
+// (Zend: unset через null — no-op, но промежуточное свойство появляется).
+func (vm *VM) UnsetPropBase(recv Slot, name string) Slot {
+	recv = deref(recv)
+	if vm.classInfo(recv) == nil {
+		return MakeNull()
+	}
+	// Возвращаем ЯЧЕЙКУ свойства (write-fetch): последующий unset элемента
+	// массива обязан записаться в само свойство (bug33512: unset($this->Var[$k])
+	// внутри __unset). Для отсутствующего свойства ячейка создаётся (null).
+	cell, err := vm.propRefCellMode(recv, name, true)
+	if err != nil {
+		return MakeNull()
+	}
+	return cell
+}
+
+// IncDecPropCheck проверяет приёмник ++/-- над свойством: не-объект даёт
+// Error «Attempt to increment/decrement property "x" on <type>» (Zend бросает
+// его до чтения значения, без Warning о чтении). Возвращает приёмник.
+func (vm *VM) IncDecPropCheck(o Slot, name string, dec bool) (Slot, error) {
+	// incomplete-объект: Zend сообщает «The script tried to modify a property…»
+	// как Error (bug71841), а не Warning о чтении.
+	if cls, ok := incompleteObjName(vm.objectOf(o)); ok {
+		return Slot{}, incompleteModifyErr(cls)
+	}
+	if vm.classInfo(o) != nil {
+		return o, nil
+	}
+	dir := "increment"
+	if dec {
+		dir = "decrement"
+	}
+	return Slot{}, NewThrowable("Error",
+		fmt.Sprintf("Attempt to %s/decrement property %q on %s", dir, name, valueTypeName(vm, deref(o))))
+}
+
 func (vm *VM) IncDecTypedProp(o Slot, name string, cur Slot, dec bool) (Slot, error) {
 	ci := vm.classInfo(o)
 	if ci == nil {
-		return Slot{}, errNotObject
+		// Zend: «Attempt to increment/decrement property "a" on null».
+		dir := "increment"
+		if dec {
+			dir = "decrement"
+		}
+		return Slot{}, NewThrowable("Error",
+			fmt.Sprintf("Attempt to %s/decrement property %q on %s", dir, name, valueTypeName(vm, deref(o))))
 	}
 	pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name)
 	// PRE_INC_OBJ перечитывает ячейку свойства: обработчик ошибки, вызванный

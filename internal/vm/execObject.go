@@ -53,7 +53,9 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 	if ci.IsAbstract() {
 		return execResult{err: NewThrowable("Error", "Cannot instantiate abstract class "+ci.Name())}
 	}
-	// disable_classes: предупреждение, объект создаётся как обычно (Zend).
+	// disable_classes: Zend убирает класс из таблицы, оставляя имя: new даёт
+	// Warning, конструктор не вызывается, объявленных свойств у объекта нет.
+	disabled := vm.classDisabled(ci)
 	vm.warnDisabledClass(ci)
 	if cerr := vm.resolveAllLazyConsts(ci); cerr != nil {
 		if !vm.handleThrow(chunk, cerr) {
@@ -97,7 +99,7 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 			vm.wRegSlow(int(in.A), old)
 		}
 	}
-	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil {
+	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil && !disabled {
 		if !canAccess(ctorVis, ctorDecl, vm.ctx.self) {
 			err := vm.ctorAccessError(ctorVis, classDisplayName(ctorDecl), "__construct")
 			if !vm.handleThrow(chunk, err) {
@@ -119,8 +121,32 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 		}
 	}
 	vm.UnmarkNoDestruct(obj)
-
+	if disabled {
+		vm.unsetDeclaredProps(obj, ci)
+	}
 	return execResult{}
+}
+
+// unsetDeclaredProps помечает все объявленные свойства объекта как снятые:
+// чтение даёт «Undefined property: X::$name» (объект отключённого класса).
+func (vm *VM) unsetDeclaredProps(o *Object, ci ClassInfo) {
+	rc, ok := ci.(*runtimeClass)
+	if !ok || o == nil {
+		return
+	}
+	o.bareObj = true
+	if o.unset == nil {
+		o.unset = map[string]bool{}
+	}
+	for c := rc; c != nil; c = c.parent {
+		for _, name := range c.propOrder {
+			key := name
+			if pd, ok := c.ownProps[name]; ok && pd.vis == Private {
+				key = mangledPropKey(c, name)
+			}
+			o.unset[key] = true
+		}
+	}
 }
 
 func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
@@ -241,7 +267,9 @@ func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction)
 	if ci.IsAbstract() {
 		return execResult{err: NewThrowable("Error", "Cannot instantiate abstract class "+ci.Name())}
 	}
-	// disable_classes: предупреждение, объект создаётся как обычно (Zend).
+	// disable_classes: Zend убирает класс из таблицы, оставляя имя: new даёт
+	// Warning, конструктор не вызывается, объявленных свойств у объекта нет.
+	disabled := vm.classDisabled(ci)
 	vm.warnDisabledClass(ci)
 	if cerr := vm.resolveAllLazyConsts(ci); cerr != nil {
 		if !vm.handleThrow(chunk, cerr) {
@@ -269,7 +297,7 @@ func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction)
 			vm.wRegSlow(int(in.A), old)
 		}
 	}
-	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil {
+	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil && !disabled {
 		if !canAccess(ctorVis, ctorDecl, vm.ctx.self) {
 			err := vm.ctorAccessError(ctorVis, classDisplayName(ctorDecl), "__construct")
 			if !vm.handleThrow(chunk, err) {
@@ -437,6 +465,35 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 		return execResult{}
 	}
+	// Объект отключённого класса (disable_classes): объявленных свойств нет —
+	// чтение даёт «Undefined property» (bug77494), как у динамического.
+	if ob := vm.objectOf(recv); ob != nil && ob.bareObj {
+		if res, ok, err := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)}); ok {
+			if err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+			old := regs[in.A]
+			regs[in.A] = res
+			if trackedType(old.typ) || trackedType(res.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+			shareSlot(res)
+			return execResult{}
+		}
+		vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
+		{
+			old := regs[in.A]
+			wv := MakeNull()
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
+	}
 	// Чтение любого свойства incomplete-объекта даёт warning и NULL (даже если
 	// свойство было восстановлено из сериализованных данных).
 	if recv.typ == ObjectType && (*Object)(recv.ptr).incomplete {
@@ -585,6 +642,35 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			return execResult{next: true}
 		}
 		vm.propReadNonObjectWarn(recv, pname)
+		{
+			old := regs[in.A]
+			wv := MakeNull()
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
+	}
+	// Объект отключённого класса (disable_classes): объявленных свойств нет —
+	// чтение даёт «Undefined property» (bug77494), как у динамического.
+	if ob := vm.objectOf(recv); ob != nil && ob.bareObj {
+		if res, ok, err := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)}); ok {
+			if err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+			old := regs[in.A]
+			regs[in.A] = res
+			if trackedType(old.typ) || trackedType(res.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+			shareSlot(res)
+			return execResult{}
+		}
+		vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -809,6 +895,13 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		pname = deref(regs[in.C]).ToString()
 	} else {
 		pname = consts[in.C].StringVal()
+	}
+	if cls, ok := incompleteObjName(vm.objectOf(recv)); ok {
+		err := incompleteModifyErr(cls)
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
 	}
 	ci := vm.classInfo(recv)
 	if ci == nil {
@@ -1611,6 +1704,32 @@ func (vm *VM) propModifyNonObjectErr(recv Slot, name string) *Throwable {
 	return NewThrowable("Error", fmt.Sprintf("Attempt to modify property %q on %s", name, valueTypeName(vm, deref(recv))))
 }
 
+// PropWriteCheck проверяет приёмник записи свойства (FETCH_OBJ_W): не-объект
+// даёт Error «Attempt to modify property ...» ещё до вычисления правой части
+// (bug75241). Возвращает приёмник.
+func (vm *VM) PropWriteCheck(o Slot, name string) (Slot, error) {
+	ci := vm.classInfo(o)
+	if ci == nil {
+		return Slot{}, vm.propModifyNonObjectErr(o, name)
+	}
+	// `$obj->prop =& $x` для overloaded-свойства из __get без ссылки: Zend
+	// вызывает __get (его диагностики — раньше), затем печатает Notice о
+	// косвенной модификации (кроме случая, когда __get вернул объект) и
+	// бросает Error (bug69732/bug70083). Проверка идёт до вычисления RHS,
+	// поэтому Notice о не-переменной не появляется.
+	if overloaded, byRef := vm.propRefOverloaded(ci, o, name, true); overloaded && !byRef {
+		res, gerr := vm.magicGetValue(ci, o, name)
+		if gerr != nil {
+			return Slot{}, gerr
+		}
+		if r := deref(res); r.typ != ObjectType {
+			vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + name + " has no effect")
+		}
+		return Slot{}, NewThrowable("Error", "Cannot assign by reference to overloaded object")
+	}
+	return o, nil
+}
+
 // propWriteNonObjectErr — Error при записи свойства в не-объект.
 func (vm *VM) propWriteNonObjectErr(recv Slot, name string) *Throwable {
 	if deref(recv).typ == ClosureType {
@@ -1931,13 +2050,37 @@ func (vm *VM) staticShadowGuard(ci ClassInfo, pname, magic string, chunk *Chunk)
 		return execResult{}, false
 	}
 	if err := vm.propAccessErr(pd, decl, pname); err != nil {
-		if !vm.handleThrow(chunk, err) {
-			return execResult{err: err}, true
+		// Zend продолжает поиск по предкам: доступный там одноимённый
+		// статический член «закрывает» недоступный у потомка (bug76860_2:
+		// private static A::$a при private static B::$a).
+		if !vm.staticShadowVisibleAncestor(rc, pname) {
+			// Свойство объявлено только у предка и недоступно из области —
+			// Zend считает его неопределённым (без notice и без Error).
+			if decl != rc {
+				return execResult{}, false
+			}
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}, true
+			}
+			return execResult{next: true}, true
 		}
-		return execResult{next: true}, true
 	}
-	vm.Notice(fmt.Sprintf("Accessing static property %s::$%s as non static", classDisplayName(decl), pname))
+	// Notice всегда называет класс объекта, а не объявивший (bug76860: «B::$a»).
+	vm.Notice(fmt.Sprintf("Accessing static property %s::$%s as non static", classDisplayName(ci), pname))
 	return execResult{}, false
+}
+
+// staticShadowVisibleAncestor сообщает, что в цепочке класса есть объявленное
+// статическое свойство name, доступное текущей области.
+func (vm *VM) staticShadowVisibleAncestor(rc *runtimeClass, name string) bool {
+	for k := rc; k != nil; k = k.parent {
+		if pd, ok := k.ownProps[name]; ok && pd.static {
+			if vm.propAccessErr(pd, k, name) == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // propIssetCommon реализует isset() над свойством объекта с Zend-семантикой:

@@ -183,7 +183,8 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 		return execResult{next: true}
 	}
-	// Динамический вызов scope-introspection функций запрещён.
+	// Динамический вызов scope-introspection функций запрещён; арность
+	// func_get_args/func_get_arg/func_num_args проверяется раньше (bug72107).
 	if sn, ok := scopeIntrospectionName(regs[base]); ok {
 		err := vm.IntrospectionCallError(sn, args)
 		if !vm.handleThrow(chunk, err) {

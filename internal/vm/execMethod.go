@@ -679,9 +679,17 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	}
 	ci := vm.classSel(in.B)
 	if ci != nil {
+		name := ci.Name()
+		if in.C != 1 {
+			// `self::class`/`static::class`: анонимный класс печатает полное
+			// рантайм-имя `class@anonymous\x00<file>:<line>$N` — то же, что и
+			// ReflectionClass::getName() (attributes/013_class_scope).
+			// C == 1 (`new self`) оставляет внутреннее имя для резолва класса.
+			name = GetClassNameOf(ci)
+		}
 		{
 			old := regs[in.A]
-			wv := MakeString(vm.ClassVisibleName(ci))
+			wv := MakeString(name)
 			regs[in.A] = wv
 			if trackedType(old.typ) || trackedType(wv.typ) {
 				vm.wRegSlow(int(in.A), old)
@@ -693,8 +701,8 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		// `self::class`/`static::class`/`parent::class` без области класса:
 		// Zend бросает "Cannot use \"X\" in the global scope", а не
 		// "Cannot access ..." (class_name_as_scalar_error_005/006/007).
-		// В контексте константного выражения (C=1) текст иной:
-		// "Cannot use \"X\" when no class scope is active".
+		// C == 1 — резолв для `new self/static/parent`: там ошибка Zend —
+		// "Cannot access ... when no class scope is active" (bug70918).
 		kw := ""
 		switch in.B {
 		case 0:

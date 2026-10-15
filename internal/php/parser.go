@@ -121,8 +121,11 @@ type StrictStmt struct {
 	// диагностики внутри вклеенного кода должны указывать строки своего файла.
 	Lines     map[Stmt]int
 	ExprLines map[Expr]int
-	// CallName — имя конструкции (include/require[_once]) для кадра трейса.
+	// CallName — имя конструкции (include/require[_once]/eval) для кадра трейса.
 	CallName string
+	// EvalRegion — регион вклеенного eval(): имя файла для диагностик и кадра
+	// строится как "<callFile>(<callLine>) : eval()'d code".
+	EvalRegion bool
 	// CallNode — узел IncludeExpr: строка конструкции берётся из карт строк
 	// файла на этапе компиляции (нужна для кадра require в трейсе).
 	CallNode Expr
@@ -180,7 +183,10 @@ type ClassDecl struct {
 	Strict bool
 	// DefFile — исходный файл объявления (для inlined include).
 	DefFile string
-	Members []*ClassMember
+	// AnonSite — сайт (file:line) объявления анонимного класса; get_class()
+	// печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+	AnonSite string
+	Members  []*ClassMember
 	// TraitAdapt — адаптации use Trait { ... } (insteadof / as).
 	TraitAdapt []*TraitAdapt
 	// Line — 1-based строка объявления класса (для диагностик компилятора).
@@ -760,8 +766,15 @@ func (p *Parser) enter() error {
 
 func (p *Parser) leave() { p.depth-- }
 
+// purePHPSource — текущий разбор идёт из чистого PHP-фрагмента (eval()):
+// declare(encoding) с не-литеральным значением — компайл-фатал (bug75218).
+var purePHPSource bool
+
 func Parse(src string) (*Program, error) {
 	HaltOffset = -1
+	pendingHaltErr = nil
+	purePHPSource = true
+	defer func() { purePHPSource = false }()
 	toks, err := Lex(src)
 	if err != nil {
 		return nil, err
@@ -779,6 +792,11 @@ func Parse(src string) (*Program, error) {
 			return nil, be
 		}
 		return nil, perr
+	}
+	if pendingHaltErr != nil {
+		err := pendingHaltErr
+		pendingHaltErr = nil
+		return nil, err
 	}
 	prog.HaltOffset = HaltOffset
 	return prog, nil
@@ -850,6 +868,9 @@ func checkBracketBalance(toks []Token, src string) error {
 // Открывающие теги `<?php`, `<?=` и `<?` распознаются.
 func ParseMixed(src string) (*Program, error) {
 	HaltOffset = -1
+	pendingHaltErr = nil
+	purePHPSource = false
+	defer func() { purePHPSource = false }()
 	var shShift int64
 	src, shShift = stripShebangKeepLines(src)
 	toks, err := lexMode(src, false)
@@ -869,6 +890,11 @@ func ParseMixed(src string) (*Program, error) {
 			return nil, be
 		}
 		return nil, perr
+	}
+	if pendingHaltErr != nil {
+		err := pendingHaltErr
+		pendingHaltErr = nil
+		return nil, err
 	}
 	prog.HaltOffset = HaltOffset
 	if prog.HaltOffset >= 0 && shShift != 0 {
@@ -2981,6 +3007,15 @@ func (p *Parser) declareStmt() (Stmt, error) {
 			switch encVal.(type) {
 			case *IntLit, *FloatLit, *StrLit, *BoolLit, *NullLit:
 				lit = true
+			}
+			// Не-литеральное значение — ошибка компиляции; не зависит от
+			// zend.multibyte: literal-проверка идёт первой (declare_001..004).
+			// В eval (чистый PHP-исходник) это компайл-фатал Zend
+			// (перехватываемый CompileError, bug75218); в файле — рантайм,
+			// чтобы предшествующие declare(encoding=...) успели напечатать
+			// свои предупреждения (declare_001: порядок Warning…Fatal).
+			if !lit && purePHPSource {
+				return nil, &fatalError{msg: "Encoding must be a literal", line: encLine}
 			}
 			return &ExprStmt{X: &CallExpr{Name: "__php_declare_encoding", Args: []Expr{
 				encVal, &BoolLit{V: lit}, &IntLit{V: int64(encLine)},
@@ -5869,7 +5904,12 @@ func (p *Parser) dynAfterDollar() (Expr, error) {
 		p.next()
 		return &VarExpr{Name: t.Val}, nil
 	}
-	return nil, fmt.Errorf("parser: ожидалось имя переменной после $, получено %q", p.cur().Val)
+	t := p.cur()
+	if t.Kind == TStr {
+		// Zend: текст неожидаемой строки печатается как есть (bug70430).
+		return nil, &parseError{msg: "syntax error, unexpected double-quoted string " + strconv.Quote(t.Val) + `, expecting variable or "{" or "$"`, line: p.lineAt(t.Pos)}
+	}
+	return nil, &parseError{msg: "syntax error, unexpected " + tokenDesc(t) + `, expecting variable or "{" or "$"`, line: p.lineAt(t.Pos)}
 }
 
 // braceName разбирает `{ expr }` после `->`/`::`/`$`.

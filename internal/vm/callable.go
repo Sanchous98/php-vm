@@ -180,6 +180,31 @@ func NewClosureClass() ClassInfo {
 	return ci
 }
 
+// ClosureUndefBuiltin — регистрация флагов «неявный захват не определён» для
+// стрелочной функции: __php_closure_undef($closure, $idx, $undef, ...).
+func ClosureUndefBuiltin(ctx *Context) Slot {
+	a := ctx.Args()
+	if len(a) < 3 {
+		return MakeNull()
+	}
+	cl := deref(a[0]).AsClosure()
+	if cl == nil {
+		return MakeNull()
+	}
+	for i := 1; i+1 < len(a); i += 2 {
+		idx := int(deref(a[i]).ToInt())
+		undef := deref(a[i+1]).ToBool()
+		if !undef || idx < 0 {
+			continue
+		}
+		for len(cl.capUndef) <= idx {
+			cl.capUndef = append(cl.capUndef, false)
+		}
+		cl.capUndef[idx] = true
+	}
+	return MakeNull()
+}
+
 // closureBind — общая реализация Closure::bind/bindTo
 // (Zend do_closure_bind/zend_valid_closure_binding).
 func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope bool) (Slot, error) {
@@ -215,6 +240,11 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 	} else if cl.Fake && cl.Scope != nil {
 		// Фейковое замыкание из __call/__callStatic (Fn == nil): «функция» —
 		// метод класса, поэтому scope класса-источника и есть fnScope.
+		fnScope = cl.Scope
+	}
+	// Класс объявления (для псевдозамыканий из ReflectionMethod) важнее
+	// перепривязанного Scope копии унаследованного метода (bug70685).
+	if cl.Scope != nil {
 		fnScope = cl.Scope
 	}
 	if newThis.typ == ObjectType {
@@ -288,6 +318,12 @@ func (vm *VM) closureCall(cl *Closure, args []Slot) (Slot, error) {
 	// stdClass и прочие internal-классы не могут стать scope замыкания.
 	if ci != cl.Scope && reflIsInternalScope(ci) {
 		vm.Warning("Cannot bind closure to scope of internal class " + ClassDisplayName(ci.Name()))
+		return MakeNull(), nil
+	}
+	// call() меняет область видимости: замыкание из функции (не метода)
+	// перепривязать нельзя (bug70630).
+	if cl.Fake && cl.Fn != nil && cl.Fn.Scope == nil {
+		vm.Warning("Cannot rebind scope of closure created from function")
 		return MakeNull(), nil
 	}
 	nc := *cl
@@ -434,7 +470,13 @@ func (vm *VM) fromCallableClass(name string) (ClassInfo, error) {
 func (vm *VM) checkFromCallableMethod(ci ClassInfo, mname string, recv Slot) error {
 	m := methodOrCtor(ci, mname)
 	if m == nil {
-		if ci.lookupMethod("__call") != nil {
+		// Отсутствующий метод: для экземпляра — __call, для статического
+		// вызова (recv — класс-строка) — __callStatic (bug81626).
+		if deref(recv).typ == ObjectType {
+			if ci.lookupMethod("__call") != nil {
+				return nil
+			}
+		} else if ci.lookupMethod("__callStatic") != nil {
 			return nil
 		}
 		return NewThrowable("TypeError", "Failed to create closure from callable: class "+ci.Name()+" does not have a method \""+mname+"\"")
@@ -648,6 +690,42 @@ var scopeIntrospectionNames = map[string]bool{
 	"func_get_arg": true, "func_get_args": true, "func_num_args": true,
 }
 
+// scopeIntrospectionError — ошибка динамического вызова frameless-функции.
+// Zend бросает её уже с внутренним кадром в стеке (bug71221:
+// `#0 [internal function]: get_defined_vars()`).
+func (vm *VM) scopeIntrospectionError(name string) error {
+	th := NewThrowable("Error", "Cannot call "+name+"() dynamically")
+	th.Trace = []callFrameInfo{{callee: vm.functionByName(name), callerFile: "[internal function]"}}
+	return th
+}
+
+// scopeIntrospectionArityErr — Zend проверяет арность frameless-функций
+// (func_get_args/func_num_args — 0, func_get_arg — 1) до запрета динамического
+// вызова: лишние аргументы дают ArgumentCountError (bug72107).
+// Возвращает nil, если аргументов столько, сколько ждёт функция.
+func scopeIntrospectionArityErr(name string, n int) error {
+	// Предварительная проверка арности — только у frameless func_get_*
+	// (extract/compact/get_defined_vars арность не проверяют: Zend сразу
+	// сообщает «Cannot call ... dynamically»).
+	switch name {
+	case "func_get_args", "func_num_args", "func_get_arg":
+	default:
+		return nil
+	}
+	want := 0
+	if name == "func_get_arg" {
+		want = 1
+	}
+	if n == want {
+		return nil
+	}
+	plural := "arguments"
+	if want == 1 {
+		plural = "argument"
+	}
+	return NewThrowable("ArgumentCountError", fmt.Sprintf("%s() expects exactly %d %s, %d given", name, want, plural, n))
+}
+
 // scopeIntrospectionName возвращает каноническое имя функции, если callable —
 // строковое имя scope-introspection функции (используется для запрета
 // динамических вызовов).
@@ -781,7 +859,8 @@ func (vm *VM) CallCallableNamedDirectScope(ctx *Context, c Slot, arr *Array, sel
 func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (Slot, error) {
 	// Динамический вызов scope-introspection функций запрещён (Zend:
 	// "Cannot call %s() dynamically") — проверяем до маршалинга аргументов,
-	// чтобы не печатать предупреждения о by-ref параметрах.
+	// чтобы не печатать предупреждения о by-ref параметрах. Арность
+	// func_get_* проверяется ещё раньше (bug72107).
 	if name, ok := scopeIntrospectionName(c); ok {
 		return Slot{}, vm.IntrospectionCallError(name, args)
 	}
@@ -1042,6 +1121,7 @@ func (vm *VM) BindNamedArgs(fn *Function, arr *Array) ([]Slot, error) {
 	vm.pendingNativeProvided = -1
 	vm.pendingFrameNamed = nil
 	vm.namedVariadicTail = nil
+	vm.pendingProvidedMaskSet = false
 	variadic := fn.NumArgs < 0
 	if _, isNative := fn.Executable.(*NativeFunction); isNative {
 		// У нативных функций NumArgs всегда -1 (ABI), вариативность —
@@ -1154,6 +1234,19 @@ func (vm *VM) BindNamedArgs(fn *Function, arr *Array) ([]Slot, error) {
 	}
 	if sawNamed {
 		vm.pendingNativeProvided = provided
+		// Маска реально переданных позиций: null-заглушки отсутствующих
+		// параметров не считаются явным null (gh19653_1). Потребляется
+		// ближайшим invoke*/checkParamsN.
+		if numFixed < 63 {
+			m := int64(0)
+			for i := 0; i < numFixed; i++ {
+				if filled[i] {
+					m |= 1 << uint(i)
+				}
+			}
+			vm.pendingProvidedMask = m
+			vm.pendingProvidedMaskSet = true
+		}
 	}
 	// Неизвестные имена для вариативной функции попадут в вариативный массив
 	// со строковыми ключами (Zend: extra named args).

@@ -173,6 +173,28 @@ func (vm *VM) opGlobalUnset(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 	return execResult{}
 }
 
+// dynLocalSlot ищет переменную с динамическим именем в текущем кадре функции:
+// именованный регистр, global/static-переменная (таблица глобалов) или
+// runtime-таблица динамических локальных переменных (обращение к переменной,
+// которой не было в тексте функции). Второй результат — определена ли она.
+func (vm *VM) dynLocalSlot(chunk *Chunk, name string) (Slot, bool) {
+	if chunk != nil && vm.cur != nil {
+		if reg, ok := chunk.DynVarReg(name); ok && reg >= 0 && reg < len(vm.cur.regs) {
+			return vm.cur.regs[reg], true
+		}
+		if key, ok := chunk.GlobalVarKey(name); ok {
+			v, ok := vm.globals[key]
+			return v, ok
+		}
+	}
+	if vm.cur != nil {
+		if v, ok := vm.cur.dynLocals[name]; ok {
+			return v, true
+		}
+	}
+	return Slot{}, false
+}
+
 func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	name := deref(regs[in.C]).ToString()
 	if vm.inFunction {
@@ -190,10 +212,13 @@ func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 			shareSlot(r)
 			return execResult{}
 		}
-		// В теле функции динамическое имя (`$$x`, `${expr}`) ищет переменную в
-		// таблице символов кадра (Zend FETCH_R по локальной области), а не в
-		// глобальной таблице: `$var="a"; $$var` в функции не видит глобальную $a.
-		if v, ok := vm.SymtabGet(name); ok {
+		// Локальная область функции (CV/global/runtime-таблица) — z1b;
+		// fallback — таблица символов кадра (z3).
+		v, ok := vm.dynLocalSlot(chunk, name)
+		if !ok {
+			v, ok = vm.SymtabGet(name)
+		}
+		if ok {
 			r := deref(v)
 			{
 				old := regs[in.A]
@@ -217,8 +242,8 @@ func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 		}
 		return execResult{}
 	}
-	name = "$" + name
-	if v, ok := vm.globals[name]; ok {
+	key := "$" + name
+	if v, ok := vm.globals[key]; ok {
 		r := deref(v)
 		{
 			old := regs[in.A]
@@ -230,7 +255,7 @@ func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 		}
 		shareSlot(r)
 	} else {
-		vm.warnUndefVar(name)
+		vm.warnUndefVar(key)
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -253,20 +278,6 @@ func (vm *VM) opGlobalSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 		}
 		return execResult{next: true}
 	}
-	if vm.inFunction {
-		// Динамическое имя в теле функции пишет в локальную область кадра.
-		if err := vm.SymtabSet(name, regs[in.A]); err != nil {
-			if !vm.handleThrow(chunk, err) {
-				return execResult{err: err}
-			}
-			return execResult{next: true}
-		}
-		return execResult{}
-	}
-	if vm.globals == nil {
-		vm.globals = map[string]Slot{}
-	}
-	name = "$" + name
 	v := deref(regs[in.A])
 	{
 		old := regs[in.A]
@@ -279,8 +290,88 @@ func (vm *VM) opGlobalSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 	shareSlot(v)
 	// Как opGlobalSet: у массива появляется второй владелец — пометка COW.
 	shareSlot(v)
-	vm.globals[name] = v
-	vm.syncGlobalsSnapshot(name)
+	if vm.inFunction && chunk != nil && vm.cur != nil {
+		// Динамическое имя в функции адресует локальный кадр (CV, global/
+		// static или runtime-таблицу динамических локальных), а не глобалы.
+		if reg, ok := chunk.DynVarReg(name); ok && reg >= 0 && reg < len(vm.cur.regs) {
+			if v.typ == RefType {
+				// Привязка ссылки (`$$n = &$x`): переменная становится ячейкой.
+				old := vm.cur.regs[reg]
+				vm.cur.regs[reg] = v
+				if trackedType(old.typ) || trackedType(v.typ) {
+					vm.wRegSlow(reg, old)
+				}
+				vm.clearDefFlag(name)
+				return execResult{}
+			}
+			if cur := vm.cur.regs[reg]; cur.typ == RefType {
+				if r := cur.Ref(); r != nil {
+					if err := vm.writeRef(r, v, chunk.Strict); err != nil {
+						if !vm.handleThrow(chunk, err) {
+							return execResult{err: err}
+						}
+						return execResult{next: true}
+					}
+					return execResult{}
+				}
+			}
+			old := vm.cur.regs[reg]
+			vm.cur.regs[reg] = v
+			if trackedType(old.typ) || trackedType(v.typ) {
+				vm.wRegSlow(reg, old)
+			}
+			vm.clearDefFlag(name)
+			return execResult{}
+		}
+		if key, ok := chunk.GlobalVarKey(name); ok {
+			if v.typ == RefType {
+				if vm.globals == nil {
+					vm.globals = map[string]Slot{}
+				}
+				vm.globals[key] = v
+				vm.syncGlobalsSnapshot(key)
+				return execResult{}
+			}
+			if err := vm.globalAssign(key, v); err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+			return execResult{}
+		}
+		if vm.cur != nil {
+			if vm.cur.dynLocals == nil {
+				vm.cur.dynLocals = map[string]Slot{}
+			}
+			if _, exists := vm.cur.dynLocals[name]; !exists {
+				vm.cur.dynOrder = append(vm.cur.dynOrder, name)
+			}
+			if v.typ == RefType {
+				vm.cur.dynLocals[name] = v
+				return execResult{}
+			}
+			if cur, ok := vm.cur.dynLocals[name]; ok && cur.typ == RefType {
+				if r := cur.Ref(); r != nil {
+					if err := vm.writeRef(r, v, chunk.Strict); err != nil {
+						if !vm.handleThrow(chunk, err) {
+							return execResult{err: err}
+						}
+						return execResult{next: true}
+					}
+					return execResult{}
+				}
+			}
+			vm.cur.dynLocals[name] = v
+		}
+		return execResult{}
+	}
+	if vm.globals == nil {
+		vm.globals = map[string]Slot{}
+	}
+	key := "$" + name
+	vm.globals[key] = v
+	vm.syncGlobalsSnapshot(key)
 	return execResult{}
 }
 

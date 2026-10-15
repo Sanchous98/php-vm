@@ -2199,6 +2199,83 @@ func incDecPropBuiltin(ctx *vm.Context) vm.Value {
 	return res
 }
 
+// propUninitReadCheckBuiltin — проверка неинициализированного промежуточного
+// свойства в цепочке составного присваивания (variation_nested).
+func propUninitReadCheckBuiltin(ctx *vm.Context) vm.Value {
+	o := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	if err := ctx.VM().PropUninitReadCheck(o, name); err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return vm.MakeNull()
+}
+
+// propRefArgBuiltin — ячейка свойства для by-ref аргумента (без Notice у
+// overloaded-свойства из __get, bug70288).
+func propRefArgBuiltin(ctx *vm.Context) vm.Value {
+	recv := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	cell, err := ctx.VM().PropRefCellArg(recv, name)
+	if err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return cell
+}
+
+// unsetPropBaseBuiltin — приёмник промежуточного звена цепочки unset()
+// (`unset($a->b->c->d)`): не-объект даёт null без диагностик (bug78644).
+func unsetPropBaseBuiltin(ctx *vm.Context) vm.Value {
+	recv := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	return ctx.VM().UnsetPropBase(recv, name)
+}
+
+// propWriteCheckBuiltin — проверка приёмника записи свойства по ссылке
+// (`$o->p =& ...`): не-объект даёт «Attempt to modify property» до RHS
+// (bug75241).
+func propWriteCheckBuiltin(ctx *vm.Context) vm.Value {
+	obj := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	res, err := ctx.VM().PropWriteCheck(obj, name)
+	if err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return res
+}
+
+// incDecPropCheckBuiltin — проверка приёмника ++/-- над свойством: не-объект
+// даёт Error «Attempt to increment/decrement property ... on null» (bug78531).
+func incDecPropCheckBuiltin(ctx *vm.Context) vm.Value {
+	obj := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	dec := arg(ctx, 2).ToBool()
+	res, err := ctx.VM().IncDecPropCheck(obj, name, dec)
+	if err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return res
+}
+
 // incDecRefBuiltin — помощник для ++/-- над ссылкой (возможно, guarded).
 func incDecRefBuiltin(ctx *vm.Context) vm.Value {
 	cur := arg(ctx, 0)
@@ -2354,7 +2431,15 @@ func methodExistsFn(ctx *vm.Context) vm.Value {
 		if ci == nil {
 			return vm.Bool(false)
 		}
-		return vm.Bool(ci.HasMethod(name))
+		if ci.HasMethod(name) {
+			return vm.Bool(true)
+		}
+		// SPL-обёртки делегируют неизвестные методы внутреннему итератору
+		// (spl_dual_it_has_method, bug76901).
+		if obj := ctx.VM().SlotObject(s); obj != nil {
+			return vm.Bool(ctx.VM().DualIterHasMethod(obj, name))
+		}
+		return vm.Bool(false)
 	case vm.StringType:
 		ci := findClassAutoload(ctx, s.StringVal())
 		if ci == nil {

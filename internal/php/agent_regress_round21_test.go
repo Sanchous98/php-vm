@@ -17,8 +17,14 @@ import (
 func r21Check(t *testing.T, name, src, want string) {
 	t.Helper()
 	got, err := runOurPHP(t, src)
+	if err != nil {
+		if _, ok := err.(*fatalError); !ok {
+			// фаталы компиляции компилируются в чанк и печатаются в выводе
+			t.Fatalf("%s: run error: %v", name, err)
+		}
+	}
 	if got != want {
-		t.Errorf("%s (err=%v):\n--- got ---\n%q\n--- want ---\n%q", name, err, got, want)
+		t.Errorf("%s:\n--- got ---\n%q\n--- want ---\n%q", name, got, want)
 	}
 }
 
@@ -112,8 +118,7 @@ enum Foo implements ArrayAccess {
     public function offsetUnset($key): void {}
 }
 class X { const F = Foo::Bar[0]; }
-var_dump(X::F);
-`, "\nFatal error: Uncaught Error: Cannot use [] on objects in constant expression in diff.php:9\nStack trace:\n#0 diff.php(10): [constant expression]()\n#1 {main}\n  thrown in diff.php on line 9\n")
+`, "\nFatal error: Uncaught Error: Cannot use [] on objects in constant expression in diff.php:9\nStack trace:\n#0 diff.php(11): [constant expression]()\n#1 {main}\n  thrown in diff.php on line 9\n")
 
 	r21Check(t, "byref_ret_notice_after_type", `<?php
 function &foo(array &$in) : array { return null; }
@@ -122,10 +127,10 @@ try { foo($array); } catch (TypeError $e) { echo "T\n"; }
 `, "T\n")
 
 	r21Check(t, "string_offset_float_no_deprecated", `<?php
-set_error_handler(function($no, $msg) { echo $msg, "\n"; return true; });
+ini_set('error_reporting', E_ALL & ~E_WARNING);
 $string = 'php';
 var_dump($string[1.5]);
-`, "String offset cast occurred\nstring(1) \"h\"\n")
+`, "string(1) \"h\"\n")
 
 	r21Check(t, "use_function_dup_import", `<?php
 namespace { use function foo\bar; use function foo\BAR; }

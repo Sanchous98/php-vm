@@ -1302,6 +1302,7 @@ func builtins() []*vm.Function {
 
 		// --- mbstring (mb_*) ---
 		vm.Register("mb_internal_encoding", mbInternalEncodingFn),
+		vm.Register("mb_parse_str", mbParseStrFn),
 		vm.Register("mb_list_encodings", mbListEncodingsFn),
 		vm.Register("mb_encoding_aliases", mbEncodingAliasesFn),
 		vm.Register("mb_check_encoding", mbCheckEncodingFn),
@@ -1484,7 +1485,7 @@ func builtins() []*vm.Function {
 			// ($hostname, &$hosts, &$weights = null)
 			f.ByRefArgs = []bool{false, true, true}
 			f.ParamNames = []string{"hostname", "hosts", "weights"}
-		case "parse_str":
+		case "parse_str", "mb_parse_str":
 			f.ParamNames = []string{"string", "result"}
 			f.ByRefArgs = []bool{false, true}
 		case "exec", "system", "passthru":

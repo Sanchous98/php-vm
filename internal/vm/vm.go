@@ -448,6 +448,13 @@ type VM struct {
 	// cyclicArrs — массивы с прямой само-ссылкой (`$a[] =& $a`): нужны для
 	// подсчёта gc_collect_cycles (Zend считает и собранные массивы).
 	cyclicArrs map[*Array]bool
+	// gcRuns/gcCollected — статистика gc_status(): число проходов сборщика и
+	// суммарно собранных узлов (GC_G(gc_runs)/GC_G(collected) в Zend).
+	gcRuns      int64
+	gcCollected int64
+	// gcDtorCount — счётчик фактически выполненных деструкторов: проход
+	// сверяет его до/после и проверяет воскрешение узлов (gc_041).
+	gcDtorCount int64
 
 	// Отложенные проверки совместимости сигнатур (variance): очередь имён на
 	// автозагрузку (порядок вставки), guard разрешения и набор уже
@@ -624,6 +631,9 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.shutdownDone = false
 	vm.bailoutShutdown = false
 	vm.requestEndDone = false
+	vm.gcRuns = 0
+	vm.gcCollected = 0
+	vm.gcDtorCount = 0
 	vm.freeObjIDs = nil
 	vm.lifeCandidate = false
 	vm.lifeUrgent = false
@@ -2236,6 +2246,91 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 	return b.String()
 }
 
+// uncaughtChain возвращает цепочку previous-исключений от самого глубокого
+// (первого выброшенного) к th. Для нативных ошибок без объекта-исключения —
+// просто [th].
+func (vm *VM) uncaughtChain(th *Throwable) []*Throwable {
+	list := []*Throwable{th}
+	cur := th
+	for depth := 0; cur != nil && depth < 100; depth++ {
+		if cur.Value.typ != ObjectType {
+			break
+		}
+		o := vm.objectOf(cur.Value)
+		if o == nil {
+			break
+		}
+		v, ok := o.GetProp("previous")
+		if !ok {
+			break
+		}
+		s := valueSlot(v)
+		if s.typ != ObjectType {
+			break
+		}
+		po := vm.objectOf(s)
+		if po == nil {
+			break
+		}
+		next := &Throwable{
+			Class:     po.ClassName(),
+			Message:   exceptionMessage(po),
+			Value:     s,
+			Trace:     po.excTrace,
+			LocFile:   po.excFile,
+			LocLine:   po.excLine,
+			DefinedIn: po.excDefined,
+		}
+		list = append(list, next)
+		cur = next
+	}
+	for i, j := 0, len(list)-1; i < j; i, j = i+1, j-1 {
+		list[i], list[j] = list[j], list[i]
+	}
+	return list
+}
+
+// writeUncaughtChain печатает цепочку непойманных исключений: первое —
+// "Fatal error: Uncaught ...", каждое следующее — "\nNext Exception: ...",
+// суффикс "  thrown in ..." — у последнего (формат Zend).
+func (vm *VM) writeUncaughtChain(chain []*Throwable) {
+	for i, e := range chain {
+		file := e.LocFile
+		if file == "" {
+			file = vm.curFile
+		}
+		if file == "" {
+			file = "php"
+		}
+		line := e.LocLine
+		if line <= 0 {
+			line = 1
+		}
+		class := e.Class
+		if class == "" {
+			class = "Error"
+		}
+		prefix := "\nFatal error: Uncaught "
+		if i > 0 {
+			prefix = "\nNext "
+		}
+		if e.Message != "" {
+			vm.Write(prefix + class + ": " + e.Message + " in " + file + ":" + strconv.Itoa(line) + "\n")
+		} else {
+			vm.Write(prefix + class + " in " + file + ":" + strconv.Itoa(line) + "\n")
+		}
+		vm.Write("Stack trace:\n")
+		vm.Write(vm.traceString(e.Trace, file, line) + "\n")
+	}
+	last := chain[len(chain)-1]
+	file := last.LocFile
+	if file == "" {
+		file = "Unknown"
+	}
+	line := last.LocLine
+	vm.Write("  thrown in " + file + " on line " + strconv.Itoa(line) + "\n")
+}
+
 // reportUncaught печатает непойманное исключение в PHP-подобном формате.
 // Прочие (не-PHP) ошибки не печатает.
 func (vm *VM) reportUncaught(err error) {
@@ -2258,6 +2353,15 @@ func (vm *VM) reportUncaught(err error) {
 			if hth, ok2 := asThrowable(herr); ok2 {
 				th = hth
 			}
+		}
+	}
+	// Цепочка previous (исключения деструкторов/finally): Zend печатает
+	// исключения от самого глубокого (первого выброшенного) к текущему,
+	// разделяя их "\n\nNext Exception: ..." (gc_030, try_finally_024).
+	if !th.Fatal && !th.close {
+		if chain := vm.uncaughtChain(th); len(chain) > 1 {
+			vm.writeUncaughtChain(chain)
+			return
 		}
 	}
 	file := vm.curFileAt()

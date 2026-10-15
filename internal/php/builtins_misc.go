@@ -2530,10 +2530,6 @@ var (
 
 	// gcEnabled — состояние zend.enable_gc (gc_enable/gc_disable/gc_enabled).
 	gcEnabled = true
-	// gcRuns/gcCollected — статистика gc_status(). Полноценного сборщика циклов
-	// нет: счётчики отражают только явные вызовы gc_collect_cycles().
-	gcRuns      int64
-	gcCollected int64
 )
 
 // defaultIniValues возвращает значения по умолчанию (как в CLI).
@@ -2690,7 +2686,6 @@ func SetIni(m map[string]string) {
 	} else {
 		gcEnabled = true
 	}
-	gcRuns, gcCollected = 0, 0
 	if v, ok := iniValues["assert.callback"]; ok {
 		if t := strings.TrimSpace(v); t != "" {
 			assertCallbackSlot = vm.MakeString(t)
@@ -2953,19 +2948,22 @@ func iniGetFn(ctx *vm.Context) vm.Value {
 
 // --- сборщик циклов (gc_*) ---
 
-// gcStatusFn повторяет форму gc_status() в Zend: 12 полей. Полноценного
-// сборщика циклов в VM нет (жизнью значений управляет GC Go), поэтому счётчики
-// отражают только явные вызовы gc_collect_cycles().
+// gcStatusFn повторяет форму gc_status() в Zend: 12 полей. Счётчики ведёт VM
+// (lifetime.go): runs/collected — проходы сборщика и собранные узлы.
 func gcStatusFn(ctx *vm.Context) vm.Value {
 	a := vm.NewArray()
 	_ = a.SetStr("running", vm.MakeBool(false))
 	_ = a.SetStr("protected", vm.MakeBool(false))
 	_ = a.SetStr("full", vm.MakeBool(false))
-	_ = a.SetStr("runs", vm.MakeInt(gcRuns))
-	_ = a.SetStr("collected", vm.MakeInt(gcCollected))
+	var runs, collected, roots int64
+	if m := ctx.VM(); m != nil {
+		runs, collected, roots = m.GCRuns(), m.GCCollected(), m.GCRootCount()
+	}
+	_ = a.SetStr("runs", vm.MakeInt(runs))
+	_ = a.SetStr("collected", vm.MakeInt(collected))
 	_ = a.SetStr("threshold", vm.MakeInt(10001))
 	_ = a.SetStr("buffer_size", vm.MakeInt(16384))
-	_ = a.SetStr("roots", vm.MakeInt(0))
+	_ = a.SetStr("roots", vm.MakeInt(roots))
 	_ = a.SetStr("application_time", vm.MakeFloat(0))
 	_ = a.SetStr("collector_time", vm.MakeFloat(0))
 	_ = a.SetStr("destructor_time", vm.MakeFloat(0))
@@ -2988,7 +2986,6 @@ func gcDisableFn(ctx *vm.Context) vm.Value {
 func gcEnabledFn(ctx *vm.Context) vm.Value { return vm.Bool(gcEnabled) }
 
 func gcCollectCyclesFn(ctx *vm.Context) vm.Value {
-	gcRuns++
 	if v := ctx.VM(); v != nil {
 		n, err := v.CollectCycles()
 		if err != nil {

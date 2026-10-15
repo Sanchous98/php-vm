@@ -124,6 +124,7 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 		if !found {
 			vm.Warn("Undefined array key " + intToString(ks.Int()))
 		}
+		v = snapReadVal(v)
 		// Элемент-ссылка разыменовывается при чтении (FETCH_DIM_R):
 		// значение фиксируется в момент чтения (bug72543_3).
 		v = deref(v)
@@ -448,6 +449,7 @@ func (vm *VM) listFetchRefObject(regs []Slot, chunk *Chunk, in Instruction, r *R
 	if v.typ != ObjectType {
 		vm.Notice("Indirect modification of overloaded element of " + classDisplayName(ci) + " has no effect")
 	}
+	v = snapReadVal(v)
 	shareSlot(v)
 	{
 		old := regs[in.A]
@@ -461,6 +463,18 @@ func (vm *VM) listFetchRefObject(regs []Slot, chunk *Chunk, in Instruction, r *R
 }
 
 // listFetchRefRead — read-ветка FETCH_LIST_W (is_list=1): копия значения без
+// snapReadVal — снимок значения элемента массива для ЧТЕНИЯ
+// (Zend FETCH_DIM_R разыменовывает ячейку-ссылку): запись через ту же ссылку
+// после чтения не должна менять уже прочитанный операнд (bug72543_1/4).
+// Write-контексты (++/-- , составное присваивание) читают базу другим опкодом
+// (OpIndexRaw/OpIndexRW) и сохраняют ячейку-ссылку.
+func snapReadVal(v Slot) Slot {
+	if v.typ == RefType {
+		return deref(v)
+	}
+	return v
+}
+
 // диагностик для скаляров/строк; для объектов — offsetGet; для массивов —
 // обычное чтение с Warning отсутствующего ключа.
 func (vm *VM) listFetchRefRead(container Slot, key Slot, chunk *Chunk) (Slot, error) {
@@ -612,7 +626,10 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		if !found {
 			inner = MakeNull()
 		}
-		shareSlot(inner)
+		// inner остаётся владельцем только новая ячейка (элемент заменяется
+		// на неё), второй владелец не появляется: пометка shared здесь
+		// заставляла бы Unshare при записи в массив через ячейку делать
+		// копию и терять само-цикл (`$a[1][0] =& $a[1]`, gc_020).
 		cell = MakeRef(&Ref{v: inner})
 		_ = a.Set(k, cell)
 	}

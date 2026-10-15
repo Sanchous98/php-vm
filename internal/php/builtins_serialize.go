@@ -1135,6 +1135,18 @@ func fakeElemCount(elements, serializedLen int64) bool {
 	return elements > serializedLen/2
 }
 
+// setArr кладёт значение в элемент массива и регистрирует само-цикл
+// (`R:`-ссылка на сам массив): иначе gc_collect_cycles не увидит мусор
+// (gc_022: циклический массив, созданный unserialize во временном значении).
+func (u *phpUnser) setArr(arr *vm.Array, key vm.ArrayKey, s vm.Slot) {
+	arr.Set(key, s)
+	if s.IsRef() {
+		if r := s.Ref(); r != nil {
+			u.vm.NoteRefCycle(vm.MakeArray(arr), r)
+		}
+	}
+}
+
 func (u *phpUnser) parseArray(pos int) (vm.Slot, int, bool) {
 	if pos+1 >= len(u.s) || u.s[pos+1] != ':' {
 		u.fail(pos)
@@ -1174,7 +1186,7 @@ func (u *phpUnser) parseArray(pos int) (vm.Slot, int, bool) {
 		}
 		k2 := key
 		placed := false
-		u.pendingLoc = func(s vm.Slot) { arr.Set(k2, s); placed = true }
+		u.pendingLoc = func(s vm.Slot) { u.setArr(arr, k2, s); placed = true }
 		savedDest := u.destIds
 		u.destIds = u.destForArr(arr, key)
 		before := len(u.shared.vals)
@@ -1188,7 +1200,7 @@ func (u *phpUnser) parseArray(pos int) (vm.Slot, int, bool) {
 			return vm.MakeNull(), pos, false
 		}
 		if !placed {
-			arr.Set(key, val)
+			u.setArr(arr, key, val)
 		}
 		u.recordArrDest(key, before)
 		p = vp

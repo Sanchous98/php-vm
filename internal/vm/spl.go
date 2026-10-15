@@ -182,6 +182,16 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	// чтобы unserialize() сообщал "Cannot instantiate abstract class").
 	recFilterIter := NewClass("RecursiveFilterIterator", nil)
 	recFilterIter.SetAbstract()
+	// FilterIterator/CallbackFilterIterator: фильтрующая обёртка над
+	// итератором (gc_046). FilterIterator абстрактен, рабочая реализация —
+	// CallbackFilterIterator с callable-предикатом.
+	filterIter := NewClass("FilterIterator", nil)
+	filterIter.SetAbstract()
+	filterIter.Implements(iterator)
+	cbFilterIter := RegisterClass[filterIterData]("CallbackFilterIterator", filterIter)
+	cbFilterIter.Implements(iterator)
+	registerFilterIteratorMembers(filterIter, false)
+	registerFilterIteratorMembers(cbFilterIter, true)
 
 	arrayObject.Implements(aggregate, arrayAccess, countable, serializable)
 	arrayIterator.Implements(seekable, arrayAccess, countable, serializable)
@@ -216,7 +226,135 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	observer := NewInterface("SplObserver", nil)
 	subject := NewInterface("SplSubject", nil)
 
-	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject}
+	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
+}
+
+// filterIterData — состояние FilterIterator/CallbackFilterIterator:
+// оборачиваемый итератор и (для callback-варианта) предикат.
+type filterIterData struct {
+	Object
+	inner    Slot
+	callback Slot
+}
+
+// filterIterSkip прокручивает внутренний итератор до элемента, который
+// принимает предикат (CallbackFilterIterator).
+func (vm *VM) filterIterSkip(d *filterIterData, withCallback bool) (bool, error) {
+	for {
+		ok, err := vm.iterValid2(d.inner)
+		if err != nil || !ok {
+			return false, err
+		}
+		if !withCallback || deref(d.callback).Type() == NullType {
+			return true, nil
+		}
+		cur, err := vm.iterCall(d.inner, "current")
+		if err != nil {
+			return false, err
+		}
+		keyr, err := vm.iterCall(d.inner, "key")
+		if err != nil {
+			return false, err
+		}
+		res, err := vm.CallCallable(&vm.ctx, d.callback, []Slot{cur, keyr})
+		if err != nil {
+			return false, err
+		}
+		if deref(res).ToBool() {
+			return true, nil
+		}
+		if err := vm.iterInvoke(d.inner, "next", nil); err != nil {
+			return false, err
+		}
+	}
+}
+
+func registerFilterIteratorMembers(ci *runtimeClass, withCallback bool) {
+	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			if len(args) > 0 {
+				d.inner = args[0]
+			}
+			if len(args) > 1 {
+				d.callback = args[1]
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("rewind", &Function{Name: "rewind", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			if err := ctx.vm.iterInvoke(d.inner, "rewind", nil); err != nil {
+				return Slot{}, err
+			}
+			if _, err := ctx.vm.filterIterSkip(d, withCallback); err != nil {
+				return Slot{}, err
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("valid", &Function{Name: "valid", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeBool(false), nil
+			}
+			ok, err := ctx.vm.iterValid2(d.inner)
+			if err != nil {
+				return Slot{}, err
+			}
+			return MakeBool(ok), nil
+		},
+	}})
+	ci.Method("next", &Function{Name: "next", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			if err := ctx.vm.iterInvoke(d.inner, "next", nil); err != nil {
+				return Slot{}, err
+			}
+			if _, err := ctx.vm.filterIterSkip(d, withCallback); err != nil {
+				return Slot{}, err
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("current", &Function{Name: "current", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			return ctx.vm.iterCall(d.inner, "current")
+		},
+	}})
+	ci.Method("key", &Function{Name: "key", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			return ctx.vm.iterCall(d.inner, "key")
+		},
+	}})
+	ci.Method("getInnerIterator", &Function{Name: "getInnerIterator", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[filterIterData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			return d.inner, nil
+		},
+	}})
 }
 
 // registerSplObjectStorageSerialize реализует нативные __serialize/__unserialize

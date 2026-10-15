@@ -16998,11 +16998,11 @@ func (c *compiler) binExprTo(x *BinExpr, dst uint8) (uint8, error) {
 	// Отложенное чтение левого операнда-глобальной переменной: при побочных
 	// эффектах в правом операнде Zend читает CV после него (см. deferLeftGlobal).
 	if c.deferLeftGlobal(x.L, x.R) {
-		r, err := c.expr(x.R)
+		r, err := c.binOperand(x.R)
 		if err != nil {
 			return 0, err
 		}
-		l, err := c.expr(x.L)
+		l, err := c.binOperand(x.L)
 		if err != nil {
 			return 0, err
 		}
@@ -17012,11 +17012,11 @@ func (c *compiler) binExprTo(x *BinExpr, dst uint8) (uint8, error) {
 		c.chunk.Emit(vm.Instruction{Op: op, A: dst, B: l, C: int32(r)})
 		return dst, nil
 	}
-	l, err := c.expr(x.L)
+	l, err := c.binOperand(x.L)
 	if err != nil {
 		return 0, err
 	}
-	r, err := c.expr(x.R)
+	r, err := c.binOperand(x.R)
 	if err != nil {
 		return 0, err
 	}
@@ -17025,6 +17025,24 @@ func (c *compiler) binExprTo(x *BinExpr, dst uint8) (uint8, error) {
 	}
 	c.chunk.Emit(vm.Instruction{Op: op, A: dst, B: l, C: int32(r)})
 	return dst, nil
+}
+
+// binOperand компилирует операнд бинарной операции как значение: чтение
+// свойства снимается в момент чтения (Zend FETCH_OBJ_R разыменовывает
+// IS_REFERENCE), поэтому запись через ту же ссылку позже не меняет уже
+// прочитанный операнд (bug72543_3/5). Для элементов массива снимок делает
+// сам OpIndex.
+func (c *compiler) binOperand(e Expr) (uint8, error) {
+	r, err := c.expr(e)
+	if err != nil {
+		return 0, err
+	}
+	if _, ok := e.(*PropExpr); ok {
+		d := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpRefGet, A: d, B: r})
+		return d, nil
+	}
+	return r, nil
 }
 
 // exprWithSideEffects сообщает, что вычисление выражения может иметь

@@ -438,6 +438,7 @@ var intrinsicArity = map[string]intrinsicSig{
 	"parse_ini_file":               {[]string{"filename", "process_sections", "scanner_mode"}, 1, 3, false, map[int]intrinsicDefault{1: {"bool", "false", 0}, 2: {"const", "INI_SCANNER_NORMAL", 0}}},
 	"parse_ini_string":             {[]string{"ini_string", "process_sections", "scanner_mode"}, 1, 3, false, map[int]intrinsicDefault{1: {"bool", "false", 0}, 2: {"const", "INI_SCANNER_NORMAL", 0}}},
 	"parse_str":                    {[]string{"string", "result"}, 2, 2, false, nil},
+	"mb_parse_str":                 {[]string{"string", "result"}, 2, 2, false, nil},
 	"parse_url":                    {[]string{"url", "component"}, 1, 2, false, map[int]intrinsicDefault{1: {"int", "", -1}}},
 	"passthru":                     {[]string{"command", "result_code"}, 1, 2, false, map[int]intrinsicDefault{1: {"null", "", 0}}},
 	"password_algos":               {[]string{}, 0, 0, false, nil},

@@ -689,10 +689,41 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 }
 
 // chainPrevious связывает новое исключение с отложенным: $new->previous =
-// $old (как PHP при исключении из finally).
+// $old (как PHP при исключении из finally). Если $new уже присутствует в
+// цепочке previous у $old, связь не создаётся — иначе цепочка зациклилась бы
+// (try_finally_recursive_previous: повторный throw того же $e из finally).
 func (vm *VM) chainPrevious(newTh, oldTh *Throwable) {
-	if newTh == nil || oldTh == nil || newTh.Value.typ != ObjectType {
+	if newTh == nil || oldTh == nil || newTh == oldTh || newTh.Value.typ != ObjectType {
 		return
+	}
+	no := vm.objectOf(newTh.Value)
+	cur := oldTh
+	for depth := 0; cur != nil && depth < 1000; depth++ {
+		if cur.Value.typ != ObjectType {
+			break
+		}
+		co := vm.objectOf(cur.Value)
+		if co == nil {
+			break
+		}
+		if co == no {
+			// new уже в цепочке previous — не создаём цикл.
+			return
+		}
+		v, ok := co.GetProp("previous")
+		if !ok {
+			break
+		}
+		s := valueSlot(v)
+		if s.typ != ObjectType {
+			break
+		}
+		co2 := vm.objectOf(s)
+		if co2 == nil {
+			break
+		}
+		cur = &Throwable{Value: s, Class: co2.ClassName(), Message: exceptionMessage(co2),
+			Trace: co2.excTrace, LocFile: co2.excFile, LocLine: co2.excLine}
 	}
 	prev := vm.throwableObject(oldTh, vm.throwableClass(oldTh))
 	if prev.typ != ObjectType {

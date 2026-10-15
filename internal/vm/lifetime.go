@@ -336,6 +336,12 @@ func (vm *VM) afterDecObject(o *Object) {
 	if o == nil || o.dead || o.refs > 0 {
 		return
 	}
+	// Ноль достигнут внутри выполняющегося деструктора: Zend уничтожает такой
+	// объект по refcount (немедленно), а не как «белый» цикл — в число
+	// собранных gc_collect_cycles он не попадает.
+	if vm.destroying > 0 {
+		o.gcNested = true
+	}
 	vm.lifeCandidate = true
 	if classHasDtor(o.class) || vm.isLifetimeSpecial(o) || o.TypedRefs() {
 		vm.lifeUrgent = true
@@ -656,6 +662,10 @@ type lifeVisit struct {
 	// поэтому обход значений откладывается до finishWeakMaps.
 	wmaps []*Object
 
+	// reachDead — обходить и уничтоженные (dead) объекты: проверка
+	// воскрешения после деструкторов (gc_041): $GLOBALS['x'] = $this.
+	reachDead bool
+
 	// depth — защита от абсурдно глубокой рекурсии рефлексии.
 	depth int
 }
@@ -769,7 +779,7 @@ func (m *lifeVisit) slotBare(s Slot) {
 func (m *lifeVisit) objBare(o *Object) { m.obj(o) }
 
 func (m *lifeVisit) obj(o *Object) {
-	if o == nil || m.objs[o] || o.dead {
+	if o == nil || m.objs[o] || (o.dead && !m.reachDead) {
 		return
 	}
 	m.objs[o] = true
@@ -1187,34 +1197,68 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 			vm.finishSweep()
 			return sweepOutcome{err: err, count: collected}
 		}
-		collected++
+		// Смерть по refcount (нулевой вход): Zend уничтожил бы такой узел в
+		// точке записи, gc_collect_cycles его не считает.
 	}
 	if force {
 		// Циклы: уничтожаем всё оставшееся (Zend: gc_collect_cycles).
+		dtorsBefore := vm.gcDtorCount
+		var countedObjs []*Object
+		var countedArrs []*Array
+		var sweepErr error
 		for _, o := range uObjs {
 			if o.dead {
 				continue
 			}
+			// gcNested — ноль достигнут внутри деструктора: Zend уничтожает
+			// такой объект по refcount, в счёт он не входит (gc_017/gc_028),
+			// но деструктор всё равно должен выполниться.
+			nested := o.gcNested
 			if derr := vm.destroyObject(o); derr != nil {
-				vm.finishSweep()
-				vm.gcPendingObjs = vm.gcPendingObjs[:0]
-				return sweepOutcome{err: derr, count: collected}
+				// Zend продолжает вызывать деструкторы остальных узлов и
+				// сцепляет исключения (previous), печатая цепочку в конце
+				// (gc_030).
+				if nth, ok := asThrowable(derr); ok {
+					if prev, ok2 := asThrowable(sweepErr); ok2 {
+						vm.chainPrevious(nth, prev)
+					}
+					sweepErr = derr
+				} else if sweepErr == nil {
+					sweepErr = derr
+				}
+				continue
 			}
-			collected++
+			if !nested {
+				countedObjs = append(countedObjs, o)
+			}
 		}
 		// Массивы циклического мусора Zend тоже считает собранными.
 		seenA := map[*Array]bool{}
 		seenO := map[*Object]bool{}
+		// Нативные массивы собранных объектов (storage ArrayObject/ArrayIterator
+		// и т.п.): Zend get_gc возвращает их как отдельные белые узлы, и они
+		// входят в счёт (gc_024: объект + его storage = 2).
+		arrSeen := map[*Array]bool{}
+		for _, o := range countedObjs {
+			vm.walkObjectNativeArrays(o, func(a *Array) {
+				if a == nil || arrSeen[a] || m.arrs[a] {
+					return
+				}
+				arrSeen[a] = true
+				countedArrs = append(countedArrs, a)
+			})
+		}
 		for a := range uArrs {
-			if seenA[a] {
+			if seenA[a] || arrSeen[a] {
 				continue
 			}
 			if vm.arrayCyclic(a, seenA, seenO) {
-				collected++
+				arrSeen[a] = true
+				countedArrs = append(countedArrs, a)
 			}
 		}
 		for a := range vm.cyclicArrs {
-			if seenA[a] {
+			if seenA[a] || arrSeen[a] {
 				continue
 			}
 			seenA[a] = true
@@ -1222,10 +1266,32 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 				// Массив ещё достижим: цикл жив, ждём следующего сбора.
 				continue
 			}
-			collected++
+			// Проверка с ЧИСТЫМИ картами: общий seenA от предыдущих обходов
+			// мог «поглотить» этот массив (порядок map-итерации), и тогда
+			// циклический мусор не посчитался бы (gc_022).
+			if !vm.arrayCyclic(a, map[*Array]bool{}, map[*Object]bool{}) {
+				// Регистрация устарела: отвязка ссылки (executor PZVAL_UNLOCK,
+				// присваивание через ту же ячейку) сняла само-цикл — массив
+				// умер по refcount (gc_020).
+				delete(vm.cyclicArrs, a)
+				continue
+			}
+			arrSeen[a] = true
+			countedArrs = append(countedArrs, a)
 			delete(vm.cyclicArrs, a)
 		}
+		collected = len(countedObjs) + len(countedArrs)
+		if vm.gcDtorCount != dtorsBefore && collected > 0 {
+			// Деструкторы могли воскресить узлы ($GLOBALS['x'] = $this):
+			// достижимые после их выполнения Zend не считает собранными
+			// (gc_041).
+			collected -= vm.gcUncountResurrected(countedObjs, countedArrs, chunk, pc)
+		}
 		vm.gcPendingObjs = vm.gcPendingObjs[:0]
+		if sweepErr != nil {
+			vm.finishSweep()
+			return sweepOutcome{err: sweepErr, count: collected}
+		}
 		return sweepOutcome{count: collected}
 	}
 	// Оставшиеся недостижимые — циклический мусор (или достижимые только из
@@ -1244,6 +1310,28 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 		}
 	}
 	return sweepOutcome{count: collected}
+}
+
+// gcUncountResurrected возвращает число собранных узлов, которые после фазы
+// деструкторов снова достижимы от корней (деструктор записал $this в глобалы —
+// gc_041). Обход не останавливается на уничтоженных объектах (reachDead).
+func (vm *VM) gcUncountResurrected(objs []*Object, arrs []*Array, chunk *Chunk, pc int) int {
+	m := newLifeVisit(vm)
+	m.reachDead = true
+	vm.markRoots(m, chunk, pc)
+	m.finishWeakMaps()
+	n := 0
+	for _, o := range objs {
+		if o != nil && m.objs[o] {
+			n++
+		}
+	}
+	for _, a := range arrs {
+		if a != nil && m.arrs[a] {
+			n++
+		}
+	}
+	return n
 }
 
 // compactLiveObjs удаляет уничтоженные объекты из реестра: иначе каждый
@@ -1605,8 +1693,18 @@ func walkReflect(v reflect.Value, depth int, f func(Slot)) {
 			return
 		}
 		switch t {
-		case rclassPtrType, objPtrType, closPtrType, arrayPtrType:
+		case rclassPtrType, objPtrType, closPtrType:
 			return // обрабатываются через props/владельца
+		case arrayPtrType:
+			// Нативное поле-массив (storage ArrayObject/ArrayIterator и т.п.):
+			// его элементы — ссылки объекта, Zend get_gc их возвращает
+			// (gc_024: цикл объект↔storage).
+			if a := (*Array)(v.UnsafePointer()); a != nil && a.objRefs {
+				for _, s := range a.All() {
+					f(s)
+				}
+			}
+			return
 		}
 		et := t.Elem()
 		if et.Kind() == reflect.Struct && et.NumField() > 0 && et.Field(0).Type == objectType {
@@ -1665,6 +1763,94 @@ func walkReflect(v reflect.Value, depth int, f func(Slot)) {
 		it := v.MapRange()
 		for it.Next() {
 			walkReflect(it.Value(), depth+1, f)
+		}
+	}
+}
+
+// walkObjectNativeArrays вызывает f для нативных массивов объекта
+// (поля типа *Array в нативных данных: storage ArrayObject и т.п.).
+func (vm *VM) walkObjectNativeArrays(o *Object, f func(*Array)) {
+	if o == nil || o.class == nil {
+		return
+	}
+	rc, ok := o.class.(*runtimeClass)
+	if !ok || rc == nil || rc.nativeType == nil {
+		return
+	}
+	vv := reflect.NewAt(rc.nativeType, unsafe.Pointer(o)).Elem()
+	walkNativeArrays(vv, 0, f)
+}
+
+// walkNativeArrays рекурсивно ищет поля-массивы в нативных данных.
+func walkNativeArrays(v reflect.Value, depth int, f func(*Array)) {
+	if !v.IsValid() || depth > 12 {
+		return
+	}
+	t := v.Type()
+	switch v.Kind() {
+	case reflect.Pointer:
+		if v.IsNil() {
+			return
+		}
+		if t == arrayPtrType {
+			f((*Array)(v.UnsafePointer()))
+			return
+		}
+		switch t {
+		case rclassPtrType, objPtrType, closPtrType:
+			return
+		}
+		et := t.Elem()
+		if et.Kind() == reflect.Struct && et.NumField() > 0 && et.Field(0).Type == objectType {
+			return
+		}
+		walkNativeArrays(v.Elem(), depth+1, f)
+	case reflect.Interface:
+		if v.IsNil() {
+			return
+		}
+		ev := v.Elem()
+		if ev.Kind() == reflect.Pointer && ev.Type() == rclassPtrType {
+			return
+		}
+		walkNativeArrays(ev, depth+1, f)
+	case reflect.Struct:
+		for i := 0; i < t.NumField(); i++ {
+			fv := v.Field(i)
+			switch fv.Kind() {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+				reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+				reflect.Float32, reflect.Float64, reflect.Bool, reflect.String,
+				reflect.Chan, reflect.Func:
+				continue
+			}
+			walkNativeArrays(fv, depth+1, f)
+		}
+	case reflect.Slice, reflect.Array:
+		if v.Len() == 0 {
+			return
+		}
+		if t.Elem() == slotType {
+			return
+		}
+		if t.Elem() == arrayPtrType {
+			for i := 0; i < v.Len(); i++ {
+				if p := v.Index(i); !p.IsNil() {
+					f((*Array)(p.UnsafePointer()))
+				}
+			}
+			return
+		}
+		for i := 0; i < v.Len(); i++ {
+			walkNativeArrays(v.Index(i), depth+1, f)
+		}
+	case reflect.Map:
+		if v.IsNil() {
+			return
+		}
+		it := v.MapRange()
+		for it.Next() {
+			walkNativeArrays(it.Value(), depth+1, f)
 		}
 	}
 }
@@ -1821,11 +2007,13 @@ func (vm *VM) runObjectDestructor(o *Object, ci ClassInfo) error {
 			// atShutdown влияет на кадр трассировки закрытия: при
 			// уничтожении в ходе работы скрипта место resume — вызывающий
 			// код, а не "[internal function]" (bug71604_3).
+			vm.gcDtorCount++
 			return vm.closeGenerator(g, vm.inShutdown)
 		}
 	}
 	if vm.fiberClass != nil {
 		if f := objectAs[Fiber](o, vm.fiberClass); f != nil {
+			vm.gcDtorCount++
 			return vm.closeFiber(f, true)
 		}
 	}
@@ -1836,6 +2024,7 @@ func (vm *VM) runObjectDestructor(o *Object, ci ClassInfo) error {
 	if m == nil {
 		return nil
 	}
+	vm.gcDtorCount++
 	_, decl, vis := ci.methodInfo("__destruct")
 	scope := vm.ctx.self
 	if !canAccess(vis, decl, scope) {
@@ -1929,8 +2118,23 @@ func (vm *VM) CollectCycles() (int, error) {
 	vm.dtorInternal = true
 	out := vm.sweepLifetime(true, vm.chunk, vm.ip-1)
 	vm.dtorInternal = savedInternal
+	vm.gcRuns++
+	vm.gcCollected += int64(out.count)
 	return out.count, out.err
 }
+
+// GCRuns возвращает число проходов сборщика (gc_status()["runs"]).
+func (vm *VM) GCRuns() int64 { return vm.gcRuns }
+
+// GCCollected возвращает суммарно собранные узлы (gc_status()["collected"]).
+func (vm *VM) GCCollected() int64 { return vm.gcCollected }
+
+// GCRootCount возвращает размер буфера возможных корней (gc_status()["roots"]).
+func (vm *VM) GCRootCount() int64 { return 0 }
+
+// NoteRefCycle — экспорт noteRefArrayCycle для встроенных функций
+// (unserialize строит само-ссылочные массивы через R:-ссылки: gc_022).
+func (vm *VM) NoteRefCycle(val Slot, r *Ref) { vm.noteRefArrayCycle(val, r) }
 
 // noteSelfRefArray регистрирует массив с прямой само-ссылкой
 // (`$a[] =& $a`, `$a[0][0] =& $a[0]`): Zend считает такие массивы при

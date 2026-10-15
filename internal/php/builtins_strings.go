@@ -7278,6 +7278,16 @@ func parseStrFn(ctx *vm.Context) vm.Value {
 	return vm.MakeNull()
 }
 
+// mbParseStrFn — mb_parse_str(): то же, что parse_str, но возвращает true
+// (mbstring сохранил bool-возврат; parse_str с PHP 8 возвращает null).
+func mbParseStrFn(ctx *vm.Context) vm.Value {
+	parseStrFn(ctx)
+	if ctx.HasThrown() {
+		return *new(vm.Value)
+	}
+	return vm.MakeBool(true)
+}
+
 // --- hebrev ---
 
 func isHeb(c byte) bool        { return c >= 224 && c <= 250 }

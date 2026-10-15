@@ -1070,6 +1070,10 @@ func (vm *VM) globalEntry(key string) (Slot, bool) {
 	return v, ok
 }
 
+// GlobalByKey возвращает значение таблицы глобалов по ключу (дамп
+// static-переменных замыкания, bug79778).
+func (vm *VM) GlobalByKey(key string) (Slot, bool) { return vm.globalEntry(key) }
+
 // InDynamicCall сообщает, что текущий нативный вызов идёт не напрямую из
 // userland (CallCallable: call_user_func, ob-колбэки, set_error_handler и т.п.).
 // compact()/extract()/get_defined_vars() в Zend так вызывать нельзя.

@@ -9254,6 +9254,19 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	if fixed, ok := variadicFixed(params); ok {
 		cf.SetVariadic(fixed)
 	}
+	// Собственные static-переменные — в debug-информацию замыкания (bug79778).
+	if len(cc.staticKeys) > 0 {
+		sv := make([]vm.StaticVarInfo, 0, len(cc.staticKeys))
+		for _, s := range statics {
+			if s.Conditional {
+				continue
+			}
+			if key, ok := cc.staticKeys[s.Name]; ok {
+				sv = append(sv, vm.StaticVarInfo{Name: strings.TrimPrefix(s.Name, "$"), Key: key})
+			}
+		}
+		cf.SetStaticVars(sv)
+	}
 	if cc.hasYield {
 		if nrt := normalizedType(retType); nrt != "" && !generatorRetAllowed(nrt) {
 			return nil, cc.newFatal("Generator return type must be a supertype of Generator, " + displayType(retType) + " given")

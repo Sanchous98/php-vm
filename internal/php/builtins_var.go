@@ -1795,7 +1795,27 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if len(paramNames) > 0 {
 			n++
 		}
-		if len(capVals) > 0 {
+		// Неявные захваты стрелочной функции, не определённые в точке
+		// создания, в дамп не попадают и не считаются (bug81076).
+		keepCaps := len(capVals)
+		if cl != nil {
+			keepCaps = 0
+			for i := range capVals {
+				if f := cl.CapUndefFlags(); i < len(f) && f[i] {
+					continue
+				}
+				keepCaps++
+			}
+		}
+		// Собственные static-переменные функции входят в тот же раздел
+		// (bug79778).
+		var fnStatics []vm.StaticVarInfo
+		if cl != nil && cl.Fn != nil {
+			if cf, isCompiled := cl.Fn.Executable.(*vm.CompiledFunction); isCompiled {
+				fnStatics = cf.StaticVars()
+			}
+		}
+		if keepCaps+len(fnStatics) > 0 {
 			n++
 		}
 		if hasThis {
@@ -1833,7 +1853,7 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			b.WriteString(inner)
 			dumpElem(b, vm.MakeArray(parr), indent+1, st)
 		}
-		if len(capVals) > 0 {
+		if keepCaps > 0 || len(fnStatics) > 0 {
 			sarr := vm.NewArray()
 			for i, v := range capVals {
 				// Неявный захват стрелочной функции, не определённый в точке
@@ -1845,7 +1865,16 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 				if i < len(capNames) {
 					name = capNames[i]
 				}
+				// Zend печатает имена захватов без ведущего `$`.
+				name = strings.TrimPrefix(name, "$")
 				_ = sarr.SetStr(name, v)
+			}
+			for _, sv := range fnStatics {
+				val := vm.MakeNull()
+				if g, ok := st.vm.GlobalByKey(sv.Key); ok {
+					val = derefSlot(g)
+				}
+				_ = sarr.SetStr(sv.Name, val)
 			}
 			if sarr.Len() > 0 {
 				b.WriteString(inner + `["static"]=>` + "\n")
@@ -2300,6 +2329,9 @@ type printState struct {
 	vm   *vm.VM
 	arrs map[*vm.Array]bool
 	objs map[*vm.Object]bool
+	// closures — замыкания на текущем пути печати: захват замыкания самим
+	// собой печатается как *RECURSION* (Zend).
+	closures map[*vm.Closure]bool
 }
 
 func (st *printState) recursive(s vm.Slot) bool {
@@ -2385,16 +2417,87 @@ func printR(b *strings.Builder, s vm.Slot, lvl int, st *printState) {
 			}
 		}
 		b.WriteString(pad + ")\n")
+	case vm.ClosureType:
+		// print_r замыкания: раздел [static] с захватами и собственными
+		// static-переменными (Zend; bug79778).
+		cl := s.AsClosure()
+		if cl != nil {
+			if st.closures == nil {
+				st.closures = map[*vm.Closure]bool{}
+			}
+			if st.closures[cl] {
+				b.WriteString("Closure Object\n *RECURSION*\n")
+				return
+			}
+		}
+		pad := strings.Repeat(" ", lvl)
+		b.WriteString("Closure Object\n" + pad + "(\n")
+		if cl != nil {
+			st.closures[cl] = true
+			arr := closureStaticArray(st.vm, cl)
+			if arr != nil {
+				plain := vm.NewArray()
+				for k, v := range arr.All() {
+					_ = plain.Set(k, derefSlot(v))
+				}
+				b.WriteString(strings.Repeat(" ", lvl+4) + "[static] => ")
+				printRValue(b, vm.MakeArray(plain), lvl, st)
+			}
+			delete(st.closures, cl)
+		}
+		b.WriteString(pad + ")\n")
 	default:
 		b.WriteString(s.ToString())
 	}
+}
+
+// closureStaticArray собирает раздел static дампа замыкания: захваченные
+// переменные (неопределённые неявные захваты стрелочной функции не попадают —
+// bug81076) и собственные static-переменные функции (bug79778). nil, если
+// раздел пуст.
+func closureStaticArray(v *vm.VM, cl *vm.Closure) *vm.Array {
+	if cl == nil {
+		return nil
+	}
+	capVals := cl.Captures
+	capNames := make([]string, len(capVals))
+	if cl.Fn != nil && len(cl.Fn.CaptureNames) == len(capVals) {
+		capNames = cl.Fn.CaptureNames
+	}
+	sarr := vm.NewArray()
+	undef := cl.CapUndefFlags()
+	for i, cv := range capVals {
+		if i < len(undef) && undef[i] {
+			continue
+		}
+		name := ""
+		if i < len(capNames) {
+			name = capNames[i]
+		}
+		_ = sarr.SetStr(strings.TrimPrefix(name, "$"), cv)
+	}
+	if cl.Fn != nil {
+		if cf, ok := cl.Fn.Executable.(*vm.CompiledFunction); ok {
+			for _, sv := range cf.StaticVars() {
+				val := vm.MakeNull()
+				if g, ok := v.GlobalByKey(sv.Key); ok {
+					val = derefSlot(g)
+				}
+				_ = sarr.SetStr(sv.Name, val)
+			}
+		}
+	}
+	if sarr.Len() == 0 {
+		return nil
+	}
+	return sarr
 }
 
 // printRValue печатает значение после "key => " и добавляет пустую строку
 // после вложенного массива/объекта (но не после *RECURSION*).
 func printRValue(b *strings.Builder, v vm.Slot, lvl int, st *printState) {
 	switch v.Type() {
-	case vm.ArrayType, vm.ObjectType:
+	case vm.ArrayType, vm.ObjectType, vm.ClosureType:
 		rec := st.recursive(v)
 		printR(b, v, lvl+8, st)
 		if !rec {

@@ -15191,7 +15191,64 @@ func (c *compiler) newExpr(x *NewExpr) (uint8, error) {
 	if strings.EqualFold(x.Class, "static") && c.curClass != nil {
 		return c.newStatic(x.Args)
 	}
+	// В теле трейта `new self`/`new parent` разрешаются в рантайме от класса,
+	// в который примешан трейт (Zend: примешанный метод видит класс-получатель;
+	// bug53748 — «Cannot instantiate trait Singleton»).
+	if c.curClass != nil && c.curClass.IsTrait() {
+		switch strings.ToLower(strings.TrimLeft(x.Class, "\\")) {
+		case "self":
+			return c.newSelClass(0, x.Args)
+		case "parent":
+			return c.newSelClass(2, x.Args)
+		}
+	}
 	return c.newNamed(x.Class, x.Args)
+}
+
+// newSelClass компилирует `new self/parent` (sel 0/2) с классом, вычисляемым
+// в рантайме от области видимости кадра. Используется в телах трейтов, где
+// self/parent зависят от класса, в который примешан трейт.
+func (c *compiler) newSelClass(sel uint8, args []Expr) (uint8, error) {
+	if hasNamedArg(args) {
+		if msg := argOrderError(args); msg != "" {
+			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
+		}
+		nameReg := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel})
+		arr, err := c.buildArgArray(args, true, nil)
+		if err != nil {
+			return 0, err
+		}
+		return c.emitCall("__php_new_named", []uint8{nameReg, arr}), nil
+	}
+	nameReg := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel})
+	argRegs, wbs, err := c.evalArgs(c.methodRefs["__construct"], args, byRefInfo{})
+	if err != nil {
+		return 0, err
+	}
+	base := c.alloc()
+	for range argRegs {
+		c.alloc()
+	}
+	if base != nameReg {
+		c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: base, B: nameReg})
+	}
+	for k, a := range argRegs {
+		dst := base + 1 + uint8(k)
+		if dst != a {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: dst, B: a})
+		}
+	}
+	d := c.alloc()
+	c.emitCallLineHere()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpNewDyn, A: d, B: base, C: int32(len(argRegs))})
+	c.restoreStmtLine()
+	c.tmp = d + 1
+	for _, wb := range wbs {
+		wb()
+	}
+	return d, nil
 }
 
 // newStatic компилирует `new static` с поздним статическим связыванием:

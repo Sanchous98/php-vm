@@ -7723,6 +7723,7 @@ func (vm *VM) DynClassConstValue(cls Slot, nameSlot Slot) (Slot, error) {
 
 // DynStaticCall вызывает статический метод класса, заданного динамически.
 func (vm *VM) DynStaticCall(cls Slot, mname string, args []Slot) (Slot, error) {
+	mname = methodNameCString(mname)
 	ci, err := vm.DynClassByName(cls)
 	if err != nil {
 		return Slot{}, err

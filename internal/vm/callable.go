@@ -1454,6 +1454,7 @@ func splitFirstArg(arr *Array) (Slot, *Array, bool) {
 // (`$obj->m(a: 1)`). Повторяет резолв OpMethodCallDyn (видимость, __call,
 // магические получатели), но аргументы раскладывает по именам в рантайме.
 func (vm *VM) MethodCallNamed(recv Slot, mname string, arr *Array) (Slot, error) {
+	mname = methodNameCString(mname)
 	recv = deref(recv)
 	if recv.typ == ClosureType {
 		// Методы замыканий (call/bindTo/...) — через общий array-callable путь.

@@ -462,7 +462,13 @@ func (vm *VM) fromCallableClass(name string) (ClassInfo, error) {
 func (vm *VM) checkFromCallableMethod(ci ClassInfo, mname string, recv Slot) error {
 	m := methodOrCtor(ci, mname)
 	if m == nil {
-		if ci.lookupMethod("__call") != nil {
+		// Отсутствующий метод: для экземпляра — __call, для статического
+		// вызова (recv — класс-строка) — __callStatic (bug81626).
+		if deref(recv).typ == ObjectType {
+			if ci.lookupMethod("__call") != nil {
+				return nil
+			}
+		} else if ci.lookupMethod("__callStatic") != nil {
 			return nil
 		}
 		return NewThrowable("TypeError", "Failed to create closure from callable: class "+ci.Name()+" does not have a method \""+mname+"\"")

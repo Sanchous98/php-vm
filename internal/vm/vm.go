@@ -174,6 +174,19 @@ type VM struct {
 	// (trigger_error(E_USER_ERROR) и т.п.): PHP завершил бы скрипт, поэтому
 	// проверки неявного возврата `never` подавляются.
 	fatalDiag bool
+	// pendingUncaughtTail — непойманное исключение, тело которого напечатано,
+	// но хвостовая строка «thrown in» отложена: если во время завершения
+	// запроса (shutdown-функции/деструкторы) брошено ещё одно, Zend печатает
+	// его как «Next», а «thrown in» — только у последнего (exception_008).
+	pendingUncaughtTail *Throwable
+	// pendingUncaughtFile/Line — локация отложенного хвоста «thrown in»:
+	// вычисленные при печати тела file/line (у внутренних ошибок th.LocFile
+	// пуст, а хвост обязан совпасть с строкой "Fatal error ... in file:line").
+	pendingUncaughtFile string
+	pendingUncaughtLine int
+	// deferUncaughtTail — одноразовый флаг для reportUncaught: не печатать
+	// «thrown in», а запомнить исключение в pendingUncaughtTail.
+	deferUncaughtTail bool
 	// retImplicit — последний OpRet был неявным (конец функции без return);
 	// нужно для сообщения «none returned» при нарушении типа возврата.
 	retImplicit bool
@@ -1602,6 +1615,10 @@ func (vm *VM) Run() (err error) {
 			_ = vm.sweepLifetime(false, vm.chunk, vm.ip-1)
 		}
 	}
+	// Хвост «thrown in» откладывается: исключение, брошенное деструктором на
+	// завершении запроса, станет «Next», а хвост достанется последнему
+	// (exception_008).
+	vm.deferUncaughtTail = true
 	if deref(vm.currentExcHandler()).typ != NullType {
 		// Обработчик непойманных исключений выполняется до сброса буферов
 		// (как в Zend): он может очистить буфер.
@@ -1613,6 +1630,7 @@ func (vm *VM) Run() (err error) {
 		vm.reportUncaught(err)
 		vm.flushOutputBuffers()
 	}
+	vm.deferUncaughtTail = false
 	vm.runShutdownFunctions()
 	vm.runShutdownDestructors()
 	vm.runRequestEnd()
@@ -2885,6 +2903,13 @@ func (vm *VM) reportUncaught(err error) {
 			}
 			vm.Write("Stack trace:\n")
 			vm.Write(vm.traceString(th.Trace, file, line) + "\n")
+			if vm.deferUncaughtTail {
+				vm.deferUncaughtTail = false
+				vm.pendingUncaughtTail = th
+				vm.pendingUncaughtFile = file
+				vm.pendingUncaughtLine = line
+				return
+			}
 			tailFile := file
 			if tailFile == "" {
 				tailFile = "Unknown"
@@ -2907,11 +2932,78 @@ func (vm *VM) reportUncaught(err error) {
 	vm.Write("Stack trace:\n")
 	vm.Write(vm.traceString(th.Trace, file, line) + "\n")
 	// Zend: пустой файл локации печатается как "Unknown".
+	if vm.deferUncaughtTail {
+		vm.deferUncaughtTail = false
+		vm.pendingUncaughtTail = th
+		vm.pendingUncaughtFile = file
+		vm.pendingUncaughtLine = line
+		return
+	}
 	tailFile := file
 	if tailFile == "" {
 		tailFile = "Unknown"
 	}
 	vm.Write("  thrown in " + tailFile + " on line " + strconv.Itoa(line) + "\n")
+}
+
+// writeUncaughtNext печатает следующее непойманное исключение завершения
+// запроса как «Next ...» (хвост «thrown in» остаётся у последнего).
+func (vm *VM) writeUncaughtNext(th *Throwable) {
+	if th == nil {
+		return
+	}
+	class := th.Class
+	if class == "" {
+		class = "Error"
+	}
+	file := th.LocFile
+	if file == "" {
+		file = vm.curFile
+	}
+	if file == "" {
+		file = "php"
+	}
+	line := th.LocLine
+	if line <= 0 {
+		line = 1
+	}
+	if th.Message != "" {
+		vm.Write("\nNext " + class + ": " + th.Message + " in " + file + ":" + strconv.Itoa(line) + "\n")
+	} else {
+		vm.Write("\nNext " + class + " in " + file + ":" + strconv.Itoa(line) + "\n")
+	}
+	vm.Write("Stack trace:\n")
+	vm.Write(vm.traceString(th.Trace, file, line) + "\n")
+	vm.pendingUncaughtTail = th
+	vm.pendingUncaughtFile = file
+	vm.pendingUncaughtLine = line
+}
+
+// finishUncaughtTail печатает отложенную строку «thrown in» последнего
+// непойманного исключения завершения запроса.
+func (vm *VM) finishUncaughtTail() {
+	th := vm.pendingUncaughtTail
+	if th == nil || vm.deferUncaughtTail {
+		return
+	}
+	vm.pendingUncaughtTail = nil
+	file := th.LocFile
+	if file == "" {
+		file = vm.pendingUncaughtFile
+	}
+	if file == "" {
+		file = "Unknown"
+	}
+	line := th.LocLine
+	if line <= 0 {
+		line = vm.pendingUncaughtLine
+	}
+	if line <= 0 {
+		line = 1
+	}
+	vm.pendingUncaughtFile = ""
+	vm.pendingUncaughtLine = 0
+	vm.Write("  thrown in " + file + " on line " + strconv.Itoa(line) + "\n")
 }
 
 // reportUncaughtChain печатает непойманное исключение вместе с цепочкой
@@ -8773,9 +8865,16 @@ func (vm *VM) runShutdownFunctions() {
 		if err != nil {
 			// exit/исключение в shutdown-функции прекращает вызов остальных
 			// (bug62763/d11); исключение печатается как непойманное,
-			// после чего выполняются деструкторы.
+			// после чего выполняются деструкторы. Если уже напечатано тело
+			// отложенного непойманного — это «Next».
 			if !IsExitSignal(err) {
-				vm.reportUncaught(err)
+				if vm.pendingUncaughtTail != nil {
+					if th, ok := asThrowable(err); ok {
+						vm.writeUncaughtNext(th)
+					}
+				} else {
+					vm.reportUncaught(err)
+				}
 			}
 			break
 		}
@@ -8849,8 +8948,17 @@ func (vm *VM) runShutdownDestructors() {
 	var shutdownErrs []*Throwable
 	defer func() {
 		if len(shutdownErrs) > 0 {
-			vm.reportUncaughtChain(shutdownErrs)
+			if vm.pendingUncaughtTail != nil {
+				// Продолжение уже напечатанной цепочки (exception_008):
+				// каждое новое исключение — «Next», хвост у последнего.
+				for _, th := range shutdownErrs {
+					vm.writeUncaughtNext(th)
+				}
+			} else {
+				vm.reportUncaughtChain(shutdownErrs)
+			}
 		}
+		vm.finishUncaughtTail()
 	}()
 	if vm.destructed == nil {
 		vm.destructed = map[*Object]bool{}
@@ -8946,7 +9054,11 @@ func (vm *VM) shutdownDestructPass(all []*Object, shutdownErrs *[]*Throwable) {
 			continue
 		}
 		slot := vm.slotOf(o)
-		vm.markNextFrameInternal = true
+		// Кадр "[internal function]" выставляется для обычного shutdown-цикла
+		// (oss_fuzz_456317305). Если уже есть напечатанное непойманное
+		// исключение, Zend показывает позицию вызова деструктора в файле
+		// (exception_008).
+		vm.markNextFrameInternal = vm.pendingUncaughtTail == nil
 		if _, err := vm.invokeMethod(m, slot, ci, nil); err != nil {
 			// Исключение из __destruct при завершении скрипта — фатальная
 			// ошибка (weakmap_dtor_exception): Zend печатает её как

@@ -6,8 +6,22 @@ import (
 
 // execData.go — глобальные и ссылочные опкоды (global*/ref*).
 
+// staticKeyRemap перенаправляет ключ статической ячейки для копии метода
+// трейта (Function.RebindStaticKeys): инструкции несут исходный константный
+// ключ, а значение копии живёт в отдельной ячейке таблицы globals.
+func (vm *VM) staticKeyRemap(key string) string {
+	if n := len(vm.callStack); n > 0 {
+		if m := vm.callStack[n-1].callee.StaticRemap; m != nil {
+			if nk, ok := m[key]; ok {
+				return nk
+			}
+		}
+	}
+	return key
+}
+
 func (vm *VM) opGlobalGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	name := consts[in.C].StringVal()
+	name := vm.staticKeyRemap(consts[in.C].StringVal())
 
 	if name == "$GLOBALS" {
 		if _, ok := vm.globals["$GLOBALS"]; !ok {
@@ -71,11 +85,15 @@ func (vm *VM) warnUndefVar(name string) {
 }
 
 // displayVarKey — имя переменной для диагностик: служебный ключ несуществующей
-// переменной в функции ("\x00undef\x00$x") печатается как обычное имя.
+// переменной в функции ("\x00undef\x00$x") печатается как обычное имя, а
+// ключ статического слота ("Func\x00$x") — как исходная переменная.
 func displayVarKey(name string) string {
 	const marker = "\x00undef\x00"
 	if strings.HasPrefix(name, marker) {
 		return name[len(marker):]
+	}
+	if i := strings.LastIndexByte(name, 0); i >= 0 {
+		return name[i+1:]
 	}
 	return name
 }
@@ -93,7 +111,7 @@ func (vm *VM) opGlobalSet(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			vm.wRegSlow(int(in.A), old)
 		}
 	}
-	gname := consts[in.C].StringVal()
+	gname := vm.staticKeyRemap(consts[in.C].StringVal())
 	if cur, ok := vm.globals[gname]; ok && cur.typ == RefType {
 		if r := cur.Ref(); r != nil {
 			if err := vm.writeRef(r, v, vm.chunk != nil && vm.chunk.Strict); err != nil {
@@ -131,7 +149,7 @@ func (vm *VM) opGlobalSet(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 }
 
 func (vm *VM) opGlobalUnset(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	uname := consts[in.C].StringVal()
+	uname := vm.staticKeyRemap(consts[in.C].StringVal())
 	if cur, ok := vm.globals[uname]; ok {
 		// unset() незавершённого генератора/файбера закрывает его (finally)
 		// до удаления: компилятор не делает отдельной загрузки значения для
@@ -267,7 +285,7 @@ func (vm *VM) opGlobalSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 }
 
 func (vm *VM) opGlobalIsset(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	_, ok := vm.globals[consts[in.C].StringVal()]
+	_, ok := vm.globals[vm.staticKeyRemap(consts[in.C].StringVal())]
 	{
 		old := regs[in.A]
 		wv := MakeBool(ok)
@@ -281,7 +299,7 @@ func (vm *VM) opGlobalIsset(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 }
 
 func (vm *VM) opGlobalAppend(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	name := consts[in.C].StringVal()
+	name := vm.staticKeyRemap(consts[in.C].StringVal())
 	v := deref(vm.globals[name])
 	if v.typ == ObjectType {
 		// ArrayAccess: $obj[] = $v -> offsetSet(null, $v).
@@ -610,7 +628,7 @@ func (vm *VM) opRefEnsure(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 }
 
 func (vm *VM) opGlobalRefGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
-	if v, ok := vm.globals[consts[in.C].StringVal()]; ok {
+	if v, ok := vm.globals[vm.staticKeyRemap(consts[in.C].StringVal())]; ok {
 		r := deref(v)
 		{
 			old := regs[in.A]
@@ -638,7 +656,7 @@ func (vm *VM) opGlobalRefSet(regs []Slot, consts []Slot, chunk *Chunk, in Instru
 	if vm.globals == nil {
 		vm.globals = map[string]Slot{}
 	}
-	key := consts[in.C].StringVal()
+	key := vm.staticKeyRemap(consts[in.C].StringVal())
 	if v, ok := vm.globals[key]; ok && v.typ == RefType {
 		if r := v.Ref(); r != nil {
 			if err := vm.writeRef(r, regs[in.A], vm.chunk != nil && vm.chunk.Strict); err != nil {
@@ -664,7 +682,7 @@ func (vm *VM) opGlobalRefAddr(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if vm.globals == nil {
 		vm.globals = map[string]Slot{}
 	}
-	key := consts[in.C].StringVal()
+	key := vm.staticKeyRemap(consts[in.C].StringVal())
 	v, ok := vm.globals[key]
 	if !ok {
 		v = MakeNull()
@@ -688,7 +706,7 @@ func (vm *VM) opGlobalRefBind(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if vm.globals == nil {
 		vm.globals = map[string]Slot{}
 	}
-	key := consts[in.C].StringVal()
+	key := vm.staticKeyRemap(consts[in.C].StringVal())
 	if old, ok := vm.globals[key]; ok {
 		vm.noteDropped(old)
 	}

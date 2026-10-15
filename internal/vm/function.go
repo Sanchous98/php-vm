@@ -1,5 +1,7 @@
 package vm
 
+import "strconv"
+
 // Function — вызываемая сущность. Может быть:
 //   - байткод-функцией (Executable = *CompiledFunction),
 //   - нативной Go-функцией (Executable = *NativeFunction),
@@ -96,9 +98,55 @@ type Function struct {
 	// var_dump/ReflectionFunction::getStaticVariables (gh8083).
 	StaticNames []string
 	StaticKeys  []string
+	// StaticCopyKeys — ключи ячеек для копии метода (trait-миксин, `as`):
+	// PHP хранит статические переменные каждой копии отдельно, поэтому
+	// копия получает собственные ячейки, а StaticRemap перенаправляет
+	// константные ключи инструкций чанка (они остаются исходными).
+	StaticCopyKeys []string
+	StaticRemap    map[string]string
 	// StaticDefaults — значения статических переменных по умолчанию (Zend
 	// хранит их в static_variables и печатает var_dump замыкания).
 	StaticDefaults []Slot
+}
+
+// StaticKeyAt возвращает ключ ячейки i-й статической переменной функции:
+// у копий методов (trait-миксин, `as`) он собственный (StaticCopyKeys), а
+// константные ключи инструкций чанка перенаправляет StaticRemap.
+func (f *Function) StaticKeyAt(i int) string {
+	if f == nil {
+		return ""
+	}
+	if f.StaticCopyKeys != nil && i < len(f.StaticCopyKeys) {
+		return f.StaticCopyKeys[i]
+	}
+	if i < len(f.StaticKeys) {
+		return f.StaticKeys[i]
+	}
+	return ""
+}
+
+// staticCopySeq нумерует копии методов для уникальных ключей статических ячеек.
+var staticCopySeq uint64
+
+// RebindStaticKeys выдаёт копии функции собственные ячейки статических
+// переменных: PHP 8.3 хранит статические переменные трейт-метода отдельно для
+// каждого использующего класса и каждого псевдонима `as`, но разделяет их при
+// обычном наследовании (там копия функции не создаётся).
+func (f *Function) RebindStaticKeys() {
+	if f == nil || len(f.StaticKeys) == 0 {
+		return
+	}
+	staticCopySeq++
+	tok := "\x00copy" + strconv.FormatUint(staticCopySeq, 10)
+	if f.StaticRemap == nil {
+		f.StaticRemap = make(map[string]string, len(f.StaticKeys))
+	}
+	f.StaticCopyKeys = make([]string, len(f.StaticKeys))
+	for i, k := range f.StaticKeys {
+		nk := k + tok
+		f.StaticRemap[k] = nk
+		f.StaticCopyKeys[i] = nk
+	}
 }
 
 // HasParamCoercion сообщает, что хотя бы у одного параметра объявлен тип

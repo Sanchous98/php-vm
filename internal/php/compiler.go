@@ -3967,6 +3967,10 @@ func evalBuiltin(ctx *vm.Context) vm.Slot {
 	if file != "" && line > 0 {
 		label = fmt.Sprintf("%s(%d) : eval()'d code", file, line)
 	}
+	// Синтетический кадр eval(): в трейсе Zend печатает `#0 file(line): eval()`
+	// (bug31102) без аргументов.
+	popEvalFrame := ctx.VM().PushIncludeFrame("eval", nil)
+	defer popEvalFrame()
 	res, _ := runSubCode(ctx, src, label, true)
 	if ctx.HasThrown() {
 		return *new(vm.Slot)
@@ -4003,6 +4007,19 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	}
 	require := flags&2 != 0
 	once := flags&1 != 0
+	// Синтетический кадр конструкции include/require: Zend исполняет
+	// подключаемый файл отдельным кадром, и он виден в трейсах
+	// (bug60909_1: `#1 file(8): require()`; типовая включённая ошибка даёт
+	// `require('...')` — аргумент печатается маркером).
+	incName := "include"
+	if require {
+		incName = "require"
+	}
+	if once {
+		incName += "_once"
+	}
+	popIncludeFrame := ctx.VM().PushIncludeFrame(incName, nil)
+	defer popIncludeFrame()
 	// Имя конструкции для диагностик пользовательских фильтров
 	// ("include(): Unprocessed filter buckets remaining...").
 	readCallerName = "include"
@@ -4074,6 +4091,8 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 			if !once {
 				ctx.VM().RecordIncluded(path)
 			}
+			// Файл открыт: аргумент конструкции печатается в трейсе ('...').
+			ctx.VM().SetTopIncludeFrameArgs([]vm.Slot{vm.MakeString(path)})
 			res, returned := runSubCode(ctx, string(data), path, false)
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
@@ -4119,6 +4138,7 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	if !once {
 		ctx.VM().RecordIncluded(path)
 	}
+	ctx.VM().SetTopIncludeFrameArgs([]vm.Slot{vm.MakeString(path)})
 	res, returned := runSubCode(ctx, string(data), path, false)
 	if ctx.HasThrown() {
 		return *new(vm.Slot)
@@ -9010,6 +9030,11 @@ func (c *compiler) checkReservedRelativeTypeName(t string) error {
 			}
 			seg := a[strings.LastIndex(a, "\\")+1:]
 			if reservedTypeNames[strings.ToLower(seg)] {
+				// `\self` (ведущий слэш + чисто относительное имя) — отдельная
+				// диагностика Zend («is an invalid class name»).
+				if strings.HasPrefix(a, "\\") && strings.Count(a, "\\") == 1 {
+					return c.newFatal("'" + a + "' is an invalid class name")
+				}
 				return c.newFatal("Cannot use '" + a + "' as class name as it is reserved")
 			}
 		}
@@ -13944,6 +13969,25 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		// читается в write-режиме через эту ссылку (gh12102_2).
 		if call, ok := ix.Arr.(*CallExpr); ok && c.refReturningFunc(call.Name) {
 			arr, err := c.expr(call)
+			if err != nil {
+				return 0, nil, err
+			}
+			k, err := c.expr(ix.Key)
+			if err != nil {
+				return 0, nil, err
+			}
+			cell := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRef, A: cell, B: arr, C: int32(k)})
+			return cell, nil, nil
+		}
+		// Вызов метода/статический вызов: by-ref-ность результата известна
+		// только в рантайме. Zend передаёт элемент в ячейку-ссылку: если метод
+		// вернул значение (не ссылку), запись уходит в временный массив
+		// без диагностики (bug52614: `$foo->f7($foo->f6()[0])` записывает
+		// через ссылку, `$foo->f1()[0]++` — в копию).
+		switch ix.Arr.(type) {
+		case *MethodCallExpr, *StaticCallExpr, *DynCallExpr:
+			arr, err := c.expr(ix.Arr)
 			if err != nil {
 				return 0, nil, err
 			}

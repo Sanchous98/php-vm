@@ -1760,6 +1760,9 @@ type callEntry struct {
 	// this — получатель вызова метода (заполняется только для методов
 	// объектов, см. setTopThis); нужен debug_backtrace() ("object").
 	this Slot
+	// isIncludeFrame — синтетический кадр конструкции include/require/eval
+	// (в трейсе печатается как `file(line): require()`, bug60909_1).
+	isIncludeFrame bool
 }
 
 // internFile возвращает стабильный id для имени файла. Вызывается в местах
@@ -1800,13 +1803,14 @@ func (vm *VM) info(e *callEntry) callFrameInfo {
 		file = vm.fileNames[e.fileID]
 	}
 	return callFrameInfo{
-		callee:     e.callee,
-		callerFile: file,
-		callerLine: line,
-		objMethod:  e.callerPC&objMethodBit != 0,
-		args:       e.args,
-		named:      e.named,
-		this:       e.this,
+		callee:       e.callee,
+		callerFile:   file,
+		callerLine:   line,
+		objMethod:    e.callerPC&objMethodBit != 0,
+		args:         e.args,
+		named:        e.named,
+		this:         e.this,
+		includeFrame: e.isIncludeFrame,
 	}
 }
 
@@ -1938,6 +1942,34 @@ func (vm *VM) PushInternalMethodFrame(ci ClassInfo, name string, args []Slot) fu
 	vm.pushCallAt(fn, "[internal function]", nil, 0, 0, args)
 	vm.markTopObjMethod()
 	return vm.popCall
+}
+
+// PushIncludeFrame добавляет синтетический кадр конструкции include/require/eval
+// (Zend исполняет подключаемый файл отдельным кадром: в трейсе видно
+// `#N file(line): require()`, bug60909_1/bug31102). Место вызова — текущая
+// инструкция вызывающего кода. Возвращает функцию снятия кадра.
+func (vm *VM) PushIncludeFrame(name string, args []Slot) func() {
+	if len(vm.callStack) >= maxFrames {
+		return func() {}
+	}
+	fn := includeFrameFn(name)
+	file, line, ok := vm.currentLoc()
+	if !ok {
+		file, line = vm.curFile, vm.curLine
+	}
+	vm.pushCallAt(fn, file, nil, 0, line, args)
+	vm.callStack[len(vm.callStack)-1].isIncludeFrame = true
+	return vm.popCall
+}
+
+// SetTopIncludeFrameArgs заполняет аргументы верхнего синтетического кадра
+// include/require (см. PushIncludeFrame): в трейсе Zend печатает их маркером
+// `('...')`, пока включённый файл реально исполняется (weak_include_strict).
+func (vm *VM) SetTopIncludeFrameArgs(args []Slot) {
+	if len(vm.callStack) == 0 {
+		return
+	}
+	vm.callStack[len(vm.callStack)-1].args = args
 }
 
 func (vm *VM) popCall() {
@@ -2382,9 +2414,15 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 			continue
 		}
 		if fr.includeFrame {
-			// Zend печатает аргумент конструкции include как усечённый
-			// маркер: `require('...')`.
-			fmt.Fprintf(&b, "#%d %s(%d): %s('...')\n", len(frames)-1-i, cf, fr.callerLine, name)
+			// Zend печатает синтетический кадр конструкции: с аргументом —
+			// маркером (`#1 file(6): require('...')`, weak_include_strict), без
+			// аргумента — пустыми скобками (`#0 file(5): eval()`, bug31102;
+			// `#1 file(8): require()`, bug60909_1).
+			if len(fr.args) > 0 && !ignoreArgs {
+				fmt.Fprintf(&b, "#%d %s(%d): %s('...')\n", len(frames)-1-i, cf, fr.callerLine, name)
+			} else {
+				fmt.Fprintf(&b, "#%d %s(%d): %s()\n", len(frames)-1-i, cf, fr.callerLine, name)
+			}
 			continue
 		}
 		cl := fr.callerLine
@@ -8071,9 +8109,10 @@ func (vm *VM) callMagicMethodCalled(ci ClassInfo, called ClassInfo, recv Slot, n
 func argsArray(args []Slot) Slot {
 	a := newArray()
 	for _, s := range args {
-		// Как zend_copy_parameters_array: в $arguments магического метода
-		// значения копируются (ссылки разыменовываются).
-		_, _ = a.Append(deref(s))
+		// Ссылки сохраняются: Zend кладёт в $arguments ячейки-ссылки, и
+		// call_user_func_array('inc', $args) внутри __call пишет в исходную
+		// переменную (bug50394: int(3)).
+		_, _ = a.Append(s)
 	}
 	return MakeArray(a)
 }
@@ -8531,6 +8570,13 @@ func (vm *VM) runShutdownDestructors() {
 	// циклический мусор (gcPendingObjs) тоже уничтожается при завершении.
 	// Объекты, созданные внутри __destruct, уничтожаются следующим проходом
 	// (Zend обходит растущий objects_store; bug51822: "1\n2").
+	//
+	// Точный порядок Zend: объекты, удерживаемые таблицей глобальных
+	// переменных, освобождаются при завершении executor'а в порядке, обратном
+	// созданию; объекты, удерживаемые только статическими ячейками (свойства
+	// классов и static-переменные функций), доживают до прохода по
+	// objects_store, где деструкторы зовутся в порядке создания (t19/bug32322:
+	// class static раньше function static).
 	for pass := 0; pass < 100; pass++ {
 		all := make([]*Object, 0, len(vm.liveObjs)+len(vm.gcPendingObjs))
 		for _, o := range vm.liveObjs {
@@ -8553,9 +8599,58 @@ func (vm *VM) runShutdownDestructors() {
 		if len(all) == 0 {
 			break
 		}
-		sort.SliceStable(all, func(i, j int) bool { return all[i].objID > all[j].objID })
+		if staticHeld := vm.objectsHeldByStatics(); len(staticHeld) > 0 {
+			group := func(held bool) []*Object {
+				var out []*Object
+				for _, o := range all {
+					if staticHeld[o] == held {
+						out = append(out, o)
+					}
+				}
+				return out
+			}
+			globalsGroup := group(false)
+			staticsGroup := group(true)
+			// Глобальные — обратный порядок создания, статические — прямой.
+			sort.SliceStable(globalsGroup, func(i, j int) bool { return globalsGroup[i].objID > globalsGroup[j].objID })
+			sort.SliceStable(staticsGroup, func(i, j int) bool { return staticsGroup[i].objID < staticsGroup[j].objID })
+			all = append(globalsGroup, staticsGroup...)
+		} else {
+			sort.SliceStable(all, func(i, j int) bool { return all[i].objID > all[j].objID })
+		}
 		vm.shutdownDestructPass(all, &shutdownErrs)
 	}
+}
+
+// objectsHeldByStatics собирает объекты, на которые прямо ссылаются
+// статические ячейки: свойства классов (staticRootClasses) и static-переменные
+// функций (глобальные ключи с NUL-разделителем, см. staticKeys компилятора).
+// Такие объекты Zend уничтожает на проходе по objects_store в порядке создания.
+func (vm *VM) objectsHeldByStatics() map[*Object]bool {
+	out := map[*Object]bool{}
+	mark := func(s Slot) {
+		s = deref(s)
+		if s.typ == ObjectType {
+			if o := vm.objectOf(s); o != nil {
+				out[o] = true
+			}
+		}
+	}
+	for _, rc := range vm.staticRootClasses() {
+		for k := rc; k != nil; k = k.parent {
+			for _, s := range k.staticProps {
+				if s != nil {
+					mark(*s)
+				}
+			}
+		}
+	}
+	for k, s := range vm.globals {
+		if strings.IndexByte(k, 0) >= 0 {
+			mark(s)
+		}
+	}
+	return out
 }
 
 // shutdownDestructPass уничтожает один проход объектов (по убыванию id).

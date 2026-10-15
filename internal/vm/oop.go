@@ -663,12 +663,32 @@ func (c *runtimeClass) MethodFunction(name string) (*Function, bool) {
 }
 
 // AliasMethod регистрирует псевдоним метода (копия с новым именем).
+// Zend применяет псевдоним раньше оригинального имени, поэтому в таблице
+// методов псевдоним встаёт непосредственно перед источником (bug64239_1:
+// get_class_methods даёт [Bmethod, t2method]).
 func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) ClassInfo {
 	nf := *fn
+	orig := fn.Name
 	nf.Name = alias
 	nf.Scope = c
 	c.methods[alias] = &nf
-	appendUnique(&c.methodOrder, alias)
+	idx := -1
+	for i, n := range c.methodOrder {
+		if n == alias {
+			idx = -2
+			break
+		}
+		if idx < 0 && n == orig {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		c.methodOrder = append(c.methodOrder, "")
+		copy(c.methodOrder[idx+1:], c.methodOrder[idx:])
+		c.methodOrder[idx] = alias
+	} else if idx == -1 {
+		appendUnique(&c.methodOrder, alias)
+	}
 	c.setMethodVis(alias, vis)
 	return c
 }

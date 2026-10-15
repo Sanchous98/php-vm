@@ -1388,6 +1388,38 @@ func callableReason(ctx *vm.Context, cb vm.Slot) string {
 			if ci == nil {
 				return "first array member is not a valid class name or object"
 			}
+			// [obj, "self::m"/"parent::m"/"static::m"]: класс-префикс
+			// разрешается относительно класса объекта, диагностики называют
+			// разрешённый класс и имя без префикса (bug48770_2/3).
+			if i := strings.Index(mname, "::"); i >= 0 {
+				checkCI, checkM := ci, mname
+				switch strings.ToLower(strings.TrimLeft(mname[:i], "\\")) {
+				case "self", "static":
+					checkM = mname[i+2:]
+				case "parent":
+					checkM = mname[i+2:]
+					if p := ci.Parent(); p != nil {
+						checkCI = p
+					}
+				}
+				if checkM != mname {
+					if ctx.VMInstance().MethodIsAbstract(checkCI, checkM) {
+						return "cannot call abstract method " + checkCI.Name() + "::" + checkM + "()"
+					}
+					if recvCI != nil && !recvCI.IsA(checkCI) {
+						return fmt.Sprintf("class %s is not a subclass of %s", cn, checkCI.Name())
+					}
+					if !ctx.VMInstance().ClassHasMethod(checkCI, checkM) {
+						return fmt.Sprintf("class %s does not have a method %q", checkCI.Name(), checkM)
+					}
+					if r := methodAccessReason(ctx, checkCI, checkM); r != "" {
+						if !ctx.VMInstance().ClassHasMethod(ci, "__call") {
+							return r
+						}
+					}
+					return ""
+				}
+			}
 			if !ctx.VMInstance().ClassHasMethod(ci, mname) {
 				return fmt.Sprintf("class %s does not have a method %q", cn, mname)
 			}

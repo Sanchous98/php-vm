@@ -786,6 +786,25 @@ func constExprConstantFn(ctx *vm.Context) vm.Value {
 	if v, ok := reflectClassConst(ctx, name); ok {
 		return v
 	}
+	// Неквалифицированное имя в константном выражении: глобальный fallback
+	// (PHP: `const C = E_ERROR;` внутри namespace находит глобальную E_ERROR).
+	if fb := strings.TrimPrefix(arg(ctx, 1).ToString(), "\\"); fb != "" && fb != name {
+		if v, ok := ctx.VMInstance().Const(fb); ok {
+			return v
+		}
+		if cv, ok := constValue(fb); ok {
+			return cv.Slot()
+		}
+		if v, ok := stdStreamConst(fb, ctx.VM()); ok {
+			return v
+		}
+		if v, ok := stdConst(fb); ok {
+			return v
+		}
+		if v, ok := reflectClassConst(ctx, fb); ok {
+			return v
+		}
+	}
 	ctx.Throw(vm.NewThrowable("Error", "Undefined constant \""+name+"\""))
 	if ctx.HasThrown() {
 		return *new(vm.Value)

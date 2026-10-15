@@ -10,6 +10,8 @@ package vm
 // так избегаем дублирования логики между пакетами.
 
 import (
+	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -261,7 +263,10 @@ func registerDateTimeMembers(owner ClassInfo, ci *runtimeClass, immutable bool) 
 			if d == nil {
 				return MakeNull(), nil
 			}
-			t, name, loc := parseDateTimeArgs(ctx.vm, args)
+			t, name, loc, perr := parseDateTimeArgs(ctx.vm, args)
+			if perr != nil {
+				return Slot{}, perr
+			}
 			d.t, d.loc, d.name = t, loc, name
 			return MakeNull(), nil
 		},
@@ -506,7 +511,7 @@ func (vm *VM) zoneArg(args []Slot, i int) *dateTimeZoneData {
 
 // --- Конструктор DateTime: разбор аргументов ---
 
-func parseDateTimeArgs(vm *VM, args []Slot) (time.Time, string, *time.Location) {
+func parseDateTimeArgs(vm *VM, args []Slot) (time.Time, string, *time.Location, error) {
 	loc, name := defaultLocation, defaultLocationName
 	if len(args) > 1 {
 		if z := vm.zoneArg(args, 1); z != nil {
@@ -523,13 +528,45 @@ func parseDateTimeArgs(vm *VM, args []Slot) (time.Time, string, *time.Location) 
 	}
 	if strings.HasPrefix(s, "@") {
 		if n, err := strconv.ParseInt(s[1:], 10, 64); err == nil {
-			return time.Unix(n, 0).UTC(), "+00:00", time.UTC
+			return time.Unix(n, 0).UTC(), "+00:00", time.UTC, nil
 		}
 	}
-	if t, ok := parseDateString(s, time.Now().In(loc), loc); ok {
-		return t, name, loc
+	if msg, bad := isoDateRangeError(s); bad {
+		return time.Time{}, name, loc, NewThrowable("Exception", msg)
 	}
-	return time.Now().In(loc), name, loc
+	if t, ok := parseDateString(s, time.Now().In(loc), loc); ok {
+		return t, name, loc, nil
+	}
+	return time.Now().In(loc), name, loc, nil
+}
+
+// isoDateRe — ISO-дата (возможно, с временем), для которой Zend проверяет
+// диапазоны месяца и дня отдельной диагностикой.
+var isoDateRe = regexp.MustCompile(`^(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?$`)
+
+// isoDateRangeError повторяет диагностику Zend для ISO-строк с месяцем > 12
+// или днём > 31 (bug54043: «Failed to parse time string (9999-11-33) at
+// position 9 (3): Unexpected character»).
+func isoDateRangeError(s string) (string, bool) {
+	m := isoDateRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	bad := false
+	pos := -1
+	if mm, err := strconv.Atoi(m[2]); err == nil && mm > 12 {
+		pos = 6
+		bad = true
+	}
+	if dd, err := strconv.Atoi(m[3]); err == nil && dd > 31 {
+		pos = 9
+		bad = true
+	}
+	if !bad || pos >= len(s) {
+		return "", false
+	}
+	return fmt.Sprintf("Failed to parse time string (%s) at position %d (%c): Unexpected character",
+		s, pos, s[pos]), true
 }
 
 // parseDateString разбирает абсолютную или относительную дату.

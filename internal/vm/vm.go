@@ -4327,6 +4327,33 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 
 		case OpConcat:
+			// Fused-путь `строка . int` и `int . int`: одна аллокация вместо
+			// двух (без промежуточной int-строки). Семантика/диагностики не
+			// меняются: обе ветки — чистые типы без __toString/warning о
+			// массиве, поэтому быстрый путь включается только для них.
+			if lb := deref(regs[in.B]); lb.num&bufBit == 0 {
+				if lb.typ == StringType {
+					if rb := deref(regs[in.C]); rb.typ == IntType {
+						old := regs[in.A]
+						wv := concatStrInt(lb.StringVal(), rb.Int())
+						regs[in.A] = wv
+						if trackedType(old.typ) || trackedType(wv.typ) {
+							vm.wRegSlow(int(in.A), old)
+						}
+						continue
+					}
+				} else if lb.typ == IntType {
+					if rb := deref(regs[in.C]); rb.typ == IntType {
+						old := regs[in.A]
+						wv := concatIntInt(lb.Int(), rb.Int())
+						regs[in.A] = wv
+						if trackedType(old.typ) || trackedType(wv.typ) {
+							vm.wRegSlow(int(in.A), old)
+						}
+						continue
+					}
+				}
+			}
 			ls, lerr := vm.stringify(regs[in.B])
 			if lerr != nil {
 				if !vm.handleThrow(chunk, lerr) {
@@ -4364,7 +4391,20 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 
 		case OpConcatApp:
-			// `.=` : A = B . C с накоплением в буфере B.
+			// `.=` : A = B . C с накоплением в буфере B. Быстрый путь
+			// `строка .= int`: цифры форматируются прямо в буфер (без
+			// промежуточной int-строки).
+			if lb := deref(regs[in.B]); lb.typ == StringType {
+				if rb := deref(regs[in.C]); rb.typ == IntType {
+					old := regs[in.A]
+					wv := appendStrBufInt(lb, lb.StringVal(), rb.Int())
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+					continue
+				}
+			}
 			ls, lerr := vm.stringify(regs[in.B])
 			if lerr != nil {
 				if !vm.handleThrow(chunk, lerr) {
@@ -4402,23 +4442,39 @@ func (vm *VM) exec(chunk *Chunk) error {
 			total := 0
 			bad := false
 			for i := 0; i < n; i++ {
-				ps, perr := vm.stringify(regs[base+i])
-				if perr != nil {
-					if !vm.handleThrow(chunk, perr) {
-						return perr
+				// string/int-части не материализуются в промежуточную строку:
+				// сначала измеряем, затем concatNResultSlots форматирует их
+				// прямо в результирующий буфер. Прочие приводятся к строке
+				// здесь (с сохранением порядка диагностик/__toString).
+				pv := deref(regs[base+i])
+				switch pv.typ {
+				case StringType:
+					parts[i] = pv.StringVal()
+					total += len(parts[i])
+				case IntType:
+					total += intDigits(pv.Int())
+				default:
+					ps, perr := vm.stringify(regs[base+i])
+					if perr != nil {
+						if !vm.handleThrow(chunk, perr) {
+							return perr
+						}
+						bad = true
+					} else {
+						parts[i] = ps
+						total += len(ps)
 					}
-					bad = true
+				}
+				if bad {
 					break
 				}
-				parts[i] = ps
-				total += len(ps)
 			}
 			if bad {
 				continue
 			}
 			{
 				old := regs[in.A]
-				wv := concatNResult(parts, total)
+				wv := concatNResultSlots(parts, regs[base:base+n], total)
 				regs[in.A] = wv
 				if trackedType(old.typ) || trackedType(wv.typ) {
 					vm.wRegSlow(int(in.A), old)

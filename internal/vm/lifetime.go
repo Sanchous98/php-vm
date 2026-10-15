@@ -2176,16 +2176,6 @@ func (vm *VM) destroyObject(o *Object) error {
 			d.target = MakeNull()
 		}
 	}
-	// SensitiveParameterValue держит значение в Go-поле: при уничтожении
-	// обёртки ссылка освобождается (иначе объект-значение переживает
-	// unset($v) — sensitive_parameter_value_keeps_object_alive).
-	if o.ClassName() == "SensitiveParameterValue" {
-		if d := objectAs[sensitiveValueData](o, o.class); d != nil {
-			inner := d.value
-			d.value = Slot{}
-			vm.noteDropped(inner)
-		}
-	}
 	ci := o.class
 	vm.destroying++
 	err := vm.runObjectDestructor(o, ci)

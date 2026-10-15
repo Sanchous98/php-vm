@@ -4500,8 +4500,9 @@ func (p *Parser) assertArgText(start int) string {
 // копирует исходные пробелы. Убираем общий минимальный отступ последующих
 // строк (typed_class_constants_ast_print).
 func normalizeAssertArgText(s string) string {
+	s = finalizeAssertText(s)
 	if !strings.Contains(s, "\n") {
-		return stripAssertArrowParens(s)
+		return s
 	}
 	lines := strings.Split(s, "\n")
 	min := -1
@@ -4526,7 +4527,18 @@ func normalizeAssertArgText(s string) string {
 		}
 		lines[i] = ln[j:]
 	}
-	return stripAssertArrowParens(strings.Join(lines, "\n"))
+	return strings.Join(lines, "\n")
+}
+
+// finalizeAssertText приводит текст assert() к виду zend_ast_export:
+// убирает скобки вокруг напрямую вызываемой анонимной функции, нормализует
+// пробелы вариативных параметров и добавляет `()` к `new <класс>` без
+// аргументов.
+func finalizeAssertText(s string) string {
+	s = stripAssertArrowParens(s)
+	s = normalizeAssertVariadic(s)
+	s = addNewParens(s)
+	return s
 }
 
 // stripAssertArrowParens убирает скобки вокруг стрелочной функции в начале
@@ -4538,7 +4550,8 @@ func stripAssertArrowParens(s string) string {
 		return s
 	}
 	inner := strings.TrimPrefix(s, "(")
-	if !strings.HasPrefix(inner, "fn") && !strings.HasPrefix(inner, "static fn") {
+	if !strings.HasPrefix(inner, "fn") && !strings.HasPrefix(inner, "static fn") &&
+		!strings.HasPrefix(inner, "function") && !strings.HasPrefix(inner, "static function") {
 		return s
 	}
 	depth := 0
@@ -4563,10 +4576,15 @@ func stripAssertArrowParens(s string) string {
 		case ')':
 			if depth == 0 {
 				rest := inner[i+1:]
-				if strings.HasPrefix(strings.TrimSpace(rest), "&&") ||
-					strings.HasPrefix(strings.TrimSpace(rest), "||") ||
-					strings.HasPrefix(strings.TrimSpace(rest), "and ") ||
-					strings.HasPrefix(strings.TrimSpace(rest), "or ") {
+				trimmed := strings.TrimSpace(rest)
+				if strings.HasPrefix(trimmed, "&&") ||
+					strings.HasPrefix(trimmed, "||") ||
+					strings.HasPrefix(trimmed, "and ") ||
+					strings.HasPrefix(trimmed, "or ") ||
+					// Прямой вызов анонимной функции: Zend печатает
+					// `(function () {...})()` как `function () {...}()`
+					// (match/009_ast_export, arrow_functions/007).
+					strings.HasPrefix(trimmed, "(") {
 					return inner[:i] + rest
 				}
 				return s
@@ -4579,6 +4597,130 @@ func stripAssertArrowParens(s string) string {
 		}
 	}
 	return s
+}
+
+// stripAssertStrings обходит текст assert(), пропуская содержимое строковых
+// литералов: подстановки (пробелы вариативных параметров, скобки new) не должны
+// трогать текст внутри строк.
+func stripAssertStrings(s string, fn func(seg string, quoted bool) string) string {
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != '\'' && c != '"' {
+			j := i
+			for j < len(s) && s[j] != '\'' && s[j] != '"' {
+				j++
+			}
+			b.WriteString(fn(s[i:j], false))
+			i = j
+			continue
+		}
+		quote := c
+		j := i + 1
+		for j < len(s) {
+			if s[j] == '\\' {
+				j += 2
+				continue
+			}
+			if s[j] == quote {
+				j++
+				break
+			}
+			j++
+		}
+		b.WriteString(fn(s[i:j], true))
+		i = j
+	}
+	return b.String()
+}
+
+// normalizeAssertVariadic приводит пробелы вокруг `...` в объявлениях
+// вариативных параметров к формату Zend (`int... $x` → `int ...$x`).
+func normalizeAssertVariadic(s string) string {
+	return stripAssertStrings(s, func(seg string, quoted bool) string {
+		if quoted || !strings.Contains(seg, "...") {
+			return seg
+		}
+		var b strings.Builder
+		for i := 0; i < len(seg); {
+			if strings.HasPrefix(seg[i:], "...") {
+				if b.Len() > 0 {
+					last := b.String()[b.Len()-1]
+					if last != ' ' && last != '\t' && last != '(' && last != ',' {
+						b.WriteByte(' ')
+					}
+				}
+				b.WriteString("...")
+				i += 3
+				for i < len(seg) && (seg[i] == ' ' || seg[i] == '\t') {
+					i++
+				}
+				continue
+			}
+			b.WriteByte(seg[i])
+			i++
+		}
+		return b.String()
+	})
+}
+
+// addNewParens добавляет пустые скобки к `new <класс>` без аргументов: Zend
+// печатает `new \stdClass` как `new \stdClass()` (bug70528). Анонимный класс
+// (`new class {...}`) и вызов с аргументами не трогаются.
+func addNewParens(s string) string {
+	return stripAssertStrings(s, func(seg string, quoted bool) string {
+		if quoted || !strings.Contains(seg, "new") {
+			return seg
+		}
+		var b strings.Builder
+		isIdent := func(c byte) bool {
+			return c == '_' || c == '\\' || c == '$' ||
+				(c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+		}
+		for i := 0; i < len(seg); {
+			if strings.HasPrefix(seg[i:], "new") &&
+				(i == 0 || !isIdent(seg[i-1])) &&
+				(i+3 >= len(seg) || !isIdent(seg[i+3])) {
+				j := i + 3
+				for j < len(seg) && (seg[j] == ' ' || seg[j] == '\t') {
+					j++
+				}
+				nameEnd := j
+				for nameEnd < len(seg) && isIdent(seg[nameEnd]) {
+					nameEnd++
+				}
+				if nameEnd == j {
+					b.WriteByte(seg[i])
+					i++
+					continue
+				}
+				name := seg[j:nameEnd]
+				if name == "class" {
+					b.WriteString(seg[i:nameEnd])
+					i = nameEnd
+					continue
+				}
+				k := nameEnd
+				for k < len(seg) && (seg[k] == ' ' || seg[k] == '\t') {
+					k++
+				}
+				// Класс с `::` (new Foo::$bar) или с аргументами не трогаем.
+				if k < len(seg) && (seg[k] == '(' || seg[k] == ':' || seg[k] == '{' || seg[k] == '[') {
+					b.WriteString(seg[i : nameEnd+1])
+					i = nameEnd
+					continue
+				}
+				b.WriteString(seg[i:nameEnd])
+				b.WriteString("()")
+				i = nameEnd
+				continue
+			}
+			b.WriteByte(seg[i])
+			i++
+		}
+		return b.String()
+	})
 }
 
 // qualifyDecl добавляет текущее пространство имён к имени объявления функции.
@@ -4611,7 +4753,20 @@ func (p *Parser) nameRefExpr() (Expr, error) {
 			return nil, err
 		}
 		if raw == "eval" {
-			return &CallExpr{Name: "eval", Args: args}, nil
+			ce := &CallExpr{Name: "eval", Args: args, NameLine: p.lineAt(pos)}
+			// Zend привязывает кадр eval() к строке ПЕРВОГО СОДЕРЖИМОГО
+			// heredoc-аргумента (строка после `<<<EOT`), а не к строке вызова
+			// (sensitive_parameter_eval_call).
+			if len(args) > 0 && argStart < len(p.src) && strings.HasPrefix(strings.TrimSpace(p.src[argStart:min(len(p.src), argStart+8)]), "<<<") {
+				ce.NameLine = p.lineAt(argStart) + 1
+			}
+			if p.exprLines == nil {
+				p.exprLines = map[Expr]int{}
+			}
+			if _, ok := p.exprLines[ce]; !ok {
+				p.exprLines[ce] = ce.NameLine
+			}
+			return ce, nil
 		}
 		fq, fb := p.resolveFuncName(raw)
 		ce := &CallExpr{Name: fq, Fallback: fb, Args: args, NameLine: p.lineAt(pos)}

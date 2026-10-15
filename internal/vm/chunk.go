@@ -157,6 +157,13 @@ type Chunk struct {
 	// переменных на конец компиляции): регистры >= tempLo освобождаются в
 	// точке OpSweep как темпы оператора (Zend FREE по концу оператора).
 	tempLo uint8
+	// sweepKeep — предвычисленная на чанк маска «keep» для dropStmtTemps:
+	// биты регистров, которые НЕ являются временными оператора (именованные
+	// переменные + блок ниже tempLo), для слов от tempLo/64. sweepSet=false —
+	// маска не построена (ручные чанки без AllocateRegisters), dropStmtTemps
+	// считает её на месте.
+	sweepKeep [liveMaskStride]uint64
+	sweepSet  bool
 	// userVarRegs — подмножество varRegs: только настоящие пользовательские
 	// переменные (без внутренних времён вида "\x00iter..."). Нужна для
 	// освобождения временных операндов при раскрутке непойманного исключения
@@ -237,6 +244,25 @@ func (c *Chunk) SetLocalVars(m map[string]int) { c.localVars = m }
 // читается (Zend держит переменную до перезаписи/unset).
 // SetTempLo фиксирует первый временный регистр чанка.
 func (c *Chunk) SetTempLo(lo uint8) { c.tempLo = lo }
+
+// buildSweepMask предвычисляет маску keep для dropStmtTemps (см. sweepKeep).
+// Вызывается после финализации varRegs/tempLo (конец AllocateRegisters).
+func (c *Chunk) buildSweepMask() {
+	lo := int(c.tempLo)
+	nwords := (c.numRegs + 63) / 64
+	if nwords > liveMaskStride {
+		nwords = liveMaskStride
+	}
+	loWord := lo / 64
+	for w := loWord; w < nwords; w++ {
+		keep := c.varRegs[w]
+		if w == loWord && lo%64 != 0 {
+			keep |= (uint64(1) << uint(lo%64)) - 1
+		}
+		c.sweepKeep[w] = keep
+	}
+	c.sweepSet = true
+}
 
 func (c *Chunk) SetVarRegs(vars, refs map[string]uint8) {
 	for _, r := range vars {
@@ -354,7 +380,8 @@ type icEntry struct {
 	propState  uint8     // icEmpty / icMono / icDisabled
 	propClass  ClassInfo // класс объекта — guard
 	propScope  ClassInfo // область видимости — guard (vm.ctx.self)
-	propName   string    // имя свойства — guard
+	propName   string    // имя свойства — guard (для Dyn-опкодов)
+	propNameC  int32     // индекс константы имени (-1 — имя из регистра)
 	propPd     *propDecl // метаданные (nil — не объявлено)
 	propDecl   ClassInfo // класс объявления
 	propKey    string    // ключ хранения (манглированный для private)

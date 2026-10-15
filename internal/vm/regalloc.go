@@ -76,6 +76,7 @@ func (c *Chunk) AllocateRegisters(pinned int, env *RegAllocEnv) bool {
 			c.liveMasks = m
 			c.liveStride = liveMaskStride
 		}
+		c.buildSweepMask()
 		return false
 	}
 	c.code = newCode
@@ -114,6 +115,7 @@ func (c *Chunk) AllocateRegisters(pinned int, env *RegAllocEnv) bool {
 	if len(newLines) == len(newCode) {
 		c.lines = newLines
 	}
+	c.buildSweepMask()
 	return true
 }
 

@@ -8553,9 +8553,11 @@ func (vm *VM) icAt(chunk *Chunk) *icEntry {
 
 // icProp резолвит объявленное свойство для инструкции с per-pc IC: повторные
 // исполнения (горячие циклы) не обходят иерархию классов и не ищут слот.
-func (vm *VM) icProp(ci ClassInfo, name string, chunk *Chunk) (*propDecl, ClassInfo, string, int, bool) {
+func (vm *VM) icProp(ci ClassInfo, name string, nameC int32, chunk *Chunk) (*propDecl, ClassInfo, string, int, bool) {
 	ic := vm.icAt(chunk)
-	if ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propName == name && ic.propScope == vm.ctx.self {
+	if ic != nil && ic.propState == icMono && ic.propClass == ci &&
+		((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == name)) &&
+		ic.propScope == vm.ctx.self {
 		return ic.propPd, ic.propDecl, ic.propKey, ic.propIdx, ic.propOk
 	}
 	pd, decl, key, idx, ok := vm.scopedSlot(ci, name)
@@ -8576,7 +8578,7 @@ func (vm *VM) icProp(ci ClassInfo, name string, chunk *Chunk) (*propDecl, ClassI
 		case icDisabled:
 			return pd, decl, key, idx, ok
 		}
-		ic.propClass, ic.propScope, ic.propName = ci, vm.ctx.self, name
+		ic.propClass, ic.propScope, ic.propName, ic.propNameC = ci, vm.ctx.self, name, nameC
 		ic.propPd, ic.propDecl, ic.propKey, ic.propIdx, ic.propOk = pd, decl, key, idx, ok
 		ic.propAccess = true
 		if ok && pd != nil && pd.vis != Public && vm.propAccessErr(pd, decl, name) != nil {

@@ -1519,10 +1519,26 @@ func (vm *VM) propModifyNonObjectErr(recv Slot, name string) *Throwable {
 // даёт Error «Attempt to modify property ...» ещё до вычисления правой части
 // (bug75241). Возвращает приёмник.
 func (vm *VM) PropWriteCheck(o Slot, name string) (Slot, error) {
-	if vm.classInfo(o) != nil {
-		return o, nil
+	ci := vm.classInfo(o)
+	if ci == nil {
+		return Slot{}, vm.propModifyNonObjectErr(o, name)
 	}
-	return Slot{}, vm.propModifyNonObjectErr(o, name)
+	// `$obj->prop =& $x` для overloaded-свойства из __get без ссылки: Zend
+	// вызывает __get (его диагностики — раньше), затем печатает Notice о
+	// косвенной модификации (кроме случая, когда __get вернул объект) и
+	// бросает Error (bug69732/bug70083). Проверка идёт до вычисления RHS,
+	// поэтому Notice о не-переменной не появляется.
+	if overloaded, byRef := vm.propRefOverloaded(ci, o, name, true); overloaded && !byRef {
+		res, gerr := vm.magicGetValue(ci, o, name)
+		if gerr != nil {
+			return Slot{}, gerr
+		}
+		if r := deref(res); r.typ != ObjectType {
+			vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + name + " has no effect")
+		}
+		return Slot{}, NewThrowable("Error", "Cannot assign by reference to overloaded object")
+	}
+	return o, nil
 }
 
 // propWriteNonObjectErr — Error при записи свойства в не-объект.

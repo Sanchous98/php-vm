@@ -722,9 +722,15 @@ func (p *Parser) enter() error {
 
 func (p *Parser) leave() { p.depth-- }
 
+// purePHPSource — текущий разбор идёт из чистого PHP-фрагмента (eval()):
+// declare(encoding) с не-литеральным значением — компайл-фатал (bug75218).
+var purePHPSource bool
+
 func Parse(src string) (*Program, error) {
 	HaltOffset = -1
 	pendingHaltErr = nil
+	purePHPSource = true
+	defer func() { purePHPSource = false }()
 	toks, err := Lex(src)
 	if err != nil {
 		return nil, err
@@ -819,6 +825,8 @@ func checkBracketBalance(toks []Token, src string) error {
 func ParseMixed(src string) (*Program, error) {
 	HaltOffset = -1
 	pendingHaltErr = nil
+	purePHPSource = false
+	defer func() { purePHPSource = false }()
 	var shShift int64
 	src, shShift = stripShebangKeepLines(src)
 	toks, err := lexMode(src, false)
@@ -2855,10 +2863,13 @@ func (p *Parser) declareStmt() (Stmt, error) {
 			case *IntLit, *FloatLit, *StrLit, *BoolLit, *NullLit:
 				lit = true
 			}
-			// Не-литеральное значение — ошибка компиляции (в eval/include
-			// перехватываемый CompileError, bug75218); не зависит от
+			// Не-литеральное значение — ошибка компиляции; не зависит от
 			// zend.multibyte: literal-проверка идёт первой (declare_001..004).
-			if !lit {
+			// В eval (чистый PHP-исходник) это компайл-фатал Zend
+			// (перехватываемый CompileError, bug75218); в файле — рантайм,
+			// чтобы предшествующие declare(encoding=...) успели напечатать
+			// свои предупреждения (declare_001: порядок Warning…Fatal).
+			if !lit && purePHPSource {
 				return nil, &fatalError{msg: "Encoding must be a literal", line: encLine}
 			}
 			return &ExprStmt{X: &CallExpr{Name: "__php_declare_encoding", Args: []Expr{

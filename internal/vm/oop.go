@@ -1564,6 +1564,16 @@ func (vm *VM) magicGetValue(ci ClassInfo, o Slot, pname string) (Slot, error) {
 }
 
 func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
+	return vm.propRefCellMode(recv, pname, false)
+}
+
+// PropRefCellArg — ячейка свойства для передачи by-ref аргумента: у
+// overloaded-свойства из __get — временная ячейка БЕЗ Notice (bug70288).
+func (vm *VM) PropRefCellArg(recv Slot, pname string) (Slot, error) {
+	return vm.propRefCellMode(recv, pname, true)
+}
+
+func (vm *VM) propRefCellMode(recv Slot, pname string, argMode bool) (Slot, error) {
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		return MakeRef(&Ref{v: MakeNull()}), nil
@@ -1583,8 +1593,11 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 			return MakeRef(&Ref{v: deref(res)}), nil
 		}
 		// Косвенная модификация свойства из __get без ссылки: Notice и
-		// отделённая ячейка (запись через неё объект не затрагивает).
-		vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		// отделённая ячейка (запись через неё объект не затрагивает). Для
+		// by-ref аргумента Notice не печатается (bug70288).
+		if !argMode {
+			vm.Notice("Indirect modification of overloaded property " + classDisplayName(ci) + "::$" + pname + " has no effect")
+		}
 		return MakeRef(&Ref{v: deref(res)}), nil
 	}
 	if pd, decl, ok := vm.scopedProp(vm.ctx.self, ci, pname); ok && pd != nil {
@@ -1766,19 +1779,17 @@ func (vm *VM) magicGetInaccessible(ci ClassInfo, recv Slot, pname string) (Slot,
 // (Zend: unset через null — no-op, но промежуточное свойство появляется).
 func (vm *VM) UnsetPropBase(recv Slot, name string) Slot {
 	recv = deref(recv)
-	ci := vm.classInfo(recv)
-	if ci == nil {
+	if vm.classInfo(recv) == nil {
 		return MakeNull()
 	}
-	key := propKeyForScope(vm.ctx.self, ci, name)
-	if v, ok := vm.getProp(recv, key); ok {
-		if sl, isSlot := v.(Slot); isSlot {
-			return Deref(sl)
-		}
-		return valueSlot(v)
+	// Возвращаем ЯЧЕЙКУ свойства (write-fetch): последующий unset элемента
+	// массива обязан записаться в само свойство (bug33512: unset($this->Var[$k])
+	// внутри __unset). Для отсутствующего свойства ячейка создаётся (null).
+	cell, err := vm.propRefCellMode(recv, name, true)
+	if err != nil {
+		return MakeNull()
 	}
-	vm.setProp(recv, key, MakeNull())
-	return MakeNull()
+	return cell
 }
 
 // IncDecPropCheck проверяет приёмник ++/-- над свойством: не-объект даёт

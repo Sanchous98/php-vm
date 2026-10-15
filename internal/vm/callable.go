@@ -690,6 +690,14 @@ func (vm *VM) scopeIntrospectionError(name string) error {
 // вызова: лишние аргументы дают ArgumentCountError (bug72107).
 // Возвращает nil, если аргументов столько, сколько ждёт функция.
 func scopeIntrospectionArityErr(name string, n int) error {
+	// Предварительная проверка арности — только у frameless func_get_*
+	// (extract/compact/get_defined_vars арность не проверяют: Zend сразу
+	// сообщает «Cannot call ... dynamically»).
+	switch name {
+	case "func_get_args", "func_num_args", "func_get_arg":
+	default:
+		return nil
+	}
 	want := 0
 	if name == "func_get_arg" {
 		want = 1

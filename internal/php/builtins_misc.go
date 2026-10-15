@@ -2102,6 +2102,23 @@ func incDecPropBuiltin(ctx *vm.Context) vm.Value {
 	return res
 }
 
+// propRefArgBuiltin — ячейка свойства для by-ref аргумента (без Notice у
+// overloaded-свойства из __get, bug70288).
+func propRefArgBuiltin(ctx *vm.Context) vm.Value {
+	recv := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	cell, err := ctx.VM().PropRefCellArg(recv, name)
+	if err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return cell
+}
+
 // unsetPropBaseBuiltin — приёмник промежуточного звена цепочки unset()
 // (`unset($a->b->c->d)`): не-объект даёт null без диагностик (bug78644).
 func unsetPropBaseBuiltin(ctx *vm.Context) vm.Value {

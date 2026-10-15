@@ -2926,6 +2926,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_incdec_prop", incDecPropBuiltin),
 		vm.Register("__php_incdec_prop_check", incDecPropCheckBuiltin),
 		vm.Register("__php_prop_write_check", propWriteCheckBuiltin),
+		vm.Register("__php_prop_ref_arg", propRefArgBuiltin),
 		vm.Register("__php_unset_prop_base", unsetPropBaseBuiltin),
 		vm.Register("__php_incdec_ref", incDecRefBuiltin),
 		vm.Register("__php_incdec_val", incDecValBuiltin),
@@ -11025,9 +11026,10 @@ func (c *compiler) stmt(st Stmt) error {
 				var arr uint8
 				var wb func(uint8)
 				var err error
-				if pe, ok := v.Arr.(*PropExpr); ok {
+				if pe, ok := v.Arr.(*PropExpr); ok && isPropChain(pe) {
 					// `unset($a->b->c['d'])`: промежуточные свойства — через
-					// null-терпимый write-fetch (bug78644).
+					// null-терпимый write-fetch (bug78644). Для одиночного
+					// `$a->prop[k]` обычный путь с writeback (bug33512).
 					arr, err = c.exprUnsetBase(pe)
 					if err != nil {
 						return err
@@ -13352,6 +13354,20 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 		c.chunk.Emit(vm.Instruction{Op: vm.OpNewRef, A: cell, B: valReg})
 		return cell, nil, nil
 	}
+	if pe, ok := e.(*PropExpr); ok && !info.silent {
+		// Свойство как by-ref аргумент: у overloaded-свойства из __get
+		// Notice «Indirect modification» не печатается (bug70288).
+		recv, err := c.exprForWrite(pe.Recv)
+		if err != nil {
+			return 0, nil, err
+		}
+		nameReg, err := c.propNameReg(pe)
+		if err != nil {
+			return 0, nil, err
+		}
+		cell := c.emitCall("__php_prop_ref_arg", []uint8{recv, nameReg})
+		return cell, nil, nil
+	}
 	if a, ok := e.(*VarExpr); ok {
 		if (a.Name == "$GLOBALS" || a.Name == "GLOBALS") && !info.silent {
 			c.emitByRefError(info, pos)
@@ -13487,8 +13503,16 @@ func refableExpr(e Expr) bool {
 // reference» (та — для результатов пользовательских вызовов).
 func (c *compiler) refableExprC(e Expr) bool {
 	if ce, ok := e.(*CallExpr); ok {
-		if i, ok := c.idx[strings.ToLower(strings.TrimLeft(ce.Name, "\\"))]; ok && i >= 0 && i < len(c.funcs) {
-			if _, isNative := c.funcs[i].Executable.(*vm.NativeFunction); isNative {
+		// Результат специализированного опкода встроенной функции
+		// (specialFuncNames, Zend IS_TMP_VAR) по ссылке не передаётся: Zend
+		// бросает «could not be passed by reference» (bug79783), а для
+		// обычных вызовов — Notice «Only variables should be passed by
+		// reference» (by_ref_optimization: f(function_exists(...))).
+		for _, name := range []string{ce.Name, ce.Fallback} {
+			if name == "" {
+				continue
+			}
+			if specialFuncNames[strings.ToLower(strings.TrimPrefix(name, "\\"))] {
 				return false
 			}
 		}
@@ -14292,6 +14316,21 @@ func (c *compiler) propGetRW(x *PropExpr) (uint8, error) {
 // записи (`$o->p->q = ...`, `$o->p[] = ...`): свойство читается в режиме
 // OpPropGetRWInterm (инициализированное readonly допустимо), остальные
 // приёмники — как база записи.
+// isPropChain сообщает, что выражение — цепочка свойств/индексов длиной
+// больше одного звена (`$a->b->c`, `$a->b[0]->c`).
+func isPropChain(e Expr) bool {
+	switch x := e.(type) {
+	case *PropExpr:
+		switch x.Recv.(type) {
+		case *PropExpr, *IndexExpr:
+			return true
+		}
+	case *IndexExpr:
+		return isPropChain(x.Arr)
+	}
+	return false
+}
+
 // chainBaseVar находит базовую простую переменную цепочки записи
 // (`$u4->a->b[...]` -> $u4), для диагностики «Undefined variable».
 func chainBaseVar(e Expr) *VarExpr {

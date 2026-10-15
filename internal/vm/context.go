@@ -26,6 +26,13 @@ type Context struct {
 	thrown *Throwable
 }
 
+// NewContextForBench — тестовый хелпер (бенчмарки из другого пакета): контекст
+// для прямого вызова нативной функции без интерпретатора.
+func NewContextForBench(v *VM, args []Slot) *Context {
+	v.ctx = Context{vm: v, args: args}
+	return &v.ctx
+}
+
 // Arg возвращает i-й аргумент, приведённый к PHP-типу T (Int/Float/Bool/Str/
 // *Array/*Object/Slot). Диспетчер — по ТЕГУ СЛОТА (конкретный uint8), поэтому
 // any(Int(...)).(T) мономорфизируется и не аллоцирует (проверено: ~2.4 нс).

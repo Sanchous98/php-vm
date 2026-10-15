@@ -3,6 +3,7 @@ package php
 import (
 	"crypto/md5"
 	"crypto/sha1"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"hash"
@@ -525,11 +526,25 @@ func strtokScan(token string) vm.Value {
 	return vm.Bool(false)
 }
 
-func trimChars(ctx *vm.Context, name string) string {
+// byteMask — битовая маска 256 байтовых значений (4 слова вместо [256]bool).
+type byteMask [4]uint64
+
+func (m *byteMask) set(c byte)     { m[c>>6] |= 1 << (c & 63) }
+func (m byteMask) has(c byte) bool { return m[c>>6]&(1<<(c&63)) != 0 }
+
+// defaultTrimMask — дефолтный charlist trim/ltrim/rtrim: " \t\n\r\0\x0B".
+var defaultTrimMask = func() (m byteMask) {
+	for _, c := range []byte(" \t\n\r\x00\x0B") {
+		m.set(c)
+	}
+	return
+}()
+
+func trimChars(ctx *vm.Context, name string) byteMask {
 	if len(ctx.Args()) >= 2 {
 		return expandCharList(ctx, name, arg(ctx, 1).ToString())
 	}
-	return " \t\n\r\x00\x0B"
+	return defaultTrimMask
 }
 
 // slotString приводит слот к строке, вызывая __toString() у объектов.
@@ -543,21 +558,17 @@ func slotString(ctx *vm.Context, s vm.Slot) string {
 	return s.ToString()
 }
 
-// trimWith побайтово обрезает символы из cutset (в отличие от strings.Trim,
+// trimWith побайтово обрезает символы из маски (в отличие от strings.Trim,
 // который трактует cutset как UTF-8-руны — важно для байтовых наборов).
-func trimWith(s, cut string, left, right bool) string {
-	var set [256]bool
-	for i := 0; i < len(cut); i++ {
-		set[cut[i]] = true
-	}
+func trimWith(s string, mask byteMask, left, right bool) string {
 	st, en := 0, len(s)
 	if left {
-		for st < en && set[s[st]] {
+		for st < en && mask.has(s[st]) {
 			st++
 		}
 	}
 	if right {
-		for en > st && set[s[en-1]] {
+		for en > st && mask.has(s[en-1]) {
 			en--
 		}
 	}
@@ -566,14 +577,15 @@ func trimWith(s, cut string, left, right bool) string {
 
 // expandCharList разворачивает диапазоны вида "A..Z"/"0..9" в набор символов
 // ровно как php_charmask в trim/ltrim/rtrim, с диагностическими предупреждениями.
-func expandCharList(ctx *vm.Context, name, s string) string {
-	var mask [256]bool
+func expandCharList(ctx *vm.Context, name, s string) byteMask {
+	var mask byteMask
 	n := len(s)
 	for input := 0; input < n; input++ {
 		c := s[input]
 		if input+3 < n && s[input+1] == '.' && s[input+2] == '.' && s[input+3] >= c {
-			for x := c; x <= s[input+3]; x++ {
-				mask[x] = true
+			// int-цикл: диапазон до 0xFF не должен заворачиваться.
+			for x := int(c); x <= int(s[input+3]); x++ {
+				mask.set(byte(x))
 			}
 			input += 3
 		} else if input+1 < n && s[input] == '.' && s[input+1] == '.' {
@@ -588,16 +600,10 @@ func expandCharList(ctx *vm.Context, name, s string) string {
 				ctx.VM().Warning(name + "(): Invalid '..'-range")
 			}
 		} else {
-			mask[c] = true
+			mask.set(c)
 		}
 	}
-	var b []byte
-	for i := 0; i < 256; i++ {
-		if mask[i] {
-			b = append(b, byte(i))
-		}
-	}
-	return string(b)
+	return mask
 }
 
 // strstrFn — strstr()/stristr(): подстрока от первого вхождения needle.
@@ -4190,10 +4196,31 @@ func base64DecodeFn(ctx *vm.Context) vm.Value {
 	return vm.Str(out)
 }
 
+// base64Clean сообщает, что строка состоит только из символов base64-алфавита
+// и '=' (быстрый путь декодирования канонического входа).
+func base64Clean(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' ||
+			c == '+' || c == '/' || c == '=' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // phpBase64Decode повторяет php_base64_decode_impl: нестрогий режим
 // пропускает '='/мусор и декодирует сплошным потоком, строгий — отвергает
 // мусор, данные после '=' и неверный паддинг.
 func phpBase64Decode(s string, strict bool) (string, bool) {
+	// Быстрый путь: канонический вход — штатный encoding/base64 (~5× быстрее
+	// посимвольного разбора; нестрогий режим допускает мусор — тогда фолбэк).
+	if !strict && len(s)%4 == 0 && base64Clean(s) {
+		if out, err := base64.StdEncoding.DecodeString(s); err == nil {
+			return string(out), true
+		}
+	}
 	rev := func(c byte) int {
 		switch {
 		case c >= 'A' && c <= 'Z':

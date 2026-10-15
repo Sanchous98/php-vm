@@ -607,6 +607,12 @@ func constLookupTail(ctx *vm.Context, name, reportName string) vm.Value {
 			// Zend вызывает автозагрузчик (FETCH_CONSTANT); его исключения
 			// пробрасываются наружу.
 			if _, aerr := ctx.VMInstance().Autoload(nil, name[:i]); aerr != nil {
+				if vm.IsExitSignal(aerr) {
+					// Автозагрузчик завершил скрипт (exit/die): останавливаем
+					// исполнение, а не превращаем сигнал в Error (bug42798).
+					ctx.VM().RequestHalt()
+					return *new(vm.Value)
+				}
 				if th, ok := aerr.(*vm.Throwable); ok {
 					ctx.Throw(th)
 				} else {
@@ -724,6 +730,12 @@ func constExprConstantFn(ctx *vm.Context) vm.Value {
 	if i := strings.Index(name, "::"); i >= 0 {
 		if ctx.VM().ScopedClass(name[:i]) == nil {
 			if _, aerr := ctx.VMInstance().Autoload(nil, name[:i]); aerr != nil {
+				if vm.IsExitSignal(aerr) {
+					// Автозагрузчик завершил скрипт (exit/die): останавливаем
+					// исполнение, а не превращаем сигнал в Error (bug42798).
+					ctx.VM().RequestHalt()
+					return *new(vm.Value)
+				}
 				if th, ok := aerr.(*vm.Throwable); ok {
 					ctx.Throw(th)
 				} else {

@@ -3101,7 +3101,10 @@ func (vm *VM) SpreadValues(dst Slot, src Slot, argMode bool) (Slot, error) {
 // Используется встроенными функциями, которым нужно инстанциировать
 // пользовательский класс (напр. обёртки потока stream_wrapper_register).
 func (vm *VM) NewInstanceByName(name string, args []Slot) (Slot, error) {
-	ci := vm.findClass(name)
+	// Имя из `new $name` может начинаться с '\' (bug46665): Zend отбрасывает
+	// ведущие разделители при разрешении класса.
+	raw := strings.TrimLeft(name, "\\")
+	ci := vm.findClass(raw)
 	if ci == nil {
 		return Slot{}, NewThrowable("Error", "Class \""+name+"\" not found")
 	}

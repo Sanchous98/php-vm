@@ -136,7 +136,9 @@ func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction)
 			name = ci.Name()
 		}
 	case StringType:
-		name = baseSlot.ToString()
+		// Ведущие '\' отбрасываются (bug46665: new $name с '\Foo\Bar\Baz'
+		// после автозагрузки должен найти объявленный Foo\Bar\Baz).
+		name = strings.TrimLeft(baseSlot.ToString(), "\\")
 	default:
 		err := NewThrowable("Error", "Class name must be a valid object or a string")
 		if !vm.handleThrow(chunk, err) {

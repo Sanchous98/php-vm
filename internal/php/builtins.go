@@ -1560,36 +1560,9 @@ func builtins() []*vm.Function {
 	// Функции эталонного php 8.3, которые VM не реализует, но которые видны в
 	// get_defined_functions() (используются в тестах disable_functions).
 	internalFuncNames = append(internalFuncNames, referenceOnlyFuncs...)
-	// Арность и имена параметров встроенных функций из таблицы (сгенерирована
-	// из ReflectionFunction php 8.3): проверка вызова и именованные аргументы.
-	for _, f := range fs {
-		sig, ok := intrinsicArity[f.Name]
-		if !ok {
-			continue
-		}
-		if len(f.ParamNames) == 0 {
-			f.ParamNames = sig.Names
-		}
-		if f.MinArgs == 0 && sig.Required > 0 {
-			f.MinArgs = sig.Required
-		}
-		if sig.Variadic {
-			f.NativeVariadic = true
-		} else if f.MaxArgs == 0 {
-			f.MaxArgs = sig.Total
-		}
-		if f.Name == "assert" {
-			// Компилятор дописывает служебный третий аргумент (текст проверки).
-			f.MaxArgs = 3
-		}
-		f.HasNativeSig = true
-		// #[SensitiveParameter] у встроенных функций (php-src 8.3): параметр
-		// пароля у crypt/password_hash/password_verify скрывается в трейсах.
-		switch f.Name {
-		case "crypt", "password_hash", "password_verify":
-			f.SensitiveParams = []bool{true}
-		}
-	}
+	// Арность и имена параметров встроенных функций: проверка вызова и
+	// именованные аргументы.
+	applyIntrinsicSignatures(fs)
 	// assert() с одним аргументом компилируется в __php_assert1 (служебный
 	// текст проверки); в трейсах кадр должен выглядеть как assert(...).
 	for _, f := range fs {
@@ -1695,4 +1668,41 @@ func declareEncodingFn(ctx *vm.Context) vm.Value {
 	}
 	ctx.VM().Warning("Unsupported encoding [" + vm.FormatFloat(val.ToFloat()) + "]")
 	return vm.MakeNull()
+}
+
+// applyIntrinsicSignatures применяет таблицу арности/имён параметров
+// (сгенерирована из ReflectionFunction php 8.3) и типы параметров к встроенным
+// функциям. Вызывается и для internalFuncs() (iterator_to_array и пр.).
+func applyIntrinsicSignatures(fs []*vm.Function) {
+	for _, f := range fs {
+		sig, ok := intrinsicArity[f.Name]
+		if !ok {
+			continue
+		}
+		if len(f.ParamNames) == 0 {
+			f.ParamNames = sig.Names
+		}
+		if types, ok := intrinsicParamTypes[f.Name]; ok && len(f.ParamTypes) == 0 {
+			f.ParamTypes = types
+		}
+		if f.MinArgs == 0 && sig.Required > 0 {
+			f.MinArgs = sig.Required
+		}
+		if sig.Variadic {
+			f.NativeVariadic = true
+		} else if f.MaxArgs == 0 {
+			f.MaxArgs = sig.Total
+		}
+		if f.Name == "assert" {
+			// Компилятор дописывает служебный третий аргумент (текст проверки).
+			f.MaxArgs = 3
+		}
+		f.HasNativeSig = true
+		// #[SensitiveParameter] у встроенных функций (php-src 8.3): параметр
+		// пароля у crypt/password_hash/password_verify скрывается в трейсах.
+		switch f.Name {
+		case "crypt", "password_hash", "password_verify":
+			f.SensitiveParams = []bool{true}
+		}
+	}
 }

@@ -206,9 +206,9 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	registerSplArrayMembers(arrayIterator, true)
 	registerSplArraySerialize(arrayObject)
 	registerSplArraySerialize(arrayIterator)
-	registerSplListMembers(dll)
-	registerSplListMembers(stack)
-	registerSplListMembers(queue)
+	registerSplListMembers(dll, dll)
+	registerSplListMembers(stack, dll)
+	registerSplListMembers(queue, dll)
 	declareSplListConsts(dll)
 	declareSplListConsts(stack)
 	declareSplListConsts(queue)
@@ -1043,7 +1043,10 @@ func declareSplListConsts(ci *runtimeClass) {
 	ci.DefineConst("IT_MODE_KEEP", MakeInt(0))
 }
 
-func registerSplListMembers(ci *runtimeClass) {
+// registerSplListMembers регистрирует методы списка. decl — класс, в котором
+// Zend считает метод объявленным (для наследников SplStack/SplQueue это
+// SplDoublyLinkedList).
+func registerSplListMembers(ci *runtimeClass, decl *runtimeClass) {
 	ci.Method("push", &Function{Name: "push", NumArgs: 1, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
 			d := ctx.This[SplDoublyLinkedList]()
@@ -1324,6 +1327,17 @@ func registerSplListMembers(ci *runtimeClass) {
 			return MakeNull(), nil
 		},
 	}})
+	if decl != nil && decl != ci {
+		if ci.methDeclOverride == nil {
+			ci.methDeclOverride = map[string]ClassInfo{}
+		}
+		for n := range ci.methods {
+			ci.methDeclOverride[n] = decl
+		}
+		// Класс мог быть слинкован до регистрации методов (RegisterClass):
+		// заставляем перелинковать таблицу с объявившим классом.
+		ci.linked = false
+	}
 }
 
 // splListPhysicalIndex переводит позицию итератора в физический индекс с учётом

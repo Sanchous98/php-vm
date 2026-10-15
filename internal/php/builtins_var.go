@@ -1644,6 +1644,14 @@ func (st *dumpState) objID(o *vm.Object) int {
 	if id := o.ID(); id > 0 {
 		return id
 	}
+	if o.IsLazyHandle() && st.vm != nil {
+		// Материализация lazy-объекта (ReflectionParameter): Zend выдаёт
+		// хендл из общего счётчика в этот момент.
+		st.vm.MaterializeLazyObj(o)
+		if id := o.ID(); id > 0 {
+			return id
+		}
+	}
 	if id, ok := st.objIDs[o]; ok {
 		return id
 	}
@@ -1739,6 +1747,12 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			defer delete(st.closures, cl)
 		}
 		id := s.ClosureID()
+		if id == 0 && st.vm != nil {
+			// Замыкание из встроенной функции (Reflection::getClosure и т.п.)
+			// получило бы хендл при создании — печатаем следующий свободный,
+			// не занимая его (иначе поехали бы номера последующих объектов).
+			id = st.vm.PeekNextObjID() + 1
+		}
 		if id == 0 {
 			st.nextID++
 			id = st.nextID
@@ -1754,6 +1768,10 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 				if cl.Fn.Scope != nil {
 					funcName = cl.Fn.Scope.Name() + "::" + funcName
 				}
+			}
+			// Список параметров Zend печатает и для литеральных замыканий
+			// (bug75290): ["parameter"] => ["$x"] => "<required>"/"<optional>".
+			if cl.Fn != nil {
 				paramNames = cl.Fn.ParamNames
 			}
 			if cl.Fn != nil && len(cl.Fn.CaptureNames) == len(cl.Captures) {
@@ -1788,12 +1806,23 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if len(paramNames) > 0 {
 			b.WriteString(inner + `["parameter"]=>` + "\n")
 			parr := vm.NewArray()
-			for _, pn := range paramNames {
+			req := 0
+			if cl != nil && cl.Fn != nil {
+				req = cl.Fn.NumRequired
+				if req == 0 {
+					req = cl.Fn.MinArgs
+				}
+			}
+			for i, pn := range paramNames {
 				name := pn
 				if !strings.HasPrefix(name, "$") {
 					name = "$" + name
 				}
-				_ = parr.SetStr(name, vm.MakeString("<required>"))
+				kind := "<required>"
+				if i >= req {
+					kind = "<optional>"
+				}
+				_ = parr.SetStr(name, vm.MakeString(kind))
 			}
 			b.WriteString(inner)
 			dumpElem(b, vm.MakeArray(parr), indent+1, st)

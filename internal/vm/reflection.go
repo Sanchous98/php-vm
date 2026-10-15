@@ -496,6 +496,11 @@ func (vm *VM) reflNewParameter(owner Slot, index int) Slot {
 	d.kind = rkParameter
 	d.this = owner
 	d.index = index
+	// PHP 8.3: ReflectionParameter — lazy object: #N выдаётся не при создании,
+	// а при материализации (bug69802_2: ReflectionClass получает #4).
+	if o := vm.objectOf(s); o != nil {
+		vm.UnmarkObjHandle(o)
+	}
 	return s
 }
 
@@ -1107,6 +1112,13 @@ func registerReflectionMethodMembers(ci ClassInfo) {
 		d.fn = fn
 		d.decl = decl
 		d.vis = vis
+		// ReflectionMethod($closure, "__invoke") отражает обёрнутую функцию
+		// (Zend: сигнатура и параметры — от замыкания, bug69802_2).
+		if strings.EqualFold(name, "__invoke") {
+			if cl := deref(classArg).AsClosure(); cl != nil && cl.Fn != nil {
+				d.fn = cl.Fn
+			}
+		}
 		return nil
 	})
 	reflMethodReg(ci, "getName", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
@@ -1175,6 +1187,39 @@ func registerReflectionMethodMembers(ci ClassInfo) {
 		return MakeInt(int64(d.fn.NumRequired)), nil
 	})
 	registerFunctionAbstractMembers(ci, true)
+	reflMethodReg(ci, "getClosure", func(ctx *Context, d *reflectionData, args []Slot) (Slot, error) {
+		if d.fn == nil {
+			return MakeNull(), nil
+		}
+		var recv Slot
+		if len(args) > 0 {
+			recv = deref(args[0])
+		}
+		cvm := ctx.VM()
+		if !d.fn.IsStatic {
+			if recv.typ != ObjectType {
+				return Slot{}, NewThrowable("ValueError",
+					"ReflectionMethod::getClosure(): Argument #1 ($object) cannot be null for non-static methods")
+			}
+			if d.fn.Scope != nil && !cvm.slotInstanceOfClass(recv, d.fn.Scope) {
+				return Slot{}, NewThrowable("ReflectionException",
+					"Given object is not an instance of the class this method was declared in")
+			}
+		}
+		scope := d.decl
+		if scope == nil {
+			scope = d.fn.Scope
+		}
+		cl := &Closure{Fn: d.fn, Fake: true, Scope: scope, Called: scope}
+		if recv.typ == ObjectType {
+			cl.BoundThis = args[0]
+			if rci := cvm.classInfo(recv); rci != nil {
+				cl.Called = rci
+			}
+		}
+		cvm.AddProvisionalClosure(cl)
+		return MakeClosure(cl), nil
+	})
 	reflMethodRegVar(ci, "invoke", []string{"object", "args"}, func(ctx *Context, d *reflectionData, args []Slot) (Slot, error) {
 		return ctx.vm.reflInvokeMethod(d, args, false)
 	})
@@ -1349,11 +1394,42 @@ func registerReflectionFunctionMembers(ci ClassInfo) {
 	reflMethodReg(ci, "getStaticVariables", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		return MakeArray(NewArray()), nil
 	})
-	reflMethodReg(ci, "getClosure", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+	reflMethodReg(ci, "getClosure", func(ctx *Context, d *reflectionData, args []Slot) (Slot, error) {
 		if d.fn == nil {
 			return MakeNull(), nil
 		}
-		return Slot{}, NewThrowable("Error", "Cannot create closure for this function")
+		if d.kind != rkMethod {
+			// ReflectionFunction::getClosure(): fake-замыкание над функцией
+			// (статические переменные общие с функцией, bug75474). Хендл —
+			// временный: освобождается в конце оператора, если ссылок нет
+			// (bug75290/bug69802_2).
+			cl := &Closure{Fn: d.fn, Fake: true}
+			ctx.VM().AddProvisionalClosure(cl)
+			return MakeClosure(cl), nil
+		}
+		var recv Slot
+		if len(args) > 0 {
+			recv = deref(args[0])
+		}
+		cvm := ctx.VM()
+		if !d.fn.IsStatic {
+			if recv.typ != ObjectType {
+				return Slot{}, NewThrowable("ValueError",
+					"ReflectionMethod::getClosure(): Argument #1 ($object) cannot be null for non-static methods")
+			}
+			if d.fn.Scope != nil && !cvm.slotInstanceOfClass(recv, d.fn.Scope) {
+				return Slot{}, NewThrowable("ReflectionException",
+					"Given object is not an instance of the class this method was declared in")
+			}
+		}
+		cl := &Closure{Fn: d.fn, Fake: true, Scope: d.fn.Scope, Called: d.fn.Scope}
+		if recv.typ == ObjectType {
+			cl.BoundThis = args[0]
+			if rci := cvm.classInfo(recv); rci != nil {
+				cl.Called = rci
+			}
+		}
+		return MakeClosure(cl), nil
 	})
 	reflMethodReg(ci, "getClosureScopeClass", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		return MakeNull(), nil
@@ -1472,7 +1548,12 @@ func registerFunctionAbstractMembers(ci ClassInfo, isMethod bool) {
 // (для ReflectionParameter, которому нужен владелец).
 func (vm *VM) reflOwnerSlot(d *reflectionData) Slot {
 	if d.kind == rkMethod {
-		return vm.reflNewMethod(d.class, d.name, d.fn, d.decl, d.vis)
+		s := vm.reflNewMethod(d.class, d.name, d.fn, d.decl, d.vis)
+		// Владелец параметров — внутренняя копия: хендл Zend выдаёт лениво.
+		if o := vm.objectOf(s); o != nil {
+			vm.UnmarkObjHandle(o)
+		}
+		return s
 	}
 	s := vm.reflNewFunction(d.name, d.fn)
 	// Замыкание: переносим текущую область (bindTo), чтобы атрибуты
@@ -1772,6 +1853,31 @@ func registerReflectionParameterMembers(ci ClassInfo) {
 	})
 	reflMethodReg(ci, "getPosition", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		return MakeInt(int64(d.index)), nil
+	})
+	reflMethodReg(ci, "getClass", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		ctx.vm.Deprecated("Method ReflectionParameter::getClass() is deprecated")
+		fn := paramOwnerFn(d)
+		if fn == nil || d.index >= len(fn.ParamTypes) {
+			return MakeNull(), nil
+		}
+		// Zend возвращает первый класс объединения (iterator_to_array:
+		// Traversable|array -> Traversable, bug69802_2).
+		for _, alt := range strings.Split(strings.TrimPrefix(strings.TrimSpace(fn.ParamTypes[d.index]), "?"), "|") {
+			alt = strings.TrimSpace(alt)
+			if alt == "" {
+				continue
+			}
+			if strings.EqualFold(alt, "iterable") {
+				alt = "Traversable"
+			}
+			if isBuiltinTypeName(alt) {
+				continue
+			}
+			if ci2 := ctx.vm.findClass(strings.TrimLeft(alt, "\\")); ci2 != nil {
+				return ctx.vm.reflNewClass(ci2), nil
+			}
+		}
+		return MakeNull(), nil
 	})
 	reflMethodReg(ci, "isOptional", reflBool(func(d *reflectionData) bool {
 		fn := paramOwnerFn(d)

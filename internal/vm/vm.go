@@ -250,6 +250,12 @@ type VM struct {
 	// на каждом вызове функции: это давало 1 аллокацию на вызов).
 	retVal Slot
 
+	// provisionalClosures — замыкания, созданные встроенными функциями
+	// (getClosure и пр.): если к концу оператора ссылок на замыкание не
+	// осталось, его хендл возвращается в free-list (Zend освобождает
+	// временное замыкание в конце оператора; bug75290/bug69802_2).
+	provisionalClosures []*Closure
+
 	// retVerifiedDepth — глубина callStack, для которой тип возврата уже
 	// проверен в точке return (__php_verify_return, bug72347): на выходе из
 	// функции повторная проверка пропускается. 0 — проверки не было.
@@ -3367,6 +3373,9 @@ func (vm *VM) exec(chunk *Chunk) error {
 					vm.dropDeadRegs(chunk, pc)
 				}
 			}
+			if len(vm.provisionalClosures) > 0 {
+				vm.releaseProvisionalClosures()
+			}
 			if (vm.lifeCandidate && (vm.lifeUrgent || vm.handlesArmed)) ||
 				(vm.handlesArmed && vm.zeroObjs > 0) {
 				if vm.lifetimeAllowed() {
@@ -6345,6 +6354,90 @@ func (vm *VM) checkReturnType(fn *Function, res Slot) (Slot, error) {
 	}
 	th := vm.returnTypeError(name, vm.displayTypeResolved(t), kind)
 	return res, loc(th)
+}
+
+// AddProvisionalClosure регистрирует замыкание, созданное встроенной функцией,
+// как временное: если в конце оператора на него нет ссылок, хендл освободится.
+func (vm *VM) AddProvisionalClosure(cl *Closure) {
+	if cl == nil {
+		return
+	}
+	vm.markClosure(cl)
+	vm.provisionalClosures = append(vm.provisionalClosures, cl)
+}
+
+// releaseProvisionalClosures освобождает хендлы временных замыканий, на
+// которые не осталось ссылок в регистрах/глобалах/аргументах кадров.
+func (vm *VM) releaseProvisionalClosures() {
+	live := vm.provisionalClosures[:0]
+	for _, cl := range vm.provisionalClosures {
+		if cl == nil || cl.objID == 0 {
+			continue
+		}
+		if vm.closureReferenced(cl) {
+			live = append(live, cl)
+			continue
+		}
+		if cl.objID == vm.nextObjID {
+			vm.nextObjID--
+		} else {
+			vm.freeObjIDs = append(vm.freeObjIDs, cl.objID)
+		}
+		cl.objID = 0
+	}
+	vm.provisionalClosures = live
+}
+
+// closureReferenced ищет ссылку на замыкание в живых регистрах, глобалах и
+// аргументах кадров (мелкий обход ссылок и массивов).
+func (vm *VM) closureReferenced(cl *Closure) bool {
+	check := func(s Slot) bool { return slotHasClosure(s, cl, 0) }
+	for i := 0; i <= vm.fp && i < len(vm.frames); i++ {
+		for _, s := range vm.frames[i].regs {
+			if check(s) {
+				return true
+			}
+		}
+	}
+	for _, s := range vm.globals {
+		if check(s) {
+			return true
+		}
+	}
+	for i := range vm.callStack {
+		for _, a := range vm.callStack[i].args {
+			if check(a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func slotHasClosure(s Slot, cl *Closure, depth int) bool {
+	if depth > 2 {
+		return false
+	}
+	for i := 0; s.typ == RefType && i < 10; i++ {
+		r := s.Ref()
+		if r == nil {
+			return false
+		}
+		s = r.v
+	}
+	switch s.typ {
+	case ClosureType:
+		return s.asClosure() == cl
+	case ArrayType:
+		if a := s.AsArray(); a != nil {
+			for _, v := range a.All() {
+				if slotHasClosure(v, cl, depth+1) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // VerifyReturnAtPointBuiltin — приведение значения к объявленному типу

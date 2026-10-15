@@ -4028,7 +4028,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		funcs = append([]*vm.Function(nil), linkBase.Funcs...)
 	} else {
 		funcs = builtins()
-		funcs = append(funcs, internalFuncs()...)
+		ifn := internalFuncs()
+		applyIntrinsicSignatures(ifn)
+		funcs = append(funcs, ifn...)
 		// Перехватываем var_dump, чтобы enum-кейсы печатались как `enum(C::X)`
 		// (иначе они выглядят как обычные объекты). Остальные значения
 		// обрабатываются исходной встроенной функцией.

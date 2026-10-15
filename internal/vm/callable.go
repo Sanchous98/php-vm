@@ -213,6 +213,11 @@ func (vm *VM) closureBind(cl *Closure, newThis Slot, scopeArg Slot, hasScope boo
 	if cl.Fn != nil {
 		fnScope = cl.Fn.Scope
 	}
+	// Класс объявления (для псевдозамыканий из ReflectionMethod) важнее
+	// перепривязанного Scope копии унаследованного метода (bug70685).
+	if cl.Scope != nil {
+		fnScope = cl.Scope
+	}
 	if newThis.typ == ObjectType {
 		if cl.Fn != nil && cl.Fn.IsStatic {
 			vm.Warning("Cannot bind an instance to a static closure")
@@ -280,6 +285,12 @@ func (vm *VM) closureCall(cl *Closure, args []Slot) (Slot, error) {
 	// stdClass и прочие internal-классы не могут стать scope замыкания.
 	if ci != cl.Scope && reflIsInternalScope(ci) {
 		vm.Warning("Cannot bind closure to scope of internal class " + ClassDisplayName(ci.Name()))
+		return MakeNull(), nil
+	}
+	// call() меняет область видимости: замыкание из функции (не метода)
+	// перепривязать нельзя (bug70630).
+	if cl.Fake && cl.Fn != nil && cl.Fn.Scope == nil {
+		vm.Warning("Cannot rebind scope of closure created from function")
 		return MakeNull(), nil
 	}
 	nc := *cl

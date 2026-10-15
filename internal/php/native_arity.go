@@ -19,6 +19,12 @@ type intrinsicDefault struct {
 	Num  float64
 }
 
+// intrinsicParamTypes — типы параметров встроенных функций (php 8.3) для
+// рефлексии; заполняется только там, где типы нужны (сгенерировано вручную).
+var intrinsicParamTypes = map[string][]string{
+	"iterator_to_array": {"Traversable|array", "bool"},
+}
+
 var intrinsicArity = map[string]intrinsicSig{
 	"abs":                          {[]string{"num"}, 1, 1, false, nil},
 	"acos":                         {[]string{"num"}, 1, 1, false, nil},

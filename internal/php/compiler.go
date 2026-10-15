@@ -9964,6 +9964,13 @@ func collectClosures(prog *Program, classes []vm.ClassInfo, classIdx map[string]
 			walkE(x.Key, cls)
 		case *PropExpr:
 			walkE(x.Recv, cls)
+			if x.NameExpr != nil {
+				walkE(x.NameExpr, cls)
+			}
+		case *StaticPropExpr:
+			if x.NameExpr != nil {
+				walkE(x.NameExpr, cls)
+			}
 		case *BinExpr:
 			walkE(x.L, cls)
 			walkE(x.R, cls)
@@ -9995,10 +10002,16 @@ func collectClosures(prog *Program, classes []vm.ClassInfo, classIdx map[string]
 			walkE(x.X, cls)
 		case *MethodCallExpr:
 			walkE(x.Recv, cls)
+			if x.NameExpr != nil {
+				walkE(x.NameExpr, cls)
+			}
 			for _, a := range x.Args {
 				walkE(a, cls)
 			}
 		case *StaticCallExpr:
+			if x.NameExpr != nil {
+				walkE(x.NameExpr, cls)
+			}
 			for _, a := range x.Args {
 				walkE(a, cls)
 			}

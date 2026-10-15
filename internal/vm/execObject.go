@@ -384,6 +384,32 @@ func (vm *VM) opPropGetIncDecDyn(regs []Slot, consts []Slot, chunk *Chunk, in In
 	return vm.opPropGetDyn(regs, consts, chunk, in)
 }
 
+// propNameString приводит значение имени свойства к строке как Zend
+// (zval_get_string): массив — Warning «Array to string conversion» и "Array",
+// объект — __toString, иначе Error «Object of class X could not be converted
+// to string» (class_properties_const: `$a->{function(){}}`).
+func (vm *VM) propNameString(s Slot) (string, error) {
+	s = deref(s)
+	switch s.typ {
+	case ArrayType:
+		vm.Warn("Array to string conversion")
+		return "Array", nil
+	case ObjectType:
+		if str, ok := vm.tryToString(s); ok {
+			return str, nil
+		}
+		if t := vm.ctx.takeThrown(); t != nil {
+			return "", t
+		}
+		cls := "Closure"
+		if ci := vm.classInfo(s); ci != nil {
+			cls = ClassDisplayName(ci.Name())
+		}
+		return "", NewThrowable("Error", "Object of class "+cls+" could not be converted to string")
+	}
+	return s.ToString(), nil
+}
+
 // propReadNonObjectWarn — диагностика чтения свойства у не-объекта: для
 // объектов Closure это «Undefined property: Closure::$name» (объект без
 // свойств), для остальных — «Attempt to read property ... on <type>».
@@ -543,7 +569,13 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 
 func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	recv := deref(regs[in.B])
-	pname := deref(regs[in.C]).ToString()
+	pname, perr := vm.propNameString(regs[in.C])
+	if perr != nil {
+		if !vm.handleThrow(chunk, perr) {
+			return execResult{err: perr}
+		}
+		return execResult{next: true}
+	}
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		if err := vm.propNulNameErr(pname); err != nil {

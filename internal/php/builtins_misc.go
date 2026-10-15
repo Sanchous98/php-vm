@@ -2102,6 +2102,22 @@ func incDecPropBuiltin(ctx *vm.Context) vm.Value {
 	return res
 }
 
+// propUninitReadCheckBuiltin — проверка неинициализированного промежуточного
+// свойства в цепочке составного присваивания (variation_nested).
+func propUninitReadCheckBuiltin(ctx *vm.Context) vm.Value {
+	o := arg(ctx, 0)
+	name := arg(ctx, 1).ToString()
+	if err := ctx.VM().PropUninitReadCheck(o, name); err != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			ctx.Throw(th)
+		} else {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+		return vm.MakeNull()
+	}
+	return vm.MakeNull()
+}
+
 // propRefArgBuiltin — ячейка свойства для by-ref аргумента (без Notice у
 // overloaded-свойства из __get, bug70288).
 func propRefArgBuiltin(ctx *vm.Context) vm.Value {

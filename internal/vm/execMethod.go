@@ -613,9 +613,17 @@ func (vm *VM) opClassOf(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	ci := vm.classSel(in.B)
 	if ci != nil {
+		name := ci.Name()
+		if in.C != 1 {
+			// `self::class`/`static::class`: анонимный класс печатает полное
+			// рантайм-имя `class@anonymous\x00<file>:<line>$N` — то же, что и
+			// ReflectionClass::getName() (attributes/013_class_scope).
+			// C == 1 (`new self`) оставляет внутреннее имя для резолва класса.
+			name = GetClassNameOf(ci)
+		}
 		{
 			old := regs[in.A]
-			wv := MakeString(ci.Name())
+			wv := MakeString(name)
 			regs[in.A] = wv
 			if trackedType(old.typ) || trackedType(wv.typ) {
 				vm.wRegSlow(int(in.A), old)

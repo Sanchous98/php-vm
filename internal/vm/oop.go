@@ -1773,6 +1773,29 @@ func (vm *VM) magicGetInaccessible(ci ClassInfo, recv Slot, pname string) (Slot,
 // свойства (может быть ссылкой с guard). При переполнении int и типе, не
 // допускающем float, поднимается TypeError "past its maximal/minimal value";
 // иначе результат становится float. Возвращает новое значение.
+// PropUninitReadCheck — проверка промежуточного свойства цепочки составного
+// присваивания: объявленное неинициализированное свойство даёт Zend-ошибку
+// «Typed property ... must not be accessed before initialization» ещё до
+// write-fetch (variation_nested: `$test->prop->prop += 1`).
+func (vm *VM) PropUninitReadCheck(o Slot, name string) error {
+	o = deref(o)
+	ci := vm.classInfo(o)
+	if ci == nil {
+		return nil
+	}
+	if pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, name); declared && pd != nil {
+		key := vm.propKey(pd, decl, name)
+		if ob := vm.objectOf(o); ob != nil && !ob.IsUnset(key) {
+			if _, init := vm.getProp(o, key); !init {
+				if err := vm.uninitPropErr(ci, name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // UnsetPropBase — приёмник промежуточного звена цепочки unset()
 // (`unset($a->b->c->d)`): не-объект даёт null без диагностик, у объекта
 // свойство создаётся как null (write-fetch) и возвращается его значение

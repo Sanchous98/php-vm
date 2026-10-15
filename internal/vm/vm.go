@@ -256,6 +256,12 @@ type VM struct {
 	// временное замыкание в конце оператора; bug75290/bug69802_2).
 	provisionalClosures []*Closure
 
+	// pendingProvidedMask/Set — маска реально переданных позиционных
+	// аргументов следующего userland-вызова (именованные аргументы):
+	// пропуски заполнены заглушками и не считаются явным null.
+	pendingProvidedMask    int64
+	pendingProvidedMaskSet bool
+
 	// retVerifiedDepth — глубина callStack, для которой тип возврата уже
 	// проверен в точке return (__php_verify_return, bug72347): на выходе из
 	// функции повторная проверка пропускается. 0 — проверки не было.
@@ -1778,6 +1784,12 @@ func (vm *VM) infoAt(e *callEntry, frame int) callFrameInfo {
 		n := e.callee.NumArgs
 		if n < 0 {
 			n = len(e.callee.ParamNames)
+			if cf, ok := e.callee.Executable.(*CompiledFunction); ok && cf.variadic && n > 0 {
+				// Вариативный параметр в кадре лежит упакованным массивом;
+				// Zend печатает позиционные «хвосты» отдельными аргументами
+				// (снимок e.args), а не массивом (named_params/backtrace).
+				n--
+			}
 		}
 		if n > len(args) {
 			n = len(args)
@@ -5686,6 +5698,23 @@ func (vm *VM) tooFewArgs(fn *Function, passed int) *Throwable {
 	return th
 }
 
+// SetPendingProvidedMask задаёт маску переданных позиций следующего вызова
+// (__php_set_provided_mask).
+func (vm *VM) SetPendingProvidedMask(m int64) {
+	vm.pendingProvidedMask = m
+	vm.pendingProvidedMaskSet = true
+}
+
+// takeProvidedMask забирает маску переданных позиций: её потребляет ровно
+// тот вызов, который следует за установкой (invoke/invokeMethod/
+// invokeClosure берут её в самом начале, чтобы маска не «протекла» на
+// следующий userland-вызов при раннем выходе).
+func (vm *VM) takeProvidedMask() (int64, bool) {
+	m, ok := vm.pendingProvidedMask, vm.pendingProvidedMaskSet
+	vm.pendingProvidedMaskSet = false
+	return m, ok
+}
+
 // checkArity проверяет минимальную арность userland-функции. Для вариативных
 // функций достаточно обязательных фиксированных параметров.
 func (vm *VM) checkArity(fn *Function, args []Slot) error {
@@ -5799,6 +5828,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided
 	vm.pendingNativeProvided = -1
+	pmask, pmaskSet := vm.takeProvidedMask()
 	extras := vm.pendingFrameNamed
 	vm.pendingFrameNamed = nil
 	// display — аргументы для кадра трейса: без NULL-заглушек отсутствующих
@@ -5898,7 +5928,7 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedSuppress := vm.suppress
-	if ck, perr := vm.checkParams(fn, args); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet); perr != nil {
 		err = perr
 	} else {
 		args = ck
@@ -5978,13 +6008,14 @@ func (vm *VM) CheckDefaultArg(val Slot, argNum int) (Slot, error) {
 
 // checkParams проверяет/приводит типы аргументов вызова (слабая типизация).
 func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
-	return vm.checkParamsN(fn, args, -1)
+	return vm.checkParamsN(fn, args, -1, 0, false)
 }
 
 // checkParamsN — checkParams с явным числом переданных вызывающим аргументов:
 // null-заглушки отсутствующих параметров не считаются явным null (bug68446:
-// `a(null)` при `array $a = FOO` — TypeError, а `a()` — дефолт).
-func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int) ([]Slot, error) {
+// `a(null)` при `array $a = FOO` — TypeError, а `a()` — дефолт). mask/maskSet —
+// маска реально переданных позиций при именованных аргументах.
+func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int, mask int64, maskSet bool) ([]Slot, error) {
 	types := fn.ParamTypes
 	if len(types) == 0 {
 		return args, nil
@@ -6015,7 +6046,15 @@ func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int) ([]Slot, err
 		// нарушением типа (значение подставится default'ом в теле функции).
 		// Явно переданный null (argNum < provided) — нарушение, если тип его
 		// не допускает.
-		omitted := provided >= 0 && i >= provided
+		// Пропуски именованных аргументов (маска) — не явный null; при
+		// отсутствии маски работаем по числу переданных (provided) и, если оно
+		// неизвестно, по прежнему правилу NumRequired.
+		omitted := false
+		if maskSet {
+			omitted = mask&(1<<uint(i)) == 0
+		} else {
+			omitted = provided < 0 || i >= provided
+		}
 		if args[i].typ == NullType && omitted &&
 			(i >= fn.NumRequired || (variadic && i >= fixed)) {
 			continue
@@ -6924,6 +6963,7 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided
 	vm.pendingNativeProvided = -1
+	pmask, pmaskSet := vm.takeProvidedMask()
 	extras := vm.pendingFrameNamed
 	vm.pendingFrameNamed = nil
 	display := args
@@ -7031,7 +7071,14 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		vm.markTopObjMethod()
 		vm.setTopThis(cl.BoundThis)
 	}
-	if ck, perr := vm.checkParamsN(fn, full, len(args)); perr != nil {
+	// Именованные аргументы раскладываются по позициям с null-заглушками
+	// отсутствующих параметров: считать их «переданными явно» нельзя
+	// (gh19653_1: func1(a3: 'm3+') с дефолтными a1/a2).
+	paramProvided := len(args)
+	if namedCount >= 0 {
+		paramProvided = -1
+	}
+	if ck, perr := vm.checkParamsN(fn, full, paramProvided, pmask, pmaskSet); perr != nil {
 		err = perr
 	} else {
 		full = ck
@@ -7075,6 +7122,7 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 	vm.pendingNamedCount = -1
 	provided := vm.pendingNativeProvided
 	vm.pendingNativeProvided = -1
+	pmask, pmaskSet := vm.takeProvidedMask()
 	extras := vm.pendingFrameNamed
 	vm.pendingFrameNamed = nil
 	display := args
@@ -7137,7 +7185,7 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 			return Slot{}, vm.extraNamedNativeErr(fn)
 		}
 	}
-	if ck, perr := vm.checkParams(fn, args); perr != nil {
+	if ck, perr := vm.checkParamsN(fn, args, len(args), pmask, pmaskSet); perr != nil {
 		err = perr
 	} else {
 		args = ck

@@ -1033,6 +1033,7 @@ func (vm *VM) BindNamedArgs(fn *Function, arr *Array) ([]Slot, error) {
 	vm.pendingNativeProvided = -1
 	vm.pendingFrameNamed = nil
 	vm.namedVariadicTail = nil
+	vm.pendingProvidedMaskSet = false
 	variadic := fn.NumArgs < 0
 	if _, isNative := fn.Executable.(*NativeFunction); isNative {
 		// У нативных функций NumArgs всегда -1 (ABI), вариативность —
@@ -1145,6 +1146,19 @@ func (vm *VM) BindNamedArgs(fn *Function, arr *Array) ([]Slot, error) {
 	}
 	if sawNamed {
 		vm.pendingNativeProvided = provided
+		// Маска реально переданных позиций: null-заглушки отсутствующих
+		// параметров не считаются явным null (gh19653_1). Потребляется
+		// ближайшим invoke*/checkParamsN.
+		if numFixed < 63 {
+			m := int64(0)
+			for i := 0; i < numFixed; i++ {
+				if filled[i] {
+					m |= 1 << uint(i)
+				}
+			}
+			vm.pendingProvidedMask = m
+			vm.pendingProvidedMaskSet = true
+		}
 	}
 	// Неизвестные имена для вариативной функции попадут в вариативный массив
 	// со строковыми ключами (Zend: extra named args).

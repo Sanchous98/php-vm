@@ -799,6 +799,10 @@ type namedArgCheck struct {
 	// массив со строковыми ключами); вызов идёт через рантайм-биндинг
 	// (buildArgArray + __php_call_named).
 	namedRuntime bool
+	// providedMask/maskValid — маска переданных позиций: пропуски
+	// заполняются null-заглушками, которые не считаются явным null.
+	providedMask int64
+	maskValid    bool
 }
 
 // intrinsicDefaultExpr строит выражение для известного значения по умолчанию
@@ -929,6 +933,19 @@ func reorderNamedArgsChecked(args []Expr, names []string, required int, display 
 			return res
 		}
 	}
+	// Битовая маска реально переданных позиций: заполненные пропуски ниже
+	// получают null-заглушку, которая НЕ является явным null (bug68446 vs
+	// gh19653_1). В рантайм передаётся через __php_set_provided_mask.
+	if maxIdx < 63 {
+		m := int64(0)
+		for i := 0; i <= maxIdx; i++ {
+			if slots[i] != nil {
+				m |= 1 << uint(i)
+			}
+		}
+		res.providedMask = m
+		res.maskValid = true
+	}
 	// Пропуски (позиции между переданными аргументами): у встроенных функций
 	// Zend подставляет известное значение по умолчанию, а при неизвестном —
 	// ArgumentCountError (zend_handle_named_arg).
@@ -1009,6 +1026,16 @@ func reorderNamedArgs(args []Expr, names []string) []Expr {
 		out[i] = slots[i]
 	}
 	return out
+}
+
+// setProvidedMask запоминает для следующего вызова (userland-функции) маску
+// реально переданных позиционных аргументов: пропуски именованных аргументов
+// заполнены null-заглушками и не должны считаться явным null.
+func (c *compiler) setProvidedMask(m int64) {
+	r := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: r,
+		C: int32(c.chunk.AddConst(vm.IntConst(m)))})
+	c.emitCall("__php_set_provided_mask", []uint8{r})
 }
 
 // sensitiveMask возвращает маску параметров, помеченных #[SensitiveParameter],
@@ -2928,6 +2955,11 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_prop_write_check", propWriteCheckBuiltin),
 		vm.Register("__php_prop_ref_arg", propRefArgBuiltin),
 		vm.Register("__php_unset_prop_base", unsetPropBaseBuiltin),
+		vm.Register("__php_prop_uninit_read_check", propUninitReadCheckBuiltin),
+		vm.Register("__php_set_provided_mask", func(ctx *vm.Context) vm.Value {
+			ctx.VM().SetPendingProvidedMask(arg(ctx, 0).ToInt())
+			return vm.MakeNull()
+		}),
 		vm.Register("__php_incdec_ref", incDecRefBuiltin),
 		vm.Register("__php_incdec_val", incDecValBuiltin),
 		vm.Register("__php_incdec_global", incDecGlobalBuiltin),
@@ -13981,6 +14013,14 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			if na.throwMsg != "" {
 				return c.emitNamedArgError("Error", na.throwMsg), nil
 			}
+			if na.maskValid {
+				if _, isNative := fn.Executable.(*vm.NativeFunction); !isNative {
+					// Пропуски именованных аргументов — заглушки, а не явный
+					// null (gh19653_1); явный null проверяется по типу
+					// (bug68446).
+					c.setProvidedMask(na.providedMask)
+				}
+			}
 			return c.emitCallRegs(fi, argRegs, wbs), nil
 		}
 	case *YieldExpr:
@@ -14316,6 +14356,15 @@ func (c *compiler) propGetRW(x *PropExpr) (uint8, error) {
 // записи (`$o->p->q = ...`, `$o->p[] = ...`): свойство читается в режиме
 // OpPropGetRWInterm (инициализированное readonly допустимо), остальные
 // приёмники — как база записи.
+// exprChainBaseForCheck вычисляет получателя-объект для проверки uninit:
+// для `$a->b->c` — значение `$a->b`, для `$a->b` — значение `$a`.
+func (c *compiler) exprChainBaseForCheck(e Expr) (uint8, error) {
+	if pe, ok := e.(*PropExpr); ok {
+		return c.exprIssetBase(pe.Recv)
+	}
+	return c.exprIssetBase(e)
+}
+
 // isPropChain сообщает, что выражение — цепочка свойств/индексов длиной
 // больше одного звена (`$a->b->c`, `$a->b[0]->c`).
 func isPropChain(e Expr) bool {
@@ -15803,6 +15852,20 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			// («Attempt to modify property ... on null», bug78531).
 			if b := chainBaseVar(t.Recv); b != nil {
 				c.emitUndefReadWarn(b.Name, c.exprLine(b))
+			}
+			if pe2, ok := t.Recv.(*PropExpr); ok {
+				// Неинициализированное объявленное свойство в приёмнике
+				// составного присваивания: ошибка uninit до write-fetch
+				// (variation_nested).
+				base, berr := c.exprChainBaseForCheck(t.Recv)
+				if berr != nil {
+					return 0, berr
+				}
+				nameReg, nerr := c.propNameReg(pe2)
+				if nerr != nil {
+					return 0, nerr
+				}
+				c.emitCall("__php_prop_uninit_read_check", []uint8{base, nameReg})
 			}
 			obj, err = c.exprChainRecv(t.Recv)
 		}

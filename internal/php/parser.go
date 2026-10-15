@@ -3239,7 +3239,8 @@ func (p *Parser) funcDecl() (Stmt, error) {
 	attrs := p.parseAttrs(p.takeAttrs())
 	p.next() // function
 	byref := p.accept(TOp, "&")
-	name := p.qualifyDecl(tokName(p.next()))
+	rawName := tokName(p.next())
+	name := p.qualifyDecl(rawName)
 	params, err := p.paramList()
 	if err != nil {
 		return nil, err
@@ -3274,8 +3275,8 @@ func (p *Parser) funcDecl() (Stmt, error) {
 		// Объявление функции с именем, уже занятым импортом `use function`:
 		// Zend выдаёт компайл-фатал (define_imported). Псевдоним импорта
 		// хранится без пространства имён, диагностика — с полным именем.
-		if _, ok := p.funcUses[strings.ToLower(name)]; ok {
-			return nil, &fatalError{msg: "Cannot declare function " + p.qualifyDecl(name) + " because the name is already in use", line: declLine}
+		if _, ok := p.funcUses[strings.ToLower(rawName)]; ok {
+			return nil, &fatalError{msg: "Cannot declare function " + p.qualifyDecl(rawName) + " because the name is already in use", line: declLine}
 		}
 	}
 	p.seenFuncs[strings.ToLower(p.qualifyDecl(name))] = true

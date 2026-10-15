@@ -6232,8 +6232,10 @@ func (c *compiler) classKeyword(x *ClassKeywordExpr) (uint8, error) {
 	case "parent":
 		// Zend проверяет наличие родителя на этапе компиляции:
 		// `parent::class` в классе без extends — фатал
-		// (class_name_as_scalar_error_002).
-		if c.curClass != nil && c.curClass.Parent() == nil {
+		// (class_name_as_scalar_error_002). В теле трейта класс-носитель
+		// неизвестен — ошибка откладывается до рантайма, когда трейт
+		// примешан к классу без родителя (parent_class_name_without_parent).
+		if c.curClass != nil && c.curClass.Parent() == nil && !c.curClass.IsTrait() {
 			return 0, &fatalError{msg: `Cannot use "parent" when current class scope has no parent`, line: c.exprLine(x)}
 		}
 		fallthrough
@@ -11423,6 +11425,13 @@ func (c *compiler) gotoStmt(label string) error {
 		if err := c.unwindToRegions(keep); err != nil {
 			return err
 		}
+		// Вход в try-регионы, которых нет у места перехода: активируем
+		// обработчики (как forward-goto через трамплин).
+		if missing := missingTryRegions(c.regions, c.labelRegions[label]); len(missing) > 0 {
+			for _, r := range missing {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPushTry, C: int32(r.try.tiIdx)})
+			}
+		}
 		at := c.chunk.Emit(vm.Instruction{Op: vm.OpJump, C: -1})
 		c.setJump(at, pc)
 		return nil
@@ -11475,10 +11484,11 @@ func (c *compiler) defineLabel(name string, line int) error {
 	if _, ok := c.labels[name]; ok {
 		return &fatalError{msg: "Label '" + name + "' already defined", line: line}
 	}
-	pc := c.chunk.Len()
-	c.labels[name] = pc
 	c.labelDepth[name] = c.loopDepth
 	c.labelRegions[name] = append([]regionRef(nil), c.regions...)
+	type gotoRetarget struct{ at, tramp int }
+	var skips, ends []int
+	var retargets []gotoRetarget
 	for _, g := range c.pendingGotos[name] {
 		if c.loopDepth > g.depth {
 			return &fatalError{msg: "'goto' into loop or switch statement is disallowed", line: g.line}
@@ -11494,10 +11504,57 @@ func (c *compiler) defineLabel(name string, line int) error {
 				}
 			}
 		}
-		c.setJump(g.at, pc)
+		// Goto ВНУТРЬ try-блока (jump16): обработчики активируются на входе
+		// (Zend регистрирует их по диапазону опкодов), поэтому на пути
+		// перехода эмитим PUSH_TRY отсутствующих регионов — трамплином перед
+		// меткой (обычный поток перепрыгивает трамплин).
+		if missing := missingTryRegions(g.regions, c.labelRegions[name]); len(missing) > 0 {
+			skips = append(skips, c.chunk.Emit(vm.Instruction{Op: vm.OpJump}))
+			tramp := c.chunk.Len()
+			for _, r := range missing {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPushTry, C: int32(r.try.tiIdx)})
+			}
+			ends = append(ends, c.chunk.Emit(vm.Instruction{Op: vm.OpJump}))
+			retargets = append(retargets, gotoRetarget{at: g.at, tramp: tramp})
+			continue
+		}
+		c.setJump(g.at, c.chunk.Len())
 	}
+	pc := c.chunk.Len()
+	for _, rt := range retargets {
+		c.setJump(rt.at, rt.tramp)
+	}
+	for _, s := range skips {
+		c.setJump(s, pc)
+	}
+	for _, e := range ends {
+		c.setJump(e, pc)
+	}
+	c.labels[name] = pc
 	delete(c.pendingGotos, name)
 	return nil
+}
+
+// missingTryRegions возвращает try-регионы из to (внешние раньше вложенных),
+// которых нет во from — их обработчики должен активировать goto на входе.
+func missingTryRegions(from, to []regionRef) []regionRef {
+	var out []regionRef
+	for i, r := range to {
+		if r.try == nil {
+			continue
+		}
+		found := false
+		for j := 0; j < i && j < len(from); j++ {
+			if from[j].try == r.try {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // finalizeGotos проверяет, что все goto нашли метку.

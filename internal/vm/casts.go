@@ -74,6 +74,11 @@ func parseLeadingNumeric(s string) (val float64, n int, ok bool) {
 	}
 	f, err := strconv.ParseFloat(str, 64)
 	if err != nil {
+		// Переполнение диапазона (1e1000): zend_strtod отдаёт ±INF/0 без
+		// ошибки — число остаётся числовым (is_numeric("1e1000") = true).
+		if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+			return f, n, true
+		}
 		return 0, 0, false
 	}
 	return f, n, true

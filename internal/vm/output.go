@@ -534,6 +534,20 @@ func (vm *VM) reportDiag(kind string, level int64, msg string) {
 	if vm.diagLineOverride > 0 {
 		line = vm.diagLineOverride
 	}
+	// ignore_repeated_errors: Zend подавляет диагностику, совпадающую с
+	// последней напечатанной (по файлу+строке; ignore_repeated_source
+	// расширяет сравнение до файла, игнорируя строку).
+	if vm.iniLookup != nil && vm.lastErrSet && vm.lastErrMsg == msg {
+		if v, ok := vm.iniLookup("ignore_repeated_errors"); ok && iniBool(v) {
+			if v2, ok2 := vm.iniLookup("ignore_repeated_source"); ok2 && iniBool(v2) {
+				if vm.lastErrFile == file {
+					return
+				}
+			} else if vm.lastErrFile == file && vm.lastErrLine == line {
+				return
+			}
+		}
+	}
 	vm.lastErrLevel = level
 	vm.lastErrMsg = msg
 	vm.lastErrFile = file

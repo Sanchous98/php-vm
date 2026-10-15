@@ -1017,6 +1017,10 @@ func (vm *VM) opIndexSetRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 // записываемого значения разделённым, ret — записью результата присваивания
 // в регистр значения).
 func (vm *VM) indexSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, share, ret bool) execResult {
+	return vm.indexSetInner(regs, consts, chunk, in, share, ret)
+}
+
+func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, share, ret bool) execResult {
 	arr := deref(regs[in.A])
 	if arr.typ == ObjectType {
 		// ArrayAccess: $obj[$k] = $v -> offsetSet($k, $v).

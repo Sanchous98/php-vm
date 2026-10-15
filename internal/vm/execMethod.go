@@ -664,7 +664,11 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			kw = "parent"
 		}
 		msg := `Cannot use "` + kw + `" in the global scope`
-		if in.C == 1 {
+		if in.B == 2 && vm.ctx.self != nil {
+			// parent::class в классе без родителя (ошибка отложена из
+			// трейта): Zend сообщает про отсутствие родителя.
+			msg = `Cannot use "parent" when current class scope has no parent`
+		} else if in.C == 1 {
 			msg = `Cannot use "` + kw + `" when no class scope is active`
 		}
 		err := NewThrowable("Error", msg)

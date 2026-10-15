@@ -1,9 +1,6 @@
 package vm
 
-import (
-	"fmt"
-	"unsafe"
-)
+import "fmt"
 
 // Битовые операции PHP 8.3 (сверено с живым php):
 //
@@ -55,26 +52,7 @@ func BitNot(a Slot) (Slot, error) {
 	case FloatType:
 		return MakeInt(^floatToInt(a.Float())), nil
 	case StringType:
-		s := a.StringVal()
-		n := len(s)
-		if n == 0 {
-			return MakeString(""), nil
-		}
-		buf := make([]byte, n)
-		// По 8 байт за раз, хвост — скаляром; строка возвращается прямо по
-		// буферу (unsafe.String), без второй копии string(buf).
-		w := n / 8
-		if w > 0 {
-			sw := unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.StringData(s))), w)
-			dw := unsafe.Slice((*uint64)(unsafe.Pointer(&buf[0])), w)
-			for i := 0; i < w; i++ {
-				dw[i] = ^sw[i]
-			}
-		}
-		for i := w * 8; i < n; i++ {
-			buf[i] = ^s[i]
-		}
-		return MakeString(unsafe.String(&buf[0], n)), nil
+		return MakeString(bitNotStringWide(a.StringVal())), nil
 	case BoolType:
 		return Slot{}, NewThrowable("TypeError", "Cannot perform bitwise not on "+boolWord(a))
 	case NullType:

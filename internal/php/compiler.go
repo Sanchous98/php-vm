@@ -317,25 +317,30 @@ type tryScope struct {
 }
 
 type compiler struct {
-	chunk      *vm.Chunk
-	vars       map[string]uint8
-	nvars      uint8
-	nvars0     uint8 // число регистров параметров+захватов (pinned для аллокатора)
-	tmp        uint8
-	max        uint8
-	funcs      []*vm.Function
-	idx        map[string]int
-	loops      []*loopCtx
-	internal   int
-	isMain     bool
-	funcName   string
+	chunk    *vm.Chunk
+	vars     map[string]uint8
+	nvars    uint8
+	nvars0   uint8 // число регистров параметров+захватов (pinned для аллокатора)
+	tmp      uint8
+	max      uint8
+	funcs    []*vm.Function
+	idx      map[string]int
+	loops    []*loopCtx
+	internal int
+	isMain   bool
+	funcName string
 	// funcArgDepth > 0 — компилируется аргумент вызова (FUNC_ARG): append-база
 	// `$x[]` там допустима на компиляции, ошибка "Cannot use [] for reading"
 	// откладывается до рантайма (func_arg_fetch_optimization).
 	funcArgDepth int
 	file         string // путь к компилируемому файлу (для __FILE__/__DIR__)
-	globals    map[string]bool
-	staticKeys map[string]string
+	globals      map[string]bool
+	staticKeys   map[string]string
+	// rebound — переменные, для которых оператор `global $x` (в функции с
+	// одноимённой static $x) перепривязал CV к глобальной таблице: обращения
+	// после него идут по имени, а не по ключу статического слота. Оператор
+	// `static $x` сбрасывает перепривязку (Zend: BIND_STATIC).
+	rebound map[string]bool
 	// detached — static/global-переменные, для которых текущий вызов сделал
 	// `=&`: после этого CV живёт в локальном ref-регистре, а глобальная/
 	// статическая таблица не меняется (Zend ASSIGN_REF заменяет CV, а не
@@ -1095,6 +1100,9 @@ func markByRef(args []Expr, mask []bool, addRef func(string)) {
 
 // globalKey возвращает ключ глобальной таблицы для имени переменной.
 func (c *compiler) globalKey(name string) string {
+	if c.rebound[name] {
+		return name
+	}
 	if k, ok := c.staticKeys[name]; ok {
 		return k
 	}
@@ -2540,6 +2548,13 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 	}
 	sub, err := ParseMixed(string(data))
 	if err != nil {
+		return x, nil, nil
+	}
+	// `return` в теле подключаемого файла (на верхнем уровне области, в т.ч.
+	// внутри if/циклов) завершает только include. Инлайн компилирует его как
+	// return главного скрипта — поэтому такой файл раскрываем в рантайме
+	// (no_early_binding_if_already_declared).
+	if hasTopLevelReturn(sub.Stmts) {
 		return x, nil, nil
 	}
 	stmts, err := inlineStmts(sub.Stmts, abs, inc)
@@ -7559,7 +7574,14 @@ func (c *compiler) checkOverrideCompatible(cd *ClassDecl, m *ClassMember, pd *Cl
 		return c.newFatal(msg)
 	default:
 		msg := "Declaration of " + methodSigStringSub(cd.Name, m, cd.Name, cd.Parent) + " must be compatible with " + methodSigStringSub(pd.Name, pm, pd.Name, pd.Parent)
-		return c.newFatal(msg)
+		fe := &fatalError{msg: msg, line: c.curLine, file: c.errFile}
+		if magicMustBePublic[strings.ToLower(m.MName)] {
+			// Сначала Warning о публичности магического метода, затем фатал
+			// (magic_methods_008).
+			fe.warnMsg = fmt.Sprintf("The magic method %s::%s() must have public visibility", cd.Name, m.MName)
+			fe.warnLine = m.Line
+		}
+		return fe
 	}
 }
 
@@ -7593,15 +7615,22 @@ func (c *compiler) overrideCompat(cd *ClassDecl, m *ClassMember, pd *ClassDecl, 
 			mv = "public"
 		}
 		if visRank(mv) < visRank(pv) {
-			// Магические методы, обязанные быть public, понижение видимости
-			// не фаталит: Zend печатает только Warning (см. ветку компиляции
-			// метода). Остальные методы — фатал.
-			if !magicMustBePublic[strings.ToLower(m.MName)] {
-				if pv == "protected" {
-					return subNo, "", c.newFatal(fmt.Sprintf("Access level to %s::%s() must be protected (as in class %s) or weaker", cd.Name, m.MName, pd.Name))
+			// Понижение видимости переопределяемого метода — фатал; для
+			// магических методов предварительно печатается Warning о
+			// публичности (в ветке компиляции метода), но фатал тоже есть
+			// (magic_methods_008).
+			mkFatal := func(msg string) *fatalError {
+				fe := &fatalError{msg: msg, line: c.curLine, file: c.errFile}
+				if magicMustBePublic[strings.ToLower(m.MName)] {
+					fe.warnMsg = fmt.Sprintf("The magic method %s::%s() must have public visibility", cd.Name, m.MName)
+					fe.warnLine = m.Line
 				}
-				return subNo, "", c.newFatal(fmt.Sprintf("Access level to %s::%s() must be %s (as in class %s)", cd.Name, m.MName, pv, pd.Name))
+				return fe
 			}
+			if pv == "protected" {
+				return subNo, "", mkFatal(fmt.Sprintf("Access level to %s::%s() must be protected (as in class %s) or weaker", cd.Name, m.MName, pd.Name))
+			}
+			return subNo, "", mkFatal(fmt.Sprintf("Access level to %s::%s() must be %s (as in class %s)", cd.Name, m.MName, pv, pd.Name))
 		}
 	}
 	// Конструкторы (и деструкторы) не проверяются на совместимость подписи
@@ -11013,6 +11042,11 @@ func (c *compiler) stmt(st Stmt) error {
 		if c.isMain {
 			return c.mainStaticStmt(s)
 		}
+		// `static $x` после `global $x` возвращает CV к статическому слоту
+		// (static_variables_global_2).
+		for _, n := range s.Names {
+			delete(c.rebound, n)
+		}
 		// Условные static: инициализируем локальную переменную в точке
 		// объявления (ленивое связывание, как ZEND_BIND_STATIC).
 		for i, n := range s.Names {
@@ -11031,6 +11065,20 @@ func (c *compiler) stmt(st Stmt) error {
 		}
 	case *GlobalStmt:
 		// статические имена: привязка учтена пресканом (c.globals/no-op).
+		// Если в функции есть одноимённая static-переменная, оператор
+		// перепривязывает CV к глобальной таблице до следующего `static`
+		// (static_variables_global: каждый вызов снова читает статический
+		// слот 42, а не глобальное 41).
+		if !c.isMain {
+			for _, n := range s.Names {
+				if _, isStatic := c.staticKeys[n]; isStatic {
+					if c.rebound == nil {
+						c.rebound = map[string]bool{}
+					}
+					c.rebound[n] = true
+				}
+			}
+		}
 		// Динамические (`global $$x` / `global ${expr}`) — вычисляем имя в
 		// точке оператора и привязываем в рантайме.
 		for _, e := range s.Dyn {
@@ -18212,4 +18260,60 @@ func staticDeclLine(c *compiler, body []Stmt, name string) int {
 	}
 	walk(body)
 	return found
+}
+
+// hasTopLevelReturn сообщает, что среди операторов есть `return` на верхнем
+// уровне области включения (в т.ч. внутри if/циклов/try/блоков, но не в телах
+// функций/методов/замыканий). Для инлайна include такой файл не раскрывается.
+func hasTopLevelReturn(stmts []Stmt) bool {
+	for _, st := range stmts {
+		switch s := st.(type) {
+		case *ReturnStmt:
+			return true
+		case *FuncDecl:
+			continue
+		case *ClassDecl:
+			continue
+		case *BlockStmt:
+			if hasTopLevelReturn(s.Body) {
+				return true
+			}
+		case *IfStmt:
+			if hasTopLevelReturn(s.Then) || hasTopLevelReturn(s.Else) {
+				return true
+			}
+		case *WhileStmt:
+			if hasTopLevelReturn(s.Body) {
+				return true
+			}
+		case *DoWhileStmt:
+			if hasTopLevelReturn(s.Body) {
+				return true
+			}
+		case *ForStmt:
+			if hasTopLevelReturn(s.Body) {
+				return true
+			}
+		case *ForeachStmt:
+			if hasTopLevelReturn(s.Body) {
+				return true
+			}
+		case *TryStmt:
+			if hasTopLevelReturn(s.Body) || hasTopLevelReturn(s.Finally) {
+				return true
+			}
+			for _, cc := range s.Catches {
+				if hasTopLevelReturn(cc.Body) {
+					return true
+				}
+			}
+		case *SwitchStmt:
+			for _, cs := range s.Cases {
+				if hasTopLevelReturn(cs.Body) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

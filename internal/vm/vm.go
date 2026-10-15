@@ -6357,13 +6357,15 @@ func (vm *VM) checkReturnType(fn *Function, res Slot) (Slot, error) {
 		if fn.ByRefReturn {
 			// Zend проверяет тип по значению ссылки, а приведение пишет в
 			// саму ячейку (bug70117: `&foo(): string` возвращает "1", и
-			// исходный элемент массива тоже становится строкой).
+			// исходный элемент массива тоже становится строкой). Сама ссылка
+			// возвращается как ссылка — иначе `++$o['x']` инкрементировал бы
+			// копию (bug64417).
 			if res.typ == RefType {
 				if r := res.Ref(); r != nil {
 					r.Set(out)
 				}
 			}
-			return out, nil
+			return res, nil
 		}
 		return out, nil
 	}

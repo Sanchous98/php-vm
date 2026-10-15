@@ -2013,6 +2013,45 @@ func requireClassFn(ctx *vm.Context) vm.Value {
 	return vm.MakeNull()
 }
 
+// useTraitFn — примешивает трейт к классу, объявленному статически, когда
+// трейт был неизвестен на этапе компиляции: запускает автозагрузку (Zend
+// делает это при выполнении DECLARE_CLASS) и применяет трейт.
+func useTraitFn(ctx *vm.Context) vm.Value {
+	clsName := arg0(ctx).ToString()
+	traitName := arg(ctx, 1).ToString()
+	vmc := ctx.VM()
+	if vmc.FindClass(traitName) == nil {
+		if _, err := vmc.Autoload(ctx, traitName); err != nil {
+			if vm.IsExitSignal(err) {
+				vmc.RequestHalt()
+				return *new(vm.Value)
+			}
+			if th, ok := err.(*vm.Throwable); ok {
+				ctx.Throw(th)
+			} else {
+				ctx.Throw(vm.NewThrowable("Error", err.Error()))
+			}
+			if ctx.HasThrown() {
+				return *new(vm.Value)
+			}
+			return vm.MakeNull()
+		}
+	}
+	tr := vmc.FindClass(traitName)
+	if tr == nil {
+		ctx.Throw(vm.NewThrowable("Error", "Trait \""+traitName+"\" not found"))
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
+		return vm.MakeNull()
+	}
+	ci := vmc.FindClass(clsName)
+	if ci != nil {
+		ci.Use(tr)
+	}
+	return vm.MakeNull()
+}
+
 // callCbNamedBuiltin — call_user_func/forward_static_call с именованными
 // аргументами: callback + массив остальных аргументов (с ключами-именами).
 func callCbNamedBuiltin(ctx *vm.Context) vm.Value {
@@ -2581,6 +2620,17 @@ func defaultIniValues() map[string]string {
 		"allow_url_include":           "0",
 		"unserialize_callback_func":   "",
 		"unserialize_max_depth":       "4096",
+		"session.serialize_handler":   "php",
+		"session.save_path":           "/var/lib/php/sessions",
+		"session.name":                "PHPSESSID",
+		"session.auto_start":          "0",
+		"session.gc_probability":      "1",
+		"session.gc_divisor":          "100",
+		"session.use_strict_mode":     "0",
+		"session.use_cookies":         "1",
+		"session.use_only_cookies":    "1",
+		"session.cookie_lifetime":     "0",
+		"session.cache_limiter":       "nocache",
 		"highlight.string":            "#DD0000",
 		"highlight.comment":           "#FF8000",
 		"highlight.default":           "#0000BB",
@@ -4603,7 +4653,7 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			b.WriteString("array(0) interned {\n" + pad + "}\n")
 			return
 		}
-		b.WriteString("array(" + strconv.Itoa(a.Len()) + ") refcount(1){\n")
+		b.WriteString("array(" + strconv.Itoa(a.Len()) + ") refcount(" + strconv.Itoa(st.vm.ArrayRefCountDebug(a)) + "){\n")
 		for k, v := range a.All() {
 			b.WriteString(pad + "  ")
 			if k.IsStr() {

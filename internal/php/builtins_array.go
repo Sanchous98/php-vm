@@ -1409,24 +1409,82 @@ func diffIntersectStringSets(ctx *vm.Context, others []*vm.Array) []map[string]b
 }
 
 func arrayDiffFn(ctx *vm.Context) vm.Value {
-	requireAllArrays(ctx, "array_diff")
-	if ctx.HasThrown() {
+	// PHP 8.3: array_diff — отдельная реализация через множество строковых
+	// представлений (не сортировочный php_array_diff): остальные массивы
+	// конвертируются первыми, затем элементы args[0].
+	if arg(ctx, 0).Type() != vm.ArrayType {
+		arrayArgError(ctx, 0, "array_diff")
 		return *new(vm.Value)
 	}
-	out := vm.NewArray()
-	first := arg0(ctx)
-	sets := diffIntersectStringSets(ctx, restArrays(ctx))
-	for k, v := range first.AsArray().All() {
-		sv := sortStringOf(ctx, v)
-		found := false
-		for _, s := range sets {
-			if s[sv] {
-				found = true
-				break
+	first := arg(ctx, 0).AsArray()
+	num := first.Len()
+	if num == 0 {
+		for i := 1; i < len(ctx.Args()); i++ {
+			if arg(ctx, i).Type() != vm.ArrayType {
+				arrayArgError(ctx, i, "array_diff")
+				return *new(vm.Value)
 			}
 		}
-		if !found {
+		return vm.MakeArray(vm.NewArray())
+	}
+	if num == 1 {
+		var v0 vm.Slot
+		for _, v := range first.All() {
+			v0 = derefLoneRef(ctx, v)
+			break
+		}
+		search := sortStringOf(ctx, v0)
+		found := false
+		for i := 1; i < len(ctx.Args()); i++ {
+			if arg(ctx, i).Type() != vm.ArrayType {
+				arrayArgError(ctx, i, "array_diff")
+				return *new(vm.Value)
+			}
+			if found {
+				continue
+			}
+			for _, ov := range arg(ctx, i).AsArray().All() {
+				if sortStringOf(ctx, derefLoneRef(ctx, ov)) == search {
+					found = true
+					break
+				}
+			}
+		}
+		if found {
+			return vm.MakeArray(vm.NewArray())
+		}
+		out := vm.NewArray()
+		for k, v := range first.All() {
 			out.Set(k, derefLoneRef(ctx, v))
+		}
+		return vm.MakeArray(out)
+	}
+	total := 0
+	for i := 1; i < len(ctx.Args()); i++ {
+		if arg(ctx, i).Type() != vm.ArrayType {
+			arrayArgError(ctx, i, "array_diff")
+			return *new(vm.Value)
+		}
+		total += arg(ctx, i).AsArray().Len()
+	}
+	if total == 0 {
+		out := vm.NewArray()
+		for k, v := range first.All() {
+			out.Set(k, derefLoneRef(ctx, v))
+		}
+		return vm.MakeArray(out)
+	}
+	exclude := make(map[string]bool, total)
+	for i := 1; i < len(ctx.Args()); i++ {
+		for _, ov := range arg(ctx, i).AsArray().All() {
+			exclude[sortStringOf(ctx, derefLoneRef(ctx, ov))] = true
+		}
+	}
+	out := vm.NewArray()
+	for k, v := range first.All() {
+		v0 := derefLoneRef(ctx, v)
+		if !exclude[sortStringOf(ctx, v0)] {
+			out.Set(k, v0)
 		}
 	}
 	return vm.MakeArray(out)
@@ -1437,23 +1495,73 @@ func arrayIntersectFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
+	return runZendSetOp(ctx, allArrays(ctx), setOpEngine{
+		behavior: setOpNormal,
+		data:     func(a, b *setBucket) int { return setStringCmp(ctx, a, b) },
+	}, true)
+}
+
+// allArrays собирает массивы-аргументы (после requireAllArrays).
+func allArrays(ctx *vm.Context) []*vm.Array {
+	out := make([]*vm.Array, 0, len(ctx.Args()))
+	for i := range ctx.Args() {
+		out = append(out, arg(ctx, i).AsArray())
+	}
+	return out
+}
+
+// runKeyLookupSetOp — движок php_array_diff_key/php_array_intersect_key:
+// обход ключей первого массива с поиском по хешу в остальных (без сортировки).
+// dataCmp == nil — данные не сравниваются (array_diff_key/array_intersect_key).
+func runKeyLookupSetOp(ctx *vm.Context, arrays []*vm.Array, dataCmp func(a, b vm.Slot) int, intersect bool) vm.Value {
 	out := vm.NewArray()
-	first := arg0(ctx)
-	sets := diffIntersectStringSets(ctx, restArrays(ctx))
-	for k, v := range first.AsArray().All() {
-		sv := sortStringOf(ctx, v)
-		inAll := true
-		for _, s := range sets {
-			if !s[sv] {
-				inAll = false
-				break
+	first := arrays[0]
+	others := arrays[1:]
+	for k, v := range first.All() {
+		v0 := derefLoneRef(ctx, v)
+		keep := false
+		if intersect {
+			keep = true
+			for _, o := range others {
+				data, found := o.Get(k)
+				if !found {
+					keep = false
+					break
+				}
+				if dataCmp != nil && dataCmp(v0, data) != 0 {
+					keep = false
+					break
+				}
+			}
+		} else {
+			keep = true
+			for _, o := range others {
+				data, found := o.Get(k)
+				if !found {
+					continue
+				}
+				if dataCmp == nil || dataCmp(v0, data) == 0 {
+					keep = false
+					break
+				}
 			}
 		}
-		if inAll {
-			out.Set(k, derefLoneRef(ctx, v))
+		if keep {
+			out.Set(k, v0)
 		}
 	}
 	return vm.MakeArray(out)
+}
+
+// userCmpNoDep — zval_user_compare (php_array_diff_key/intersect_key): вызов
+// компаратора без Deprecated-логики и без повторной попытки.
+func userCmpNoDep(ctx *vm.Context, cb vm.Slot, a, b vm.Slot) int {
+	res, err := ctx.VMInstance().CallCallable(ctx, cb, []vm.Slot{a, b})
+	throwCallable(ctx, err)
+	if ctx.HasThrown() {
+		return 0
+	}
+	return normSign(res)
 }
 
 func arrayDiffKeyFn(ctx *vm.Context) vm.Value {
@@ -1461,20 +1569,7 @@ func arrayDiffKeyFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	out := vm.NewArray()
-	first := arg0(ctx)
-	others := map[string]bool{}
-	for _, o := range restArrays(ctx) {
-		for k := range o.All() {
-			others[arrKeyString(k)] = true
-		}
-	}
-	for k, v := range first.AsArray().All() {
-		if !others[arrKeyString(k)] {
-			out.Set(k, derefLoneRef(ctx, v))
-		}
-	}
-	return vm.MakeArray(out)
+	return runKeyLookupSetOp(ctx, allArrays(ctx), nil, false)
 }
 
 // requireAllArrays проверяет, что все аргументы — массивы (формат ошибок PHP).
@@ -1494,22 +1589,7 @@ func arrayIntersectKeyFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	out := vm.NewArray()
-	first := arg0(ctx)
-	rest := restArrays(ctx)
-	for k, v := range first.AsArray().All() {
-		inAll := true
-		for _, o := range rest {
-			if _, ok := o.Get(k); !ok {
-				inAll = false
-				break
-			}
-		}
-		if inAll {
-			out.Set(k, derefLoneRef(ctx, v))
-		}
-	}
-	return vm.MakeArray(out)
+	return runKeyLookupSetOp(ctx, allArrays(ctx), nil, true)
 }
 
 func arrayDiffAssocFn(ctx *vm.Context) vm.Value {
@@ -1517,22 +1597,11 @@ func arrayDiffAssocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	out := vm.NewArray()
-	first := arg0(ctx)
-	others := restArrays(ctx)
-	for k, v := range first.AsArray().All() {
-		found := false
-		for _, o := range others {
-			if ov, ok := o.Get(k); ok && sortStringOf(ctx, ov) == sortStringOf(ctx, v) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			out.Set(k, derefLoneRef(ctx, v))
-		}
-	}
-	return vm.MakeArray(out)
+	// php_array_diff_key(DIFF_COMP_DATA_INTERNAL): данные — zval_compare
+	// (= string_compare_function, с предупреждением для массивов).
+	return runKeyLookupSetOp(ctx, allArrays(ctx), func(a, b vm.Slot) int {
+		return strings.Compare(sortStringOf(ctx, a), sortStringOf(ctx, b))
+	}, false)
 }
 
 func arrayIntersectAssocFn(ctx *vm.Context) vm.Value {
@@ -1540,23 +1609,10 @@ func arrayIntersectAssocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	out := vm.NewArray()
-	first := arg0(ctx)
-	rest := restArrays(ctx)
-	for k, v := range first.AsArray().All() {
-		inAll := true
-		for _, o := range rest {
-			ov, ok := o.Get(k)
-			if !ok || sortStringOf(ctx, ov) != sortStringOf(ctx, v) {
-				inAll = false
-				break
-			}
-		}
-		if inAll {
-			out.Set(k, v)
-		}
-	}
-	return vm.MakeArray(out)
+	// php_array_intersect_key(INTERSECT_COMP_DATA_INTERNAL): zval_compare.
+	return runKeyLookupSetOp(ctx, allArrays(ctx), func(a, b vm.Slot) int {
+		return strings.Compare(sortStringOf(ctx, a), sortStringOf(ctx, b))
+	}, true)
 }
 
 func arrayKeyFirstFn(ctx *vm.Context) vm.Value {
@@ -2376,7 +2432,8 @@ func sortSimple(ctx *vm.Context, fn string, byKey, preserve, desc bool) vm.Value
 		}
 	}
 	elems := arrayElems(a)
-	sort.SliceStable(elems, func(i, j int) bool {
+	// Точный порядок сравнений Zend (важен для предупреждений SORT_STRING).
+	zendSortSlices(len(elems), func(i, j int) int {
 		var c int
 		if byKey {
 			c = compareWithFlags(ctx, arrayKeySlot(elems[i].k), arrayKeySlot(elems[j].k), flags)
@@ -2386,8 +2443,8 @@ func sortSimple(ctx *vm.Context, fn string, byKey, preserve, desc bool) vm.Value
 		if desc {
 			c = -c
 		}
-		return c < 0
-	})
+		return c
+	}, func(i, j int) { elems[i], elems[j] = elems[j], elems[i] })
 	out := vm.NewArray()
 	for _, e := range elems {
 		if preserve {
@@ -2400,21 +2457,90 @@ func sortSimple(ctx *vm.Context, fn string, byKey, preserve, desc bool) vm.Value
 	return vm.Bool(true)
 }
 
+// numCmp — numeric_compare_function: zval_get_double обоих операндов
+// (объект даёт предупреждение "could not be converted to float" и 1).
+func numCmp(ctx *vm.Context, a, b vm.Slot) int {
+	af, bf := zvalGetDouble(ctx, a), zvalGetDouble(ctx, b)
+	switch {
+	case af < bf:
+		return -1
+	case af > bf:
+		return 1
+	}
+	return 0
+}
+
+// zendBinaryStrCaseCmp — zend_binary_strcasecmp_l: байтовое сравнение с
+// ASCII-регистронезависимостью.
+func zendBinaryStrCaseCmp(a, b string) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	for i := 0; i < n; i++ {
+		ca, cb := a[i], b[i]
+		if ca != cb {
+			la, lb := asciiLowerByte(ca), asciiLowerByte(cb)
+			if la != lb {
+				if la < lb {
+					return -1
+				}
+				return 1
+			}
+		}
+	}
+	switch {
+	case len(a) < len(b):
+		return -1
+	case len(a) > len(b):
+		return 1
+	}
+	return 0
+}
+
+func asciiLowerByte(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// compareMultisort — компаратор колонки array_multisort
+// (php_get_data_compare_func_unstable + reverse).
+func compareMultisort(ctx *vm.Context, a, b vm.Slot, flags int64, desc bool) int {
+	const flagCase int64 = 8
+	var c int
+	switch flags &^ flagCase {
+	case 1: // SORT_NUMERIC
+		c = numCmp(ctx, a, b)
+	case 2: // SORT_STRING
+		as, bs := sortStringOf(ctx, a), sortStringOf(ctx, b)
+		if flags&flagCase != 0 {
+			c = zendBinaryStrCaseCmp(as, bs)
+		} else {
+			c = strings.Compare(as, bs)
+		}
+	case 6: // SORT_NATURAL
+		c = int(strNatCmp(sortStringOf(ctx, a), sortStringOf(ctx, b), flags&flagCase != 0))
+	default:
+		// SORT_REGULAR — php_array_data_compare_unstable (zend_compare);
+		// используется общий путь сравнения слотов.
+		_ = flagCase
+		c = compareWithFlags(ctx, a, b, flags)
+	}
+	if desc {
+		c = -c
+	}
+	return c
+}
+
 // compareWithFlags сравнивает слоты с учётом флагов сортировки PHP
 // (SORT_REGULAR/SORT_NUMERIC/SORT_STRING/SORT_NATURAL, SORT_FLAG_CASE).
 func compareWithFlags(ctx *vm.Context, a, b vm.Slot, flags int64) int {
 	const flagCase int64 = 8
 	switch flags &^ flagCase {
 	case 1: // SORT_NUMERIC
-		af, bf := a.ToFloat(), b.ToFloat()
-		switch {
-		case af < bf:
-			return -1
-		case af > bf:
-			return 1
-		default:
-			return 0
-		}
+		return numCmp(ctx, a, b)
 	case 2: // SORT_STRING
 		as, bs := sortStringOf(ctx, a), sortStringOf(ctx, b)
 		if flags&flagCase != 0 {
@@ -2507,7 +2633,7 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 	var callErr error
 	boolRet := false
 	var ab [2]vm.Slot
-	sign := func(x int64) int64 {
+	sign := func(x int64) int {
 		if x > 0 {
 			return 1
 		}
@@ -2519,14 +2645,14 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 	// callComp повторяет php_array_user_compare_unstable: bool-результат
 	// вызывает Deprecated и (для false) повторный вызов с перестановкой
 	// операндов, как в Zend.
-	callComp := func(lhs, rhs vm.Slot) bool {
+	callComp := func(lhs, rhs vm.Slot) int {
 		ab[0], ab[1] = lhs, rhs
 		res, err := ctx.VMInstance().CallCallable(ctx, cb, ab[:])
 		if err != nil {
 			if callErr == nil {
 				callErr = err
 			}
-			return false
+			return 0
 		}
 		if res.Type() == vm.BoolType {
 			boolRet = true
@@ -2537,13 +2663,13 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 					if callErr == nil {
 						callErr = err2
 					}
-					return false
+					return 0
 				}
-				return -sign(res2.ToInt()) < 0
+				return -sign(res2.ToInt())
 			}
-			return sign(1) < 0
+			return 1
 		}
-		return sign(res.ToInt()) < 0
+		return sign(res.ToInt())
 	}
 	// usort (ключи не сохраняются): сортируем только значения — Swap
 	// переставляет Slot (24 байта), а не пару ключ/значение.
@@ -2551,10 +2677,17 @@ func sortWithCallback(ctx *vm.Context, fn string, byKey, preserve bool) vm.Value
 	var vals []vm.Slot
 	if !preserve && !byKey {
 		vals = a.Values()
-		sort.Stable(slotSorter{vals: vals, callComp: callComp})
+		zendSortSlices(len(vals), func(i, j int) int {
+			return callComp(vals[i], vals[j])
+		}, func(i, j int) { vals[i], vals[j] = vals[j], vals[i] })
 	} else {
 		elems = arrayElems(a)
-		sort.Stable(elemSorter{elems: elems, byKey: byKey, callComp: callComp})
+		zendSortSlices(len(elems), func(i, j int) int {
+			if byKey {
+				return callComp(arrayKeySlot(elems[i].k), arrayKeySlot(elems[j].k))
+			}
+			return callComp(elems[i].v, elems[j].v)
+		}, func(i, j int) { elems[i], elems[j] = elems[j], elems[i] })
 	}
 	if boolRet {
 		ctx.VM().Deprecated(fn + "(): Returning bool from comparison function is deprecated, return an integer less than, equal to, or greater than zero")
@@ -2596,6 +2729,115 @@ func usortFn(ctx *vm.Context) vm.Value  { return sortWithCallback(ctx, "usort", 
 func uasortFn(ctx *vm.Context) vm.Value { return sortWithCallback(ctx, "uasort", false, true) }
 func uksortFn(ctx *vm.Context) vm.Value { return sortWithCallback(ctx, "uksort", true, true) }
 
+// walkSource — источник массива для array_walk: ячейка переменной (если
+// аргумент пришёл по ссылке) или фиксированное значение (рекурсия/временный
+// массив). Zend перечитывает zval аргумента после каждого колбэка: колбэк
+// (или деструктор) мог переприсвоить переменную (bug69068, bug70713).
+type walkSource struct {
+	cell  *vm.Ref
+	value vm.Slot
+	local *vm.Array
+}
+
+func (w *walkSource) get() vm.Slot {
+	if w.local != nil {
+		return vm.MakeArray(w.local)
+	}
+	if w.cell != nil {
+		return w.cell.Value()
+	}
+	return w.value
+}
+
+func (w *walkSource) set(a *vm.Array) {
+	if w.cell != nil {
+		w.cell.Set(vm.MakeArray(a))
+		return
+	}
+	if w.local == nil {
+		w.local = a
+	}
+}
+
+// phpArrayWalk повторяет Zend php_array_walk: позиция — индекс хранения
+// (томбстоуны пропускаются), после каждого колбэка цель перечитывается, при
+// смене объекта массива позиция сбрасывается на начало. Массив перед обходом
+// разделяется (COW): Zend создаёт ссылку на элемент, а это разделяет массив —
+// запись через &$value не должна попадать второму владельцу (bug69068_2).
+func phpArrayWalk(ctx *vm.Context, src *walkSource, cb, userdata vm.Slot, hasExt, recursive bool) {
+	m := ctx.VMInstance()
+	visited := -1
+	var cur *vm.Array
+	started := false
+	for {
+		curSlot := vm.Deref(src.get())
+		if curSlot.Type() != vm.ArrayType {
+			if !started {
+				return
+			}
+			ctx.Throw(vm.NewThrowable("TypeError", "Iterated value is no longer an array or object"))
+			return
+		}
+		a := curSlot.AsArray()
+		if a.Shared() {
+			cp := a.Unshare()
+			src.set(cp)
+			a = cp
+		}
+		if a != cur {
+			// Массив переприсвоен колбэком: позиция — с начала нового.
+			cur = a
+			visited = -1
+		}
+		started = true
+		i, ok := a.WalkNextLive(visited + 1)
+		if !ok {
+			return
+		}
+		visited = i
+		val, _ := a.WalkElementAt(i)
+		key, _ := a.WalkKeyAt(i)
+		if recursive && vm.Deref(val).Type() == vm.ArrayType {
+			// Подмассив: рекурсия без колбэка. Цель — значение элемента
+			// (Zend держит его ссылкой, поэтому удаление элемента в родителе
+			// не прерывает обход — bug61967). Разделённый подмассив
+			// копируется: копию нужно вернуть в элемент родителя
+			// (bug34982).
+			srcSub := &walkSource{value: val}
+			phpArrayWalk(ctx, srcSub, cb, userdata, hasExt, true)
+			if srcSub.local != nil {
+				if curVal, ok := a.WalkElementAt(i); ok && curVal == val {
+					a.WalkSetAt(i, vm.MakeArray(srcSub.local))
+				}
+			}
+			if ctx.HasThrown() {
+				return
+			}
+			continue
+		}
+		cell := val
+		needWriteback := !val.IsRef()
+		if needWriteback {
+			cell = vm.NewRef(vm.Deref(val))
+		}
+		callArgs := []vm.Slot{cell, arrayKeySlot(key)}
+		if hasExt {
+			callArgs = append(callArgs, userdata)
+		}
+		_, err := m.CallCallable(ctx, cb, callArgs)
+		throwCallable(ctx, err)
+		if ctx.HasThrown() {
+			return
+		}
+		if needWriteback {
+			// Запись назад, если элемент не удалён/не заменён колбэком.
+			if curVal, ok := a.WalkElementAt(i); ok && curVal == val {
+				a.WalkSetAt(i, cell.Ref().Value())
+			}
+		}
+	}
+}
+
 func arrayWalkFn(ctx *vm.Context) vm.Value {
 	args := ctx.Args()
 	if len(args) < 2 {
@@ -2627,26 +2869,28 @@ func arrayWalkFn(ctx *vm.Context) vm.Value {
 		}
 		return vm.Bool(true)
 	}
-	a, set := refArrayArg(ctx, 0, "array_walk")
-	if ctx.HasThrown() {
-		return *new(vm.Value)
-	}
-	a = a.Unshare()
-	for k, v := range a.All() {
-		cell := vm.NewRef(v)
-		callArgs := []vm.Slot{cell, arrayKeySlot(k)}
-		if hasExt {
-			callArgs = append(callArgs, ext)
-		}
-		_, err := ctx.VMInstance().CallCallable(ctx, cb, callArgs)
-		throwCallable(ctx, err)
+	if arg(ctx, 0).Type() != vm.ArrayType {
+		// Z_PARAM_ARRAY_OR_OBJECT_EX: не массив и не объект — TypeError.
+		arrayArgError(ctx, 0, "array_walk")
 		if ctx.HasThrown() {
 			return *new(vm.Value)
 		}
-		a.Set(k, cell.Ref().Value())
 	}
-	set(a)
+	phpArrayWalk(ctx, walkSourceOf(ctx, 0), cb, ext, hasExt, false)
+	if ctx.HasThrown() {
+		return *new(vm.Value)
+	}
 	return vm.Bool(true)
+}
+
+// walkSourceOf строит источник обхода из аргумента: by-ref ячейка переменной
+// (записи колбэка видны сразу) или само значение.
+func walkSourceOf(ctx *vm.Context, i int) *walkSource {
+	s := arg(ctx, i)
+	if s.IsRef() && s.Ref() != nil {
+		return &walkSource{cell: s.Ref()}
+	}
+	return &walkSource{value: s}
 }
 
 func arrayWalkRecursiveFn(ctx *vm.Context) vm.Value {
@@ -2680,16 +2924,17 @@ func arrayWalkRecursiveFn(ctx *vm.Context) vm.Value {
 		}
 		return vm.Bool(true)
 	}
-	a, set := refArrayArg(ctx, 0, "array_walk_recursive")
+	if arg(ctx, 0).Type() != vm.ArrayType {
+		// Z_PARAM_ARRAY_OR_OBJECT_EX: не массив и не объект — TypeError.
+		arrayArgError(ctx, 0, "array_walk_recursive")
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
+	}
+	phpArrayWalk(ctx, walkSourceOf(ctx, 0), cb, ext, hasExt, true)
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	a = a.Unshare()
-	walkRecursive(ctx, a, cb, ext, hasExt)
-	if ctx.HasThrown() {
-		return *new(vm.Value)
-	}
-	set(a)
 	return vm.Bool(true)
 }
 
@@ -3101,6 +3346,12 @@ func arrayUnshiftFn(ctx *vm.Context) vm.Value {
 // arraySpliceFn — array_splice($array, $offset, $length = null, $replacement = []).
 // Числовые ключи удалённых и оставшихся элементов перенумеровываются,
 // строковые сохраняются; значения replacement вставляются как список.
+//
+// Как PHP 8.4 (GH-16649/gh19926): при неиспользуемом результате удалённые
+// элементы освобождаются внутри вызова, а модификация массива из их
+// деструкторов приводит к Error "Array was modified during array_splice
+// operation" (Zend: временный addref исходного hash переводит запись
+// деструктора в COW, и исходный hash остаётся без владельца).
 func arraySpliceFn(ctx *vm.Context) vm.Value {
 	a, set := refArrayArg(ctx, 0, "array_splice")
 	if ctx.HasThrown() {
@@ -3147,7 +3398,8 @@ func arraySpliceFn(ctx *vm.Context) vm.Value {
 		end = n64
 	}
 	offi, endi := int(off), int(end)
-	removed := reindexElems(elems[offi:endi])
+	removedElems := elems[offi:endi]
+	removed := reindexElems(removedElems)
 	out := vm.NewArray()
 	for _, e := range elems[:offi] {
 		if e.k.IsStr() {
@@ -3177,6 +3429,41 @@ func arraySpliceFn(ctx *vm.Context) vm.Value {
 		}
 	}
 	ctx.VM().RemapArraySpliceIters(arg(ctx, 0), offi, endi-offi, replLen)
+	// Ячейка аргумента (by-ref): по ней ловится модификация из деструкторов.
+	var cell *vm.Ref
+	if s := arg(ctx, 0); s.IsRef() {
+		cell = s.Ref()
+	}
+	if !ctx.RetUsed() {
+		// Zend USED_RET=0: rem_hash не создаётся, удалённые значения
+		// освобождаются во время вызова. Массив помечается разделённым, чтобы
+		// запись деструктора сделала COW (и была видна как модификация).
+		out.MarkShared()
+		set(out)
+		var err *vm.Throwable
+		if len(removedElems) > 0 {
+			vals := make([]vm.Slot, 0, len(removedElems))
+			for _, e := range removedElems {
+				vals = append(vals, e.v)
+			}
+			err = ctx.VM().FreeSpliceRemoved(vals)
+		}
+		modified := false
+		if cell != nil {
+			cur := cell.Value()
+			modified = !(cur.Type() == vm.ArrayType && cur.AsArray() == out)
+		}
+		if err != nil {
+			ctx.Throw(err)
+			return *new(vm.Value)
+		}
+		if modified {
+			ctx.Throw(vm.NewThrowable("Error", "Array was modified during array_splice operation"))
+			return *new(vm.Value)
+		}
+		// Zend RETVAL_EMPTY_ARRAY: результат-оператор отброшен.
+		return vm.MakeArray(vm.NewArray())
+	}
 	set(out)
 	return vm.MakeArray(removed)
 }
@@ -3299,28 +3586,27 @@ func arrayMultisortFn(ctx *vm.Context) vm.Value {
 	for i := range perm {
 		perm[i] = i
 	}
-	sort.SliceStable(perm, func(i, j int) bool {
+	// Порядок сравнений — как у Zend (zend_sort по строкам indirect), включая
+	// стабильный fallback по исходной позиции и предупреждения numeric-сравнения.
+	zendSortRange(0, n, func(i, j int) int {
 		pi, pj := perm[i], perm[j]
 		for ci := range cols {
 			c := &cols[ci]
 			var cv int
-			switch {
-			case pi < len(c.elems) && pj < len(c.elems):
-				cv = compareWithFlags(ctx, c.elems[pi].v, c.elems[pj].v, c.flags)
-			case pi < len(c.elems):
+			if pi < len(c.elems) && pj < len(c.elems) {
+				cv = compareMultisort(ctx, c.elems[pi].v, c.elems[pj].v, c.flags, c.desc)
+			} else if pi < len(c.elems) {
 				cv = -1
-			case pj < len(c.elems):
+			} else if pj < len(c.elems) {
 				cv = 1
 			}
 			if cv != 0 {
-				if c.desc {
-					cv = -cv
-				}
-				return cv < 0
+				return cv
 			}
 		}
-		return false
-	})
+		// stable_sort_fallback: Z_EXTRA строки — исходная позиция.
+		return pi - pj
+	}, func(i, j int) { perm[i], perm[j] = perm[j], perm[i] })
 	for ci := range cols {
 		c := &cols[ci]
 		na := vm.NewArray()
@@ -3489,7 +3775,9 @@ func arrayUdiffFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, cbs[0], vm.MakeNull(), true, false, false)
+	dep := false
+	ud := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{behavior: setOpNormal, data: ud.value, userData: ud}, false)
 }
 
 func arrayUdiffAssocFn(ctx *vm.Context) vm.Value {
@@ -3497,7 +3785,10 @@ func arrayUdiffAssocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, cbs[0], vm.MakeNull(), true, true, false)
+	// php_array_diff_key(DIFF_COMP_DATA_USER): zval_user_compare без Deprecated.
+	return runKeyLookupSetOp(ctx, arrs, func(a, b vm.Slot) int {
+		return userCmpNoDep(ctx, cbs[0], a, b)
+	}, false)
 }
 
 func arrayUdiffUassocFn(ctx *vm.Context) vm.Value {
@@ -3506,7 +3797,10 @@ func arrayUdiffUassocFn(ctx *vm.Context) vm.Value {
 		return *new(vm.Value)
 	}
 	// cbs[0] — value_compare_func, cbs[1] — key_compare_func.
-	return runSetOp(ctx, arrs, cbs[0], cbs[1], true, true, false)
+	dep := false
+	ud := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	uk := &setOpCmpState{ctx: ctx, cb: cbs[1], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{behavior: setOpAssoc, data: ud.value, key: uk.key, userData: ud, userKey: uk}, false)
 }
 
 func arrayDiffUassocFn(ctx *vm.Context) vm.Value {
@@ -3514,7 +3808,14 @@ func arrayDiffUassocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, vm.MakeNull(), cbs[0], true, true, false)
+	dep := false
+	uk := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{
+		behavior: setOpAssoc,
+		data:     func(a, b *setBucket) int { return setStringCmp(ctx, a, b) },
+		key:      uk.key,
+		userKey:  uk,
+	}, false)
 }
 
 func arrayDiffUkeyFn(ctx *vm.Context) vm.Value {
@@ -3522,7 +3823,9 @@ func arrayDiffUkeyFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, vm.MakeNull(), cbs[0], false, true, false)
+	dep := false
+	uk := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{behavior: setOpKey, key: uk.key, userKey: uk}, false)
 }
 
 func arrayUintersectFn(ctx *vm.Context) vm.Value {
@@ -3530,7 +3833,9 @@ func arrayUintersectFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, cbs[0], vm.MakeNull(), true, false, true)
+	dep := false
+	ud := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{behavior: setOpNormal, data: ud.value, userData: ud}, true)
 }
 
 func arrayUintersectAssocFn(ctx *vm.Context) vm.Value {
@@ -3538,7 +3843,10 @@ func arrayUintersectAssocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, cbs[0], vm.MakeNull(), true, true, true)
+	// php_array_intersect_key(INTERSECT_COMP_DATA_USER): zval_user_compare.
+	return runKeyLookupSetOp(ctx, arrs, func(a, b vm.Slot) int {
+		return userCmpNoDep(ctx, cbs[0], a, b)
+	}, true)
 }
 
 func arrayUintersectUassocFn(ctx *vm.Context) vm.Value {
@@ -3546,7 +3854,10 @@ func arrayUintersectUassocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, cbs[0], cbs[1], true, true, true)
+	dep := false
+	ud := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	uk := &setOpCmpState{ctx: ctx, cb: cbs[1], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{behavior: setOpAssoc, data: ud.value, key: uk.key, userData: ud, userKey: uk}, true)
 }
 
 func arrayIntersectUassocFn(ctx *vm.Context) vm.Value {
@@ -3554,7 +3865,14 @@ func arrayIntersectUassocFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, vm.MakeNull(), cbs[0], true, true, true)
+	dep := false
+	uk := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{
+		behavior: setOpAssoc,
+		data:     func(a, b *setBucket) int { return setStringCmp(ctx, a, b) },
+		key:      uk.key,
+		userKey:  uk,
+	}, true)
 }
 
 func arrayIntersectUkeyFn(ctx *vm.Context) vm.Value {
@@ -3562,5 +3880,7 @@ func arrayIntersectUkeyFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	return runSetOp(ctx, arrs, vm.MakeNull(), cbs[0], false, true, true)
+	dep := false
+	uk := &setOpCmpState{ctx: ctx, cb: cbs[0], dep: &dep}
+	return runZendSetOp(ctx, arrs, setOpEngine{behavior: setOpKey, key: uk.key, userKey: uk}, true)
 }

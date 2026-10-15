@@ -1,0 +1,9 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:278:   ext                                           1705/ 1708 (99.8%)
+    phpt_dir_test.go:281: ИТОГО: 1705 / 1708 (99.8%), пропущено 212
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.phpt: mismatch got="array(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(3) \"one\"\n}\narray(2) {\n  [0]=>\n  int(2)\n  [1]=>\n  string(3) \"two\"\n}\narray(2)..." want="array(2) {\n  [0]=>\n  int(1)\n  [1]=>\n  string(3) \"one\"\n}\narray(2) {\n  [0]=>\n  int(2)\n  [1]=>\n  string(3) \"two\"\n}\narray(2)..."
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/array/bug25708.phpt: mismatch got="NULL\nNULL\nint(1)\nint(2)\n--\nint(1)\nint(2)\nint(1)\nint(2)\n--\nint(1)\nint(2)\nint(1)\nint(2)\n--\nint(1)\nint(3)\nint(1)\nint(3)\n--\n..." want="NULL\nNULL\nint(1)\nint(2)\n--\nint(1)\nint(2)\nint(1)\nint(2)\n--\nint(1)\nint(2)\nint(1)\nint(2)\n--\nint(1)\nint(3)\nint(1)\nint(3)\n--\n..."
+    phpt_dir_test.go:284:   FAIL /home/dev/e1_corp/ext/standard/tests/strings/bug72434.phpt: mismatch got="array(1) refcount(4){\n  [0]=>\n  object(stdClass)#3 (0) refcount(1){\n  }\n}\n" want="array(1) refcount(3){\n  [0]=>\n  object(stdClass)#%d (0) refcount(1){\n  }\n}"
+--- PASS: TestPHPTree (33.80s)
+PASS
+ok  	phpvm/internal/php	33.820s

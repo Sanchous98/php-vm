@@ -175,9 +175,11 @@ type dateTimeZoneData struct {
 type dateIntervalData struct {
 	Object
 	y, m, d, h, i, s int
+	f                float64
 	invert           bool
 	days             int
 	hasDays          bool
+	fromString       bool
 }
 
 type datePeriodData struct {
@@ -715,6 +717,7 @@ func (d *dateIntervalData) applyNegated(t time.Time) time.Time {
 }
 
 func registerDateIntervalMembers(ci *runtimeClass) {
+	ci.MarkInternal()
 	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
 			d := ctx.This[dateIntervalData]()
@@ -733,6 +736,22 @@ func registerDateIntervalMembers(ci *runtimeClass) {
 			hdr := d.Object
 			*d = *parsed
 			d.Object = hdr
+			if o := ctx.ThisObj(); o != nil {
+				ci.SetProp(o, "y", MakeInt(int64(parsed.y)))
+				ci.SetProp(o, "m", MakeInt(int64(parsed.m)))
+				ci.SetProp(o, "d", MakeInt(int64(parsed.d)))
+				ci.SetProp(o, "h", MakeInt(int64(parsed.h)))
+				ci.SetProp(o, "i", MakeInt(int64(parsed.i)))
+				ci.SetProp(o, "s", MakeInt(int64(parsed.s)))
+				ci.SetProp(o, "f", MakeFloat(parsed.f))
+				inv := int64(0)
+				if parsed.invert {
+					inv = 1
+				}
+				ci.SetProp(o, "invert", MakeInt(inv))
+				ci.SetProp(o, "days", MakeBool(false))
+				ci.SetProp(o, "from_string", MakeBool(false))
+			}
 			return MakeNull(), nil
 		},
 	}})
@@ -747,58 +766,47 @@ func registerDateIntervalMembers(ci *runtimeClass) {
 		},
 	}})
 
-	// Свойства y/m/d/h/i/s/invert/days.
-	ci.Declare("y", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			return MakeInt(int64(d.y))
+	// Объявленные свойства (Zend: public int $y = -1 и т.д.): у объекта,
+	// созданного unserialize() без конструктора, значения по умолчанию
+	// наблюдаемы (bug69425); конструктор заполняет их из строки интервала.
+	for _, pd := range []struct {
+		name string
+		typ  string
+		def  Value
+	}{
+		{"y", "int", MakeInt(-1)},
+		{"m", "int", MakeInt(-1)},
+		{"d", "int", MakeInt(-1)},
+		{"h", "int", MakeInt(-1)},
+		{"i", "int", MakeInt(-1)},
+		{"s", "int", MakeInt(-1)},
+		{"f", "float", MakeFloat(0)},
+		{"invert", "int", MakeInt(0)},
+		{"days", "int", MakeInt(-1)},
+		{"from_string", "bool", MakeBool(false)},
+	} {
+		ci.SetPropMeta(pd.name, pd.typ, false, false, Public)
+		ci.DeclareDefault(pd.name, pd.def)
+	}
+	// RegisterClass-объекты не проходят applyDefaults: выставляем объявленные
+	// дефолты при создании (в т.ч. для объекта из unserialize — bug69425).
+	baseNew := ci.newObj
+	ci.newObj = func(ctx *Context, args []Slot) *Object {
+		o := baseNew(ctx, args)
+		if o == nil {
+			return o
 		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("m", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			return MakeInt(int64(d.m))
-		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("d", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			return MakeInt(int64(d.d))
-		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("h", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			return MakeInt(int64(d.h))
-		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("i", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			return MakeInt(int64(d.i))
-		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("s", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			return MakeInt(int64(d.s))
-		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("invert", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil {
-			if d.invert {
-				return MakeInt(1)
+		for _, name := range ci.propOrder {
+			v, ok := ci.defaults[name]
+			if !ok {
+				continue
 			}
-			return MakeInt(0)
+			if _, has := o.propValueRaw(name); !has {
+				o.SetProp(name, v)
+			}
 		}
-		return MakeInt(0)
-	}, nil)
-	ci.Declare("days", func(o *Object) Value {
-		if d := objectAs[dateIntervalData](o, nil); d != nil && d.hasDays {
-			return MakeInt(int64(d.days))
-		}
-		return MakeBool(false)
-	}, nil)
+		return o
+	}
 }
 
 func (d *dateIntervalData) format(f string) string {

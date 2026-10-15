@@ -648,6 +648,10 @@ type uVal struct {
 	slot vm.Slot
 	ref  *vm.Ref
 	obj  *vm.Object
+	// sharedDest — значение записано в ячейку, у которой уже была запись
+	// var_hash (повторный ключ): финальная запись должна положить саму
+	// ячейку-ссылку, а не значение (typed_property_ref_overwrite2).
+	sharedDest bool
 	// setters — локации, где хранится это значение; вызываются, когда значение
 	// впервые становится целью R:-ссылки, чтобы превратить их в Ref (PHP
 	// «апгрейдит» zval до ссылки).
@@ -691,15 +695,14 @@ func unserializeFn(ctx *vm.Context) vm.Value {
 				child.failed = true
 				child.errPos = 0
 			}
-			// Неуспешный вложенный разбор: Zend откатывает добавленные им
-			// значения var_hash, поэтому ссылки R:/r: на частично разобранные
-			// значения становятся недействительными (индексы не сохраняются).
+			// Неуспешный вложенный разбор: Zend помечает добавленные им
+			// значения var_hash как NULL, но НЕ откатывает счётчик id —
+			// последующие значения получают следующие номера, а R:/r: на
+			// помеченные id дают ошибку (bug70436: ошибка на R:5 после
+			// провалившегося вложенного C:-объекта).
 			for i := startVals; i < len(child.shared.vals); i++ {
 				child.shared.vals[i].invalid = true
 				vmc.MarkNoDestruct(child.shared.vals[i].obj)
-			}
-			if len(child.shared.vals) > startVals {
-				child.shared.vals = child.shared.vals[:startVals]
 			}
 			vmc.Warn("unserialize(): Error at offset " + strconv.Itoa(child.errPos) + " of " + strconv.Itoa(len(s)) + " bytes")
 			return vm.Bool(false)
@@ -835,10 +838,35 @@ func (u *phpUnser) runPending() {
 	}
 }
 
+// destSharedRef возвращает ячейку-ссылку прошлой записи в тот же приёмник:
+// Zend хранит в var_hash указатели на zval-ячейки, поэтому повторная запись по
+// тому же ключу продолжает ту же ячейку (R:/r: на любую из записей видят
+// текущее значение — typed_property_ref_overwrite2).
+func (u *phpUnser) destSharedRef() *vm.Ref {
+	if u.pendingLoc == nil || len(u.destIds) == 0 {
+		return nil
+	}
+	idx := u.destIds[len(u.destIds)-1]
+	if idx < 1 || int(idx) > len(u.shared.vals) {
+		return nil
+	}
+	e := &u.shared.vals[idx-1]
+	if e.ref == nil || e.invalid {
+		return nil
+	}
+	return e.ref
+}
+
 func (u *phpUnser) register(v vm.Slot, o *vm.Object) int {
-	ref := vm.NewRef(v).Ref()
-	ref.MarkCounted()
-	e := uVal{slot: v, obj: o, ref: ref}
+	ref := u.destSharedRef()
+	shared := ref != nil
+	if ref == nil {
+		ref = vm.NewRef(v).Ref()
+		ref.MarkCounted()
+	} else {
+		ref.Set(v)
+	}
+	e := uVal{slot: v, obj: o, ref: ref, sharedDest: shared}
 	u.shared.vals = append(u.shared.vals, e)
 	if loc := u.pendingLoc; loc != nil {
 		u.pendingLoc = nil
@@ -855,9 +883,13 @@ func (u *phpUnser) register(v vm.Slot, o *vm.Object) int {
 // в начале разбора значения — до автозагрузки класса). fillReserved затем
 // заполняет слот/объект.
 func (u *phpUnser) reserve() int {
-	ref := vm.NewRef(vm.MakeNull()).Ref()
-	ref.MarkCounted()
-	e := uVal{ref: ref}
+	ref := u.destSharedRef()
+	shared := ref != nil
+	if ref == nil {
+		ref = vm.NewRef(vm.MakeNull()).Ref()
+		ref.MarkCounted()
+	}
+	e := uVal{ref: ref, sharedDest: shared}
 	u.shared.vals = append(u.shared.vals, e)
 	if loc := u.pendingLoc; loc != nil {
 		u.pendingLoc = nil
@@ -875,6 +907,16 @@ func (u *phpUnser) fillReserved(idx int, slot vm.Slot, o *vm.Object) {
 	e.slot = slot
 	e.obj = o
 	e.ref.Set(slot)
+	// Общая ячейка у нескольких записей (повторный ключ): объект виден всем
+	// (r:<id> на любую из них).
+	if o != nil {
+		for i := range u.shared.vals {
+			if u.shared.vals[i].ref == e.ref {
+				u.shared.vals[i].obj = o
+				u.shared.vals[i].slot = slot
+			}
+		}
+	}
 }
 
 // upgradeRef превращает значение id (1-based) в ссылку: применяет сеттеры.
@@ -891,7 +933,21 @@ func (u *phpUnser) upgradeRef(id int64) *vm.Ref {
 
 // value разбирает одно значение. Ключи массивов/свойств разбираются отдельно
 // (key) и в таблицу id не попадают — как в serialize.
+//
+// Zend делает var_push ДО разбора значения (кроме 'R'), поэтому неуспешный
+// разбор тоже занимает id: иначе последующие id в вложенных контекстах
+// сдвигаются (bug70436: провалившееся вложение сдвигает R:5).
 func (u *phpUnser) value(pos int) (vm.Slot, int, bool) {
+	startVals := len(u.shared.vals)
+	v, np, ok := u.valueInner(pos)
+	if !ok && len(u.shared.vals) == startVals {
+		u.shared.vals = append(u.shared.vals, uVal{invalid: true})
+	}
+	return v, np, ok
+}
+
+// valueInner — собственно разбор значения (см. value).
+func (u *phpUnser) valueInner(pos int) (vm.Slot, int, bool) {
 	if u.depth > 4096 {
 		u.fail(pos)
 		return vm.MakeNull(), pos, false
@@ -1434,7 +1490,15 @@ func (u *phpUnser) parseObject(pos int) (vm.Slot, int, bool) {
 		if _, exists := o.GetProp(storeName); !exists {
 			u.vm.MaybeDeprecateDynamicProp(ci, o, propName)
 		}
-		u.pendingLoc = func(s vm.Slot) { o.SetProp(storeName, s); placed = true }
+		u.pendingLoc = func(s vm.Slot) {
+			if u.vm.UnserIgnorePropWrite(ci, propName, s) {
+				placed = true
+				return
+			}
+			o.SetProp(storeName, s)
+			u.vm.UnserAttachTypedRefSource(o, ci, propName, s)
+			placed = true
+		}
 		savedDest := u.destIds
 		u.destIds = u.destForObj(o, storeName)
 		before := len(u.shared.vals)
@@ -1448,7 +1512,17 @@ func (u *phpUnser) parseObject(pos int) (vm.Slot, int, bool) {
 			return vm.MakeNull(), pos, false
 		}
 		if !placed {
-			o.SetProp(storeName, val)
+			if len(u.shared.vals) > before {
+				// Повторный ключ: в ячейке уже была запись var_hash — кладём
+				// саму ячейку-ссылку (Zend: переменные указывают на один zval).
+				if last := &u.shared.vals[len(u.shared.vals)-1]; last.sharedDest {
+					val = vm.MakeRef(last.ref)
+				}
+			}
+			if !u.vm.UnserIgnorePropWrite(ci, propName, val) {
+				o.SetProp(storeName, val)
+				u.vm.UnserAttachTypedRefSource(o, ci, propName, val)
+			}
 		} else if !incomplete && ci != nil {
 			// Значение уже записано сеттером R:-ссылки; проверяем тип здесь.
 			if verr := u.vm.UnserVerifyPropAssign(ci, propName, val); verr != nil {

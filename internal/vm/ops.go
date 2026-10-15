@@ -198,14 +198,16 @@ func Pow(a, b Slot) Slot {
 			if r, ok := powInt64(base, exp); ok {
 				return MakeInt(r)
 			}
-			r := math.Pow(float64(base), float64(exp))
+			r := PowPrecise(float64(base), float64(exp))
 			if base < 0 && exp&1 == 1 && exp > (1<<53) {
 				r = -r
 			}
 			return MakeFloat(r)
 		}
 	}
-	return MakeFloat(math.Pow(a.ToFloat(), b.ToFloat()))
+	// libm-совместимое округление (PHP-эталон — glibc): Go math.Pow может
+	// отличаться на 1 ulp (pow(27, 1/3)).
+	return MakeFloat(PowPrecise(a.ToFloat(), b.ToFloat()))
 }
 
 // PowOp — оператор ** с полным приведением операндов (экспорт для встроенной

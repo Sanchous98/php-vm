@@ -363,7 +363,7 @@ func builtins() []*vm.Function {
 		vm.Register("tan", func(ctx *vm.Context) vm.Value { return vm.Float(math.Tan(arg0(ctx).ToFloat())) }),
 		vm.Register("asin", func(ctx *vm.Context) vm.Value { return vm.Float(math.Asin(arg0(ctx).ToFloat())) }),
 		vm.Register("acos", func(ctx *vm.Context) vm.Value { return vm.Float(math.Acos(arg0(ctx).ToFloat())) }),
-		vm.Register("atan", func(ctx *vm.Context) vm.Value { return vm.Float(math.Atan(arg0(ctx).ToFloat())) }),
+		vm.Register("atan", func(ctx *vm.Context) vm.Value { return vm.Float(vm.AtanPrecise(arg0(ctx).ToFloat())) }),
 		vm.Register("atan2", func(ctx *vm.Context) vm.Value {
 			return vm.Float(math.Atan2(arg(ctx, 0).ToFloat(), arg(ctx, 1).ToFloat()))
 		}),
@@ -658,12 +658,9 @@ func builtins() []*vm.Function {
 		vm.Register("register_tick_function", registerTickFunctionFn),
 		vm.Register("unregister_tick_function", unregisterTickFunctionFn),
 		vm.Register("session_save_path", func(ctx *vm.Context) vm.Value { return vm.Str("") }),
-		vm.Register("session_start", func(ctx *vm.Context) vm.Value {
-			// Сессия не поддерживается: как Zend при пустом хранилище —
-			// $_SESSION становится пустым массивом (unset_cv05/06).
-			ctx.VM().SetSuperglobalSynced("$_SESSION", vm.MakeArray(vm.NewArray()))
-			return vm.Bool(true)
-		}),
+		vm.Register("session_start", sessionStartFn),
+		vm.Register("session_decode", sessionDecodeFn),
+		vm.Register("session_destroy", sessionDestroyFn),
 		vm.Register("session_unset", func(ctx *vm.Context) vm.Value {
 			ctx.VM().SetSuperglobalSynced("$_SESSION", vm.MakeArray(vm.NewArray()))
 			return vm.MakeNull()

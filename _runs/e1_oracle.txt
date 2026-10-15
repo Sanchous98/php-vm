@@ -1,0 +1,2210 @@
+@@@@@@@@ ext/standard/tests/array/002.phpt
+Unsorted data:
+array(8) {
+  [0]=>
+  string(3) "PHP"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  ["test"]=>
+  int(27)
+  [1000]=>
+  string(4) "test"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [1001]=>
+  string(6) "monkey"
+  [16777216]=>
+  float(-0.3333333333333333)
+}
+
+ -- Testing arsort() -- 
+No second argument:
+array(8) {
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [0]=>
+  string(3) "PHP"
+  ["test"]=>
+  int(27)
+  [16777216]=>
+  float(-0.3333333333333333)
+}
+Using SORT_REGULAR:
+array(8) {
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [0]=>
+  string(3) "PHP"
+  ["test"]=>
+  int(27)
+  [16777216]=>
+  float(-0.3333333333333333)
+}
+Using SORT_NUMERIC:
+array(8) {
+  ["test"]=>
+  int(27)
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [0]=>
+  string(3) "PHP"
+  [16777216]=>
+  float(-0.3333333333333333)
+}
+Using SORT_STRING
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+array(8) {
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [0]=>
+  string(3) "PHP"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  ["test"]=>
+  int(27)
+  [16777216]=>
+  float(-0.3333333333333333)
+}
+
+ -- Testing asort() -- 
+No second argument:
+array(8) {
+  [16777216]=>
+  float(-0.3333333333333333)
+  ["test"]=>
+  int(27)
+  [0]=>
+  string(3) "PHP"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_REGULAR:
+array(8) {
+  [16777216]=>
+  float(-0.3333333333333333)
+  ["test"]=>
+  int(27)
+  [0]=>
+  string(3) "PHP"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_NUMERIC:
+array(8) {
+  [16777216]=>
+  float(-0.3333333333333333)
+  [0]=>
+  string(3) "PHP"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  ["test"]=>
+  int(27)
+}
+Using SORT_STRING
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+array(8) {
+  [16777216]=>
+  float(-0.3333333333333333)
+  ["test"]=>
+  int(27)
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [0]=>
+  string(3) "PHP"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+}
+
+ -- Testing krsort() -- 
+No second argument:
+array(8) {
+  ["test"]=>
+  int(27)
+  [16777216]=>
+  float(-0.3333333333333333)
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [0]=>
+  string(3) "PHP"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_REGULAR:
+array(8) {
+  ["test"]=>
+  int(27)
+  [16777216]=>
+  float(-0.3333333333333333)
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [0]=>
+  string(3) "PHP"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_NUMERIC:
+array(8) {
+  [16777216]=>
+  float(-0.3333333333333333)
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  ["test"]=>
+  int(27)
+  [0]=>
+  string(3) "PHP"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_STRING
+array(8) {
+  ["test"]=>
+  int(27)
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [16777216]=>
+  float(-0.3333333333333333)
+  [1001]=>
+  string(6) "monkey"
+  [1000]=>
+  string(4) "test"
+  [0]=>
+  string(3) "PHP"
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+
+ -- Testing ksort() -- 
+No second argument:
+array(8) {
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [0]=>
+  string(3) "PHP"
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [16777216]=>
+  float(-0.3333333333333333)
+  ["test"]=>
+  int(27)
+}
+Using SORT_REGULAR:
+array(8) {
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [0]=>
+  string(3) "PHP"
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [16777216]=>
+  float(-0.3333333333333333)
+  ["test"]=>
+  int(27)
+}
+Using SORT_NUMERIC:
+array(8) {
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [0]=>
+  string(3) "PHP"
+  ["test"]=>
+  int(27)
+  [5]=>
+  string(4) "Test"
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [16777216]=>
+  float(-0.3333333333333333)
+}
+Using SORT_STRING
+array(8) {
+  [-1000]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [0]=>
+  string(3) "PHP"
+  [1000]=>
+  string(4) "test"
+  [1001]=>
+  string(6) "monkey"
+  [16777216]=>
+  float(-0.3333333333333333)
+  [17]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  ["test"]=>
+  int(27)
+}
+
+ -- Testing rsort() -- 
+No second argument:
+array(8) {
+  [0]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [1]=>
+  string(4) "test"
+  [2]=>
+  string(6) "monkey"
+  [3]=>
+  string(4) "Test"
+  [4]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(3) "PHP"
+  [6]=>
+  int(27)
+  [7]=>
+  float(-0.3333333333333333)
+}
+Using SORT_REGULAR:
+array(8) {
+  [0]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [1]=>
+  string(4) "test"
+  [2]=>
+  string(6) "monkey"
+  [3]=>
+  string(4) "Test"
+  [4]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(3) "PHP"
+  [6]=>
+  int(27)
+  [7]=>
+  float(-0.3333333333333333)
+}
+Using SORT_NUMERIC:
+array(8) {
+  [0]=>
+  int(27)
+  [1]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [2]=>
+  string(4) "test"
+  [3]=>
+  string(6) "monkey"
+  [4]=>
+  string(4) "Test"
+  [5]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [6]=>
+  string(3) "PHP"
+  [7]=>
+  float(-0.3333333333333333)
+}
+Using SORT_STRING
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+array(8) {
+  [0]=>
+  string(4) "test"
+  [1]=>
+  string(6) "monkey"
+  [2]=>
+  string(4) "Test"
+  [3]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [4]=>
+  string(3) "PHP"
+  [5]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [6]=>
+  int(27)
+  [7]=>
+  float(-0.3333333333333333)
+}
+
+ -- Testing sort() -- 
+No second argument:
+array(8) {
+  [0]=>
+  float(-0.3333333333333333)
+  [1]=>
+  int(27)
+  [2]=>
+  string(3) "PHP"
+  [3]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [4]=>
+  string(4) "Test"
+  [5]=>
+  string(6) "monkey"
+  [6]=>
+  string(4) "test"
+  [7]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_REGULAR:
+array(8) {
+  [0]=>
+  float(-0.3333333333333333)
+  [1]=>
+  int(27)
+  [2]=>
+  string(3) "PHP"
+  [3]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [4]=>
+  string(4) "Test"
+  [5]=>
+  string(6) "monkey"
+  [6]=>
+  string(4) "test"
+  [7]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+}
+Using SORT_NUMERIC:
+array(8) {
+  [0]=>
+  float(-0.3333333333333333)
+  [1]=>
+  string(3) "PHP"
+  [2]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [3]=>
+  string(4) "Test"
+  [4]=>
+  string(6) "monkey"
+  [5]=>
+  string(4) "test"
+  [6]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [7]=>
+  int(27)
+}
+Using SORT_STRING
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/002.php on line 16
+array(8) {
+  [0]=>
+  float(-0.3333333333333333)
+  [1]=>
+  int(27)
+  [2]=>
+  array(2) {
+    [0]=>
+    string(6) "banana"
+    [1]=>
+    string(6) "orange"
+  }
+  [3]=>
+  string(3) "PHP"
+  [4]=>
+  string(27) "PHP: Hypertext Preprocessor"
+  [5]=>
+  string(4) "Test"
+  [6]=>
+  string(6) "monkey"
+  [7]=>
+  string(4) "test"
+}
+@@@@@@@@ ext/standard/tests/array/array_intersect_variation9.phpt
+*** Testing array_intersect() : passing two dimensional array to both $arr1 and $arr2 arguments ***
+-- Passing the entire 2-D array to $arr1 and $arr2 --
+- With default arguments -
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 31
+array(4) {
+  [0]=>
+  array(4) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+    [2]=>
+    string(5) "hello"
+    [3]=>
+    string(5) "world"
+  }
+  [1]=>
+  array(4) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+    [2]=>
+    int(3)
+    [3]=>
+    int(4)
+  }
+  [2]=>
+  array(3) {
+    [1]=>
+    string(3) "one"
+    [2]=>
+    string(3) "two"
+    [3]=>
+    string(5) "three"
+  }
+  [3]=>
+  array(3) {
+    ["ten"]=>
+    int(10)
+    ["twenty"]=>
+    float(20)
+    ["thirty"]=>
+    int(30)
+  }
+}
+- With more arguments -
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+PHP Warning:  Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+
+Warning: Array to string conversion in /home/dev/e1_corp/ext/standard/tests/array/array_intersect_variation9.php on line 36
+array(4) {
+  [0]=>
+  array(4) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+    [2]=>
+    string(5) "hello"
+    [3]=>
+    string(5) "world"
+  }
+  [1]=>
+  array(4) {
+    [0]=>
+    int(1)
+    [1]=>
+    int(2)
+    [2]=>
+    int(3)
+    [3]=>
+    int(4)
+  }
+  [2]=>
+  array(3) {
+    [1]=>
+    string(3) "one"
+    [2]=>
+    string(3) "two"
+    [3]=>
+    string(5) "three"
+  }
+  [3]=>
+  array(3) {
+    ["ten"]=>
+    int(10)
+    ["twenty"]=>
+    float(20)
+    ["thirty"]=>
+    int(30)
+  }
+}
+-- Passing the sub-array to $arr1 and $arr2 --
+- With default arguments -
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+- With more arguments -
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  int(2)
+}
+Done@@@@@@@@ ext/standard/tests/array/array_multisort_variation9.phpt
+*** Testing array_multisort() : usage variation  - test sort order of all types***
+PHP Warning:  Object of class classWithToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+
+Warning: Object of class classWithToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+PHP Warning:  Object of class classWithToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+
+Warning: Object of class classWithToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+PHP Warning:  Object of class classWithoutToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+
+Warning: Object of class classWithoutToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+PHP Warning:  Object of class classWithoutToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+
+Warning: Object of class classWithoutToString could not be converted to float in /home/dev/e1_corp/ext/standard/tests/array/array_multisort_variation9.php on line 26
+bool(true)
+array(10) {
+  ["float -10.5"]=>
+  float(-10.5)
+  ["int 0"]=>
+  int(0)
+  [0]=>
+  array(0) {
+  }
+  ["uppercase NULL"]=>
+  NULL
+  ["empty string DQ"]=>
+  string(0) ""
+  ["string DQ"]=>
+  string(6) "string"
+  ["undefined var"]=>
+  NULL
+  ["lowercase true"]=>
+  bool(true)
+  ["instance of classWithToString"]=>
+  object(classWithToString)#1 (0) {
+  }
+  ["instance of classWithoutToString"]=>
+  object(classWithoutToString)#2 (0) {
+  }
+}
+@@@@@@@@ ext/standard/tests/array/array_user_key_compare.phpt
+PHP Warning:  array_compare(): Argument #1 ($key1) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_user_key_compare.php on line 11
+
+Warning: array_compare(): Argument #1 ($key1) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_user_key_compare.php on line 11
+PHP Warning:  array_compare(): Argument #2 ($key2) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_user_key_compare.php on line 11
+
+Warning: array_compare(): Argument #2 ($key2) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_user_key_compare.php on line 11
+string(1) "B"
+@@@@@@@@ ext/standard/tests/array/array_walk_closure.phpt
+array(2) {
+  [0]=>
+  int(1)
+  [1]=>
+  string(3) "one"
+}
+array(2) {
+  [0]=>
+  int(2)
+  [1]=>
+  string(3) "two"
+}
+array(2) {
+  [0]=>
+  int(3)
+  [1]=>
+  string(5) "three"
+}
+bool(true)
+
+closure with array
+PHP Warning:  {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 14
+
+Warning: {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 14
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+PHP Warning:  {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 14
+
+Warning: {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 14
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+PHP Warning:  {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 14
+
+Warning: {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 14
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+bool(true)
+End result:int(42)
+
+closure with use
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+array(1) {
+  ["sum"]=>
+  int(43)
+}
+array(1) {
+  ["sum"]=>
+  int(45)
+}
+bool(true)
+End result:int(48)
+
+closure with object
+PHP Warning:  {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 39
+
+Warning: {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 39
+object(stdClass)#1 (1) {
+  ["sum"]=>
+  int(42)
+}
+PHP Warning:  {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 39
+
+Warning: {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 39
+object(stdClass)#1 (1) {
+  ["sum"]=>
+  int(43)
+}
+PHP Warning:  {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 39
+
+Warning: {closure}(): Argument #3 ($udata) must be passed by reference, value given in /home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php on line 39
+object(stdClass)#1 (1) {
+  ["sum"]=>
+  int(45)
+}
+bool(true)
+End result:int(48)
+
+function with object
+object(stdClass)#2 (1) {
+  ["sum"]=>
+  int(42)
+}
+object(stdClass)#2 (1) {
+  ["sum"]=>
+  int(43)
+}
+object(stdClass)#2 (1) {
+  ["sum"]=>
+  int(45)
+}
+bool(true)
+End result:int(48)
+
+function with array
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+array(1) {
+  ["sum"]=>
+  int(42)
+}
+bool(true)
+End result:int(42)
+
+closure and exception
+array(2) {
+  [0]=>
+  array(1) {
+    ["function"]=>
+    string(9) "{closure}"
+  }
+  [1]=>
+  array(3) {
+    ["file"]=>
+    string(65) "/home/dev/e1_corp/ext/standard/tests/array/array_walk_closure.php"
+    ["line"]=>
+    int(77)
+    ["function"]=>
+    string(10) "array_walk"
+  }
+}
+Done
+@@@@@@@@ ext/standard/tests/array/bug25708.phpt
+NULL
+NULL
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(3)
+int(1)
+int(3)
+--
+int(4)
+int(3)
+int(4)
+int(3)
+--
+int(3)
+int(3)
+int(3)
+--
+int(4)
+string(1) "x"
+int(4)
+string(1) "x"
+int(3)
+--
+int(1)
+int(2)
+----a
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(3)
+int(1)
+int(3)
+--
+int(4)
+int(3)
+int(4)
+int(3)
+--
+int(3)
+int(3)
+int(3)
+--
+int(4)
+string(1) "x"
+int(4)
+string(1) "x"
+int(3)
+--
+int(1)
+int(2)
+----ra
+NULL
+NULL
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(3)
+int(1)
+int(3)
+--
+int(4)
+int(3)
+int(4)
+int(3)
+--
+int(3)
+int(3)
+int(3)
+--
+int(4)
+string(1) "x"
+int(4)
+string(1) "x"
+int(3)
+--
+int(1)
+int(2)
+----
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(2)
+int(1)
+int(2)
+--
+int(1)
+int(3)
+int(1)
+int(3)
+--
+int(4)
+int(3)
+int(4)
+int(3)
+--
+int(3)
+int(3)
+int(3)
+--
+int(4)
+string(1) "x"
+int(4)
+string(1) "x"
+int(3)
+--
+int(1)
+int(2)
+----r
+string(2) "ok"
+string(2) "ok"
+@@@@@@@@ ext/standard/tests/array/bug28739.phpt
+string(1) "a"
+string(1) "a"
+Array
+(
+    [2] => p Object
+        (
+            [x] => 0
+        )
+
+    [1] => p Object
+        (
+            [x] => 1
+        )
+
+    [0] => p Object
+        (
+            [x] => 2
+        )
+
+)
+Now diffing:
+string(1) "b"
+string(1) "b"
+string(1) "b"
+string(1) "b"
+string(1) "b"
+string(1) "b"
+string(1) "b"
+string(1) "b"
+string(1) "b"
+Array
+(
+    [1] => p Object
+        (
+            [x] => 1
+        )
+
+)
+@@@@@@@@ ext/standard/tests/array/bug61730.phpt
+int(0)
+int(3)
+int(6)
+int(9)
+Array
+(
+)
+@@@@@@@@ ext/standard/tests/array/bug61967.phpt
+int(0)
+int(1)
+int(2)
+int(3)
+int(4)
+@@@@@@@@ ext/standard/tests/array/bug69068.phpt
+int(1)
+int(2)
+int(4)
+int(5)
+array(2) {
+  [0]=>
+  int(4)
+  [1]=>
+  int(5)
+}
+@@@@@@@@ ext/standard/tests/array/bug69068_2.phpt
+int(1)
+int(2)
+int(4)
+int(5)
+array(2) {
+  [0]=>
+  int(40)
+  [1]=>
+  int(50)
+}
+array(2) {
+  [0]=>
+  int(4)
+  [1]=>
+  int(5)
+}
+@@@@@@@@ ext/standard/tests/array/bug70713.phpt
+Iterated value is no longer an array or object
+@@@@@@@@ ext/standard/tests/array/compact_this.phpt
+array(1) {
+  ["this"]=>
+  object(class@anonymous)#1 (0) {
+  }
+}
+array(1) {
+  ["this"]=>
+  object(class@anonymous)#1 (0) {
+  }
+}
+array(1) {
+  ["this"]=>
+  object(class@anonymous)#1 (0) {
+  }
+}
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_uaf_add_elements.phpt
+ERROR: Should have thrown exception
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_uaf_array_deallocated.phpt
+free(): invalid pointer
+/home/dev/wavebench/e1_work/_runs/realphp.sh: line 23: 79358 Aborted                 (core dumped) php "${args[@]}" "$phpf" 2>&1
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_uaf_complex_modification.phpt
+ERROR: Should have thrown exception
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_uaf_multiple_destructors.phpt
+Destructor 1 called
+Destructor 2 called
+free(): invalid pointer
+/home/dev/wavebench/e1_work/_runs/realphp.sh: line 23: 79376 Aborted                 (core dumped) php "${args[@]}" "$phpf" 2>&1
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_uaf_original_case.phpt
+/home/dev/wavebench/e1_work/_runs/realphp.sh: line 23: 79385 Segmentation fault      (core dumped) php "${args[@]}" "$phpf" 2>&1
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_uaf_packed_to_hash.phpt
+ERROR: Should have thrown exception
+@@@@@@@@ ext/standard/tests/array/gh16649/array_splice_with_replacement.phpt
+ERROR: Should have thrown exception
+@@@@@@@@ ext/standard/tests/array/gh19300_2.phpt
+array_multisort(): Argument #1 ($array) must be an array or a sort flag
+array_multisort(): Argument #1 ($array) must be an array or a sort flag
+/home/dev/wavebench/e1_work/_runs/realphp.sh: line 23: 79415 Segmentation fault      (core dumped) php "${args[@]}" "$phpf" 2>&1
+@@@@@@@@ ext/standard/tests/array/gh19926.phpt
+Exception caught, no assertion failure
+@@@@@@@@ ext/standard/tests/array/rsort_variation11.phpt
+*** Testing rsort() : variation ***
+
+-- Sort flag = default --
+bool(true)
+array(22) {
+  [0]=>
+  array(4) {
+    [0]=>
+    array(3) {
+      [0]=>
+      int(33)
+      [1]=>
+      int(-5)
+      [2]=>
+      int(6)
+    }
+    [1]=>
+    array(1) {
+      [0]=>
+      int(11)
+    }
+    [2]=>
+    array(2) {
+      [0]=>
+      int(22)
+      [1]=>
+      int(-55)
+    }
+    [3]=>
+    array(0) {
+    }
+  }
+  [1]=>
+  array(0) {
+  }
+  [2]=>
+  string(1) "b"
+  [3]=>
+  string(14) "abcd abcd abcd"
+  [4]=>
+  string(4) "abcd"
+  [5]=>
+  string(2) "ab"
+  [6]=>
+  string(4) "True"
+  [7]=>
+  string(1) "5"
+  [8]=>
+  string(1) "4"
+  [9]=>
+  float(4)
+  [10]=>
+  string(3) "-.9"
+  [11]=>
+  int(-2)
+  [12]=>
+  float(-2)
+  [13]=>
+  float(-2.98989)
+  [14]=>
+  bool(true)
+  [15]=>
+  string(0) ""
+  [16]=>
+  NULL
+  [17]=>
+  float(0)
+  [18]=>
+  int(0)
+  [19]=>
+  int(-4)
+  [20]=>
+  string(0) ""
+  [21]=>
+  bool(false)
+}
+
+-- Sort flag = SORT_REGULAR --
+bool(true)
+array(22) {
+  [0]=>
+  array(4) {
+    [0]=>
+    array(3) {
+      [0]=>
+      int(33)
+      [1]=>
+      int(-5)
+      [2]=>
+      int(6)
+    }
+    [1]=>
+    array(1) {
+      [0]=>
+      int(11)
+    }
+    [2]=>
+    array(2) {
+      [0]=>
+      int(22)
+      [1]=>
+      int(-55)
+    }
+    [3]=>
+    array(0) {
+    }
+  }
+  [1]=>
+  array(0) {
+  }
+  [2]=>
+  string(1) "b"
+  [3]=>
+  string(14) "abcd abcd abcd"
+  [4]=>
+  string(4) "abcd"
+  [5]=>
+  string(2) "ab"
+  [6]=>
+  string(4) "True"
+  [7]=>
+  string(1) "5"
+  [8]=>
+  string(1) "4"
+  [9]=>
+  float(4)
+  [10]=>
+  string(3) "-.9"
+  [11]=>
+  int(-2)
+  [12]=>
+  float(-2)
+  [13]=>
+  float(-2.98989)
+  [14]=>
+  bool(true)
+  [15]=>
+  string(0) ""
+  [16]=>
+  NULL
+  [17]=>
+  float(0)
+  [18]=>
+  int(0)
+  [19]=>
+  int(-4)
+  [20]=>
+  string(0) ""
+  [21]=>
+  bool(false)
+}
+Done@@@@@@@@ ext/standard/tests/array/sort_variation11.phpt
+*** Testing sort() : usage variations ***
+
+-- Testing sort() by supplying mixed value array, 'flag' value is default --
+bool(true)
+array(22) {
+  [0]=>
+  string(0) ""
+  [1]=>
+  NULL
+  [2]=>
+  string(0) ""
+  [3]=>
+  float(0)
+  [4]=>
+  bool(false)
+  [5]=>
+  int(-4)
+  [6]=>
+  float(-2.98989)
+  [7]=>
+  int(-2)
+  [8]=>
+  float(-2)
+  [9]=>
+  string(3) "-.9"
+  [10]=>
+  int(0)
+  [11]=>
+  string(1) "4"
+  [12]=>
+  float(4)
+  [13]=>
+  string(1) "5"
+  [14]=>
+  string(4) "True"
+  [15]=>
+  string(2) "ab"
+  [16]=>
+  string(4) "abcd"
+  [17]=>
+  string(14) "abcd abcd abcd"
+  [18]=>
+  string(1) "b"
+  [19]=>
+  array(0) {
+  }
+  [20]=>
+  array(4) {
+    [0]=>
+    array(3) {
+      [0]=>
+      int(33)
+      [1]=>
+      int(-5)
+      [2]=>
+      int(6)
+    }
+    [1]=>
+    array(1) {
+      [0]=>
+      int(11)
+    }
+    [2]=>
+    array(2) {
+      [0]=>
+      int(22)
+      [1]=>
+      int(-55)
+    }
+    [3]=>
+    array(0) {
+    }
+  }
+  [21]=>
+  bool(true)
+}
+
+-- Testing sort() by supplying mixed value array, 'flag' value is SORT_REGULAR --
+bool(true)
+array(22) {
+  [0]=>
+  string(0) ""
+  [1]=>
+  NULL
+  [2]=>
+  string(0) ""
+  [3]=>
+  float(0)
+  [4]=>
+  bool(false)
+  [5]=>
+  int(-4)
+  [6]=>
+  float(-2.98989)
+  [7]=>
+  int(-2)
+  [8]=>
+  float(-2)
+  [9]=>
+  string(3) "-.9"
+  [10]=>
+  int(0)
+  [11]=>
+  string(1) "4"
+  [12]=>
+  float(4)
+  [13]=>
+  string(1) "5"
+  [14]=>
+  string(4) "True"
+  [15]=>
+  string(2) "ab"
+  [16]=>
+  string(4) "abcd"
+  [17]=>
+  string(14) "abcd abcd abcd"
+  [18]=>
+  string(1) "b"
+  [19]=>
+  array(0) {
+  }
+  [20]=>
+  array(4) {
+    [0]=>
+    array(3) {
+      [0]=>
+      int(33)
+      [1]=>
+      int(-5)
+      [2]=>
+      int(6)
+    }
+    [1]=>
+    array(1) {
+      [0]=>
+      int(11)
+    }
+    [2]=>
+    array(2) {
+      [0]=>
+      int(22)
+      [1]=>
+      int(-55)
+    }
+    [3]=>
+    array(0) {
+    }
+  }
+  [21]=>
+  bool(true)
+}
+Done
+@@@@@@@@ ext/standard/tests/class_object/get_declared_traits_variation1.phpt
+*** Testing get_declared_traits() : testing autoloaded traits ***
+
+-- before instance is declared --
+bool(false)
+
+-- after use is declared --
+bool(true)
+
+DONE
+@@@@@@@@ ext/standard/tests/class_object/get_object_vars_variation_005.phpt
+array(3) {
+  [" A b"]=>
+  int(42)
+  [" * b"]=>
+  int(24)
+  [12]=>
+  int(6)
+}
+array(4) {
+  ["prop"]=>
+  NULL
+  [" A b"]=>
+  int(42)
+  [" * b"]=>
+  int(24)
+  [12]=>
+  int(6)
+}
+@@@@@@@@ ext/standard/tests/directory/DirectoryClass_basic_001.phpt
+Structure of Directory class:
+Class [ <internal:standard> class Directory ] {
+
+  - Constants [0] {
+  }
+
+  - Static properties [0] {
+  }
+
+  - Static methods [0] {
+  }
+
+  - Properties [2] {
+    Property [ public readonly string $path ]
+    Property [ public readonly mixed $handle ]
+  }
+
+  - Methods [3] {
+    Method [ <internal:standard> public method close ] {
+
+      - Parameters [0] {
+      }
+      - Tentative return [ void ]
+    }
+
+    Method [ <internal:standard> public method rewind ] {
+
+      - Parameters [0] {
+      }
+      - Tentative return [ void ]
+    }
+
+    Method [ <internal:standard> public method read ] {
+
+      - Parameters [0] {
+      }
+      - Tentative return [ string|false ]
+    }
+  }
+}
+Cannot instantiate a valid Directory directly:
+object(Directory)#2 (0) {
+  ["path"]=>
+  uninitialized(string)
+  ["handle"]=>
+  uninitialized(mixed)
+}
+Unable to find my handle property
+@@@@@@@@ ext/standard/tests/directory/DirectoryClass_error_001.phpt
+Cannot modify readonly property Directory::$handle
+resource(5) of type (stream)
+Cannot unset readonly property Directory::$handle
+resource(6) of type (stream)
+@@@@@@@@ ext/standard/tests/math/atan_variation.phpt
+float(1.5273454314033659)
+float(-1.5273454314033659)
+float(1.528178224770569)
+float(-1.528178224770569)
+float(1.5273454314033659)
+float(1.5273454314033659)
+float(1.5273454314033659)
+float(1.528178224770569)
+float(1.528178224770569)
+float(1.5697963271282298)
+float(0.7853981633974483)
+float(0)
+@@@@@@@@ ext/standard/tests/math/pow.phpt
+1,1,0,0
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+bool(true)
+@@@@@@@@ ext/standard/tests/math/round_basic.phpt
+*** Testing round() : basic functionality ***
+round: 123456789
+...with precision 2-> float(123456789)
+...with precision 8-> float(123456789)
+...with precision 3-> float(123456789)
+...with precision 4-> float(123456789)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(123456789)
+...with precision 2-> float(123456789)
+...with precision 04-> float(123456789)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(123456789)
+...with precision 2.1e1-> float(123456789)
+...with precision 1-> float(123456789)
+...with precision -> float(123456789)
+round: 123.456789
+...with precision 2-> float(123.46)
+...with precision 8-> float(123.456789)
+...with precision 3-> float(123.457)
+...with precision 4-> float(123.4568)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(123.457)
+...with precision 2-> float(123.46)
+...with precision 04-> float(123.4568)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(123.457)
+...with precision 2.1e1-> float(123.456789)
+...with precision 1-> float(123.5)
+...with precision -> float(123)
+round: -4.5679123
+...with precision 2-> float(-4.57)
+...with precision 8-> float(-4.5679123)
+...with precision 3-> float(-4.568)
+...with precision 4-> float(-4.5679)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(-4.568)
+...with precision 2-> float(-4.57)
+...with precision 04-> float(-4.5679)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(-4.568)
+...with precision 2.1e1-> float(-4.5679123)
+...with precision 1-> float(-4.6)
+...with precision -> float(-5)
+round: 12300
+...with precision 2-> float(12300)
+...with precision 8-> float(12300)
+...with precision 3-> float(12300)
+...with precision 4-> float(12300)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(12300)
+...with precision 2-> float(12300)
+...with precision 04-> float(12300)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(12300)
+...with precision 2.1e1-> float(12300)
+...with precision 1-> float(12300)
+...with precision -> float(12300)
+round: -4567
+...with precision 2-> float(-4567)
+...with precision 8-> float(-4567)
+...with precision 3-> float(-4567)
+...with precision 4-> float(-4567)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(-4567)
+...with precision 2-> float(-4567)
+...with precision 04-> float(-4567)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(-4567)
+...with precision 2.1e1-> float(-4567)
+...with precision 1-> float(-4567)
+...with precision -> float(-4567)
+round: 2311527
+...with precision 2-> float(2311527)
+...with precision 8-> float(2311527)
+...with precision 3-> float(2311527)
+...with precision 4-> float(2311527)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(2311527)
+...with precision 2-> float(2311527)
+...with precision 04-> float(2311527)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(2311527)
+...with precision 2.1e1-> float(2311527)
+...with precision 1-> float(2311527)
+...with precision -> float(2311527)
+round: 14680063
+...with precision 2-> float(14680063)
+...with precision 8-> float(14680063)
+...with precision 3-> float(14680063)
+...with precision 4-> float(14680063)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(14680063)
+...with precision 2-> float(14680063)
+...with precision 04-> float(14680063)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(14680063)
+...with precision 2.1e1-> float(14680063)
+...with precision 1-> float(14680063)
+...with precision -> float(14680063)
+round: 1.234567
+...with precision 2-> float(1.23)
+...with precision 8-> float(1.234567)
+...with precision 3-> float(1.235)
+...with precision 4-> float(1.2346)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(1.235)
+...with precision 2-> float(1.23)
+...with precision 04-> float(1.2346)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(1.235)
+...with precision 2.1e1-> float(1.234567)
+...with precision 1-> float(1.2)
+...with precision -> float(1)
+round: 2.3456789e8
+...with precision 2-> float(234567890)
+...with precision 8-> float(234567890)
+...with precision 3-> float(234567890)
+...with precision 4-> float(234567890)
+PHP Deprecated:  Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float 3.6 to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(234567890)
+...with precision 2-> float(234567890)
+...with precision 04-> float(234567890)
+PHP Deprecated:  Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+
+Deprecated: Implicit conversion from float-string "3.6" to int loses precision in /home/dev/e1_corp/ext/standard/tests/math/round_basic.php on line 29
+...with precision 3.6-> float(234567890)
+...with precision 2.1e1-> float(234567890)
+...with precision 1-> float(234567890)
+...with precision -> float(234567890)
+@@@@@@@@ ext/standard/tests/serialize/bug69425.phpt
+int(1)
+array(2) {
+  [0]=>
+  object(DateInterval)#1 (10) {
+    ["y"]=>
+    int(-1)
+    ["m"]=>
+    int(-1)
+    ["d"]=>
+    int(-1)
+    ["h"]=>
+    int(-1)
+    ["i"]=>
+    int(-1)
+    ["s"]=>
+    int(-1)
+    ["f"]=>
+    float(0)
+    ["invert"]=>
+    int(0)
+    ["days"]=>
+    int(-1)
+    ["from_string"]=>
+    bool(false)
+  }
+  [1]=>
+  int(2)
+}
+@@@@@@@@ ext/standard/tests/serialize/bug70219.phpt
+PHP Warning:  session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219.php on line 9
+
+Warning: session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219.php on line 9
+PHP Warning:  unserialize(): Error at offset 55 of 56 bytes in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219.php on line 16
+
+Warning: unserialize(): Error at offset 55 of 56 bytes in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219.php on line 16
+bool(false)
+@@@@@@@@ ext/standard/tests/serialize/bug70219_1.phpt
+PHP Deprecated:  obj implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary) in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219_1.php on line 5
+
+Deprecated: obj implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary) in /home/dev/e1_corp/ext/standard/tests/serialize/bug70219_1.php on line 5
+array(2) {
+  [0]=>
+  object(obj)#1 (1) {
+    ["data"]=>
+    NULL
+  }
+  [1]=>
+  object(obj)#2 (1) {
+    ["data"]=>
+    NULL
+  }
+}
+object(obj)#1 (1) {
+  ["data"]=>
+  NULL
+}
+@@@@@@@@ ext/standard/tests/serialize/bug70436.phpt
+PHP Deprecated:  obj implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary) in /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.php on line 3
+
+Deprecated: obj implements the Serializable interface, which is deprecated. Implement __serialize() and __unserialize() instead (or in addition, if support for old PHP versions is necessary) in /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.php on line 3
+PHP Warning:  unserialize(): Error at offset 0 of 3 bytes in /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.php on line 14
+
+Warning: unserialize(): Error at offset 0 of 3 bytes in /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.php on line 14
+PHP Warning:  unserialize(): Error at offset 93 of 94 bytes in /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.php on line 28
+
+Warning: unserialize(): Error at offset 93 of 94 bytes in /home/dev/e1_corp/ext/standard/tests/serialize/bug70436.php on line 28
+bool(false)
+DONE
+@@@@@@@@ ext/standard/tests/serialize/bug72663_3.phpt
+PHP Warning:  session_decode(): Unexpected end of serialized data in /home/dev/e1_corp/ext/standard/tests/serialize/bug72663_3.php on line 4
+
+Warning: session_decode(): Unexpected end of serialized data in /home/dev/e1_corp/ext/standard/tests/serialize/bug72663_3.php on line 4
+PHP Warning:  session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/e1_corp/ext/standard/tests/serialize/bug72663_3.php on line 4
+
+Warning: session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/e1_corp/ext/standard/tests/serialize/bug72663_3.php on line 4
+array(0) {
+}
+@@@@@@@@ ext/standard/tests/serialize/typed_property_ref_overwrite2.phpt
+object(Test)#1 (1) {
+  ["prop"]=>
+  &object(Test)#2 (1) {
+    ["prop"]=>
+    *RECURSION*
+  }
+}
+@@@@@@@@ ext/standard/tests/serialize/typed_property_refs.phpt
+object(A)#1 (2) {
+  ["a"]=>
+  &int(1)
+  ["b"]=>
+  &int(1)
+}
+object(B)#1 (2) {
+  ["a"]=>
+  &int(1)
+  ["b"]=>
+  &int(1)
+}
+object(E)#1 (2) {
+  ["a"]=>
+  &int(1)
+  ["b"]=>
+  &int(1)
+}
+Cannot assign null to property A::$a of type int
+Cannot assign null to property B::$b of type int
+Cannot assign int to property C::$b of type string
+Cannot assign string to property C::$a of type int
+Reference with value of type int held by property D::$a of type int is not compatible with property D::$b of type float
+@@@@@@@@ ext/standard/tests/strings/bug55871.phpt
+array(1) {
+  [0]=>
+  string(40) "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}
+array(1) {
+  [0]=>
+  string(0) ""
+}
+PHP Warning:  A non-numeric value encountered in /home/dev/e1_corp/ext/standard/tests/strings/bug55871.php on line 11
+
+Warning: A non-numeric value encountered in /home/dev/e1_corp/ext/standard/tests/strings/bug55871.php on line 11
+array(1) {
+  [0]=>
+  string(40) "0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}
+int(134512640)
+array(1) {
+  [0]=>
+  string(40) "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+}
+string(48) "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+@@@@@@@@ ext/standard/tests/strings/bug72434.phpt
+array(1) refcount(3){
+  [0]=>
+  object(stdClass)#3 (0) refcount(1){
+  }
+}
+@@@@@@@@ ext/standard/tests/strings/bug72663_2.phpt
+PHP Warning:  session_decode(): Unexpected end of serialized data in /home/dev/e1_corp/ext/standard/tests/strings/bug72663_2.php on line 6
+
+Warning: session_decode(): Unexpected end of serialized data in /home/dev/e1_corp/ext/standard/tests/strings/bug72663_2.php on line 6
+PHP Warning:  session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/e1_corp/ext/standard/tests/strings/bug72663_2.php on line 6
+
+Warning: session_decode(): Failed to decode session object. Session has been destroyed in /home/dev/e1_corp/ext/standard/tests/strings/bug72663_2.php on line 6
+array(0) {
+}
+DONE

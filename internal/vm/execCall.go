@@ -6,7 +6,10 @@ import "strings"
 
 func (vm *VM) opCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	packed := uint32(in.C)
-	fn := vm.functions[packed&0xFFFFFF]
+	// Бит 23 C — «результат вызова-оператора отбрасывается» (Zend RETVAL
+	// USED_RET=0); индекс функции занимает младшие 23 бита.
+	vm.retUsed = packed&(1<<23) == 0
+	fn := vm.functions[packed&0x7FFFFF]
 	argc := fn.NumArgs
 	// Точное число фактически переданных аргументов упаковано в старший
 	// байт C (argc+1); 0 — легаси-режим (без упаковки). PHP разрешает

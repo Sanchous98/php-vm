@@ -64,6 +64,66 @@ func (vm *VM) propTypeError(kind, class, name, typ string, byRef bool) *Throwabl
 	return NewThrowable("TypeError", prefix+"property "+class+"::$"+name+" of type "+typ)
 }
 
+// UnserIgnorePropWrite сообщает, что запись значения в объявленное свойство
+// при unserialize() должна быть молча пропущена: внутренние классы
+// (DateInterval/DateTime и подобные) объявляют скалярные свойства виртуальными
+// обработчиками, которые игнорируют массив/объект (bug69425).
+func (vm *VM) UnserIgnorePropWrite(ci ClassInfo, name string, v Slot) bool {
+	pd, decl, ok := propInfoForScope(nil, ci, name)
+	if !ok || pd == nil || !pd.hasType {
+		return false
+	}
+	rc, ok2 := asRuntimeClass(decl)
+	if !ok2 || rc == nil || !rc.internal || !isScalarTypedProp(pd.typ) {
+		return false
+	}
+	val := v
+	if val.typ == RefType {
+		val = deref(val)
+	}
+	switch val.typ {
+	case ArrayType, ObjectType, ClosureType:
+		return true
+	}
+	return false
+}
+
+// UnserAttachTypedRefSource помечает ячейку-ссылку, записанную при
+// unserialize в объявленное типизированное свойство, источником типа (Zend
+// ZEND_REF_ADD_TYPE_SOURCE в zend_std_write_property). Иначе последующая
+// запись этой ссылки в свойство с другим типом не даёт TypeError
+// (typed_property_refs).
+func (vm *VM) UnserAttachTypedRefSource(o *Object, ci ClassInfo, name string, v Slot) {
+	if v.typ != RefType {
+		return
+	}
+	r := v.Ref()
+	if r == nil {
+		return
+	}
+	pd, decl, ok := propInfoForScope(nil, ci, name)
+	if !ok || pd == nil || !pd.hasType {
+		return
+	}
+	if g := guardFor(pd, decl, name); g != nil {
+		r.addSourceDup(g)
+	}
+	if o != nil {
+		o.MarkTypedRef()
+	}
+}
+
+// isScalarTypedProp сообщает, что объявленный тип свойства — скалярный
+// (int/float/string/bool/mixed): виртуальные обработчики внутренних классов
+// молча игнорируют присваивание массива/объекта такому свойству.
+func isScalarTypedProp(typ string) bool {
+	switch strings.ToLower(typ) {
+	case "int", "float", "string", "bool", "mixed":
+		return true
+	}
+	return false
+}
+
 // UnserVerifyPropAssign проверяет (strict, без приведения) совместимость
 // значения v с объявленным типом свойства name при unserialize. Возвращает
 // TypeError при несовместимости.
@@ -71,6 +131,37 @@ func (vm *VM) UnserVerifyPropAssign(ci ClassInfo, name string, v Slot) *Throwabl
 	pd, decl, ok := propInfoForScope(nil, ci, name)
 	if !ok || pd == nil || !pd.hasType {
 		return nil
+	}
+	if rc, ok2 := asRuntimeClass(decl); ok2 && rc != nil && rc.internal && isScalarTypedProp(pd.typ) {
+		// Внутренние классы (DateInterval и подобные) объявляют скалярные
+		// свойства через виртуальные обработчики: несовместимое значение
+		// (массив/объект) молча игнорируется (bug69425).
+		val := v
+		if val.typ == RefType {
+			val = deref(val)
+		}
+		switch val.typ {
+		case ArrayType, ObjectType, ClosureType:
+			return nil
+		}
+	}
+	if v.typ == RefType {
+		// Ссылка с источниками типа (Zend zend_verify_prop_assignable_by_ref
+		// со strict=1 в var_unserializer): при строгой несовместимости
+		// (result == 0) — обычная ошибка типа свойства; при result < 0
+		// (только int->float) и успешном слабом приведении — «Reference with
+		// value of type …» (typed_property_refs).
+		if r := v.Ref(); r != nil && r.hasSources() {
+			val := deref(v)
+			res := vm.typeAssignableResult(pd.typ, val, true)
+			if res > 0 {
+				return nil
+			}
+			if res < 0 && vm.typeAssignableResult(pd.typ, val, false) < 0 {
+				return vm.refTypeErrorType(r.sources[0], pd, decl, name, val)
+			}
+			return vm.propTypeError(valueTypeName(vm, val), classDisplayName(decl), name, vm.displayTypeResolved(pd.typ), false)
+		}
 	}
 	val := v
 	if val.typ == RefType {

@@ -1042,7 +1042,7 @@ func (ra *ssaGraph) window(in Instruction) (base, width int, slot byte) {
 			// они всё равно передаются в VM (для func_get_args()).
 			width = raw - 1
 		} else {
-			fi := int(packed & 0xFFFFFF)
+			fi := int(packed & 0x7FFFFF)
 			na := ra.env.FuncNumArgs(fi)
 			if na >= 0 {
 				width = na

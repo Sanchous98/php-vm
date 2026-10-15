@@ -1,0 +1,6 @@
+=== RUN   TestPHPTree
+    phpt_dir_test.go:278:   ext                                           1667/ 1708 (97.6%)
+    phpt_dir_test.go:281: ИТОГО: 1667 / 1708 (97.6%), пропущено 212
+--- PASS: TestPHPTree (52.07s)
+PASS
+ok  	phpvm/internal/php	52.119s

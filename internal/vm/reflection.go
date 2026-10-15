@@ -963,8 +963,203 @@ func registerReflectionClassMembers(ci ClassInfo) {
 	})
 	reflMethodReg(ci, "getAttributes", reflGetAttributes(func(d *reflectionData) []AttributeInfo { return classAttrs(d.class) }))
 	reflMethodReg(ci, "__toString", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		if reflIsInternal(d.class) {
+			return MakeString(ctx.vm.reflInternalClassString(d.class)), nil
+		}
 		return MakeString("Class [ <user> class " + d.class.Name() + " ] {\n}\n"), nil
 	})
+}
+
+// internalMethodSig — сигнатура встроенного метода для дампа ReflectionClass.
+type internalMethodSig struct {
+	Ext    string
+	Params []string
+	Return string
+}
+
+var internalMethodSigs = map[string]internalMethodSig{}
+
+// SetInternalMethodSig регистрирует сигнатуру встроенного метода
+// ("Class::method") для ReflectionClass::__toString.
+func SetInternalMethodSig(class, method, ext string, params []string, ret string) {
+	internalMethodSigs[class+"::"+method] = internalMethodSig{Ext: ext, Params: params, Return: ret}
+}
+
+// reflInternalClassString повторяет формат ReflectionClass::__toString для
+// встроенных классов (PHP 8.3).
+func (vm *VM) reflInternalClassString(ci ClassInfo) string {
+	rc, _ := asRuntimeClass(ci)
+	if rc == nil {
+		return "Class [ <user> class " + ci.Name() + " ] {\n}\n"
+	}
+	var b strings.Builder
+	b.WriteString("Class [ <internal:standard> class ")
+	b.WriteString(rc.Name())
+	b.WriteString(" ] {\n")
+	// Константы.
+	type constEnt struct {
+		name string
+	}
+	var consts []constEnt
+	seenC := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.constOrder {
+			if seenC[n] {
+				continue
+			}
+			seenC[n] = true
+			consts = append(consts, constEnt{name: n})
+		}
+	}
+	b.WriteString("\n  - Constants [" + itoa(len(consts)) + "] {\n")
+	for _, c := range consts {
+		b.WriteString("    Constant [ public " + c.name + " ] { Object }\n")
+	}
+	b.WriteString("  }\n")
+	// Статические свойства.
+	var statics []string
+	seenS := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.staticOrder {
+			if seenS[n] {
+				continue
+			}
+			seenS[n] = true
+			statics = append(statics, n)
+		}
+	}
+	b.WriteString("\n  - Static properties [" + itoa(len(statics)) + "] {\n")
+	for _, n := range statics {
+		b.WriteString("    Property [ public static $" + n + " ]\n")
+	}
+	b.WriteString("  }\n")
+	// Статические методы и обычные методы.
+	var methods []string
+	seenM := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.methodOrder {
+			if seenM[n] {
+				continue
+			}
+			seenM[n] = true
+			methods = append(methods, n)
+		}
+	}
+	var staticMethods []string
+	var instMethods []string
+	for _, n := range methods {
+		var fn *Function
+		for k := rc; k != nil; k = k.parent {
+			if f, ok := k.methods[n]; ok {
+				fn = f
+				break
+			}
+		}
+		if fn != nil && fn.IsStatic {
+			staticMethods = append(staticMethods, n)
+		} else {
+			instMethods = append(instMethods, n)
+		}
+	}
+	b.WriteString("\n  - Static methods [" + itoa(len(staticMethods)) + "] {\n")
+	for i, n := range staticMethods {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(vm.reflInternalMethodString(rc, n))
+	}
+	b.WriteString("  }\n")
+	// Свойства.
+	type propEnt struct {
+		name     string
+		typ      string
+		readonly bool
+		vis      Visibility
+		hasType  bool
+	}
+	var props []propEnt
+	seenP := map[string]bool{}
+	for k := rc; k != nil; k = k.parent {
+		for _, n := range k.propOrder {
+			if seenP[n] {
+				continue
+			}
+			seenP[n] = true
+			pd := k.ownProps[n]
+			pe := propEnt{name: n}
+			if pd != nil {
+				pe.typ = pd.typ
+				pe.readonly = pd.readonly
+				pe.vis = pd.vis
+				pe.hasType = pd.hasType
+			}
+			props = append(props, pe)
+		}
+	}
+	b.WriteString("\n  - Properties [" + itoa(len(props)) + "] {\n")
+	for _, p := range props {
+		b.WriteString("    Property [ " + visWord(peekVis(p.vis)) + " ")
+		if p.readonly {
+			b.WriteString("readonly ")
+		}
+		if p.hasType && p.typ != "" {
+			b.WriteString(p.typ + " ")
+		}
+		b.WriteString("$" + p.name + " ]\n")
+	}
+	b.WriteString("  }\n")
+	// Методы экземпляра.
+	b.WriteString("\n  - Methods [" + itoa(len(instMethods)) + "] {\n")
+	for i, n := range instMethods {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(vm.reflInternalMethodString(rc, n))
+	}
+	b.WriteString("  }\n")
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func peekVis(v Visibility) Visibility { return v }
+
+// reflInternalMethodString — блок метода в дампе внутреннего класса.
+func (vm *VM) reflInternalMethodString(rc *runtimeClass, name string) string {
+	var b strings.Builder
+	vis := Public
+	for k := rc; k != nil; k = k.parent {
+		if _, ok := k.methods[name]; ok {
+			if k.methVis != nil {
+				if v, ok := k.methVis[name]; ok {
+					vis = v
+				}
+			}
+			break
+		}
+	}
+	sig, ok := internalMethodSigs[rc.Name()+"::"+name]
+	ext := "standard"
+	if ok && sig.Ext != "" {
+		ext = sig.Ext
+	}
+	b.WriteString("    Method [ <internal:" + ext + "> " + visWord(vis) + " method " + name + " ] {\n")
+	b.WriteString("\n      - Parameters [")
+	nparams := 0
+	if ok {
+		nparams = len(sig.Params)
+	}
+	b.WriteString(itoa(nparams) + "] {\n")
+	if ok {
+		for i, p := range sig.Params {
+			b.WriteString("        Parameter #" + itoa(i) + " [ " + p + " ]\n")
+		}
+	}
+	b.WriteString("      }\n")
+	if ok && sig.Return != "" {
+		b.WriteString("      - Tentative return [ " + sig.Return + " ]\n")
+	}
+	b.WriteString("    }\n")
+	return b.String()
 }
 
 func reflBool(f func(*reflectionData) bool) func(*Context, *reflectionData, []Slot) (Slot, error) {

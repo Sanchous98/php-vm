@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"phpvm/internal/vm"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2172,43 +2173,37 @@ func strtrFn(ctx *vm.Context) vm.Value {
 		return vm.Str("")
 	}
 	repl := arg(ctx, 1).AsArray()
-	// Предупреждение о пустой строке выводится один раз на вызов.
-	for k := range repl.All() {
+	// PHP выбирает самое длинное совпадение в каждой позиции; strings.NewReplacer
+	// перебирает пары в порядке перечисления, поэтому сортируем ключи по
+	// убыванию длины — тогда первое совпадение и есть самое длинное. Заменщик
+	// строит префиксное дерево: O(len(s)) вместо O(len(s) × число ключей).
+	type strtrPair struct{ key, rep string }
+	pairs := make([]strtrPair, 0, repl.Len())
+	warnedEmpty := false
+	for k, v := range repl.All() {
 		key := k.StrVal()
 		if !k.IsStr() {
 			key = strconv.FormatInt(k.IntVal(), 10)
 		}
 		if len(key) == 0 {
-			ctx.VM().Warning("strtr(): Ignoring replacement of empty string")
-			break
+			// Предупреждение о пустой строке выводится один раз на вызов.
+			if !warnedEmpty {
+				ctx.VM().Warning("strtr(): Ignoring replacement of empty string")
+				warnedEmpty = true
+			}
+			continue
 		}
+		pairs = append(pairs, strtrPair{key: key, rep: v.ToString()})
 	}
-	var b strings.Builder
-	i := 0
-	for i < len(s) {
-		best, bestRep := 0, ""
-		for k, v := range repl.All() {
-			key := k.StrVal()
-			if !k.IsStr() {
-				key = strconv.FormatInt(k.IntVal(), 10)
-			}
-			if len(key) == 0 {
-				continue
-			}
-			if len(key) > best && strings.HasPrefix(s[i:], key) {
-				best = len(key)
-				bestRep = v.ToString()
-			}
-		}
-		if best > 0 {
-			b.WriteString(bestRep)
-			i += best
-		} else {
-			b.WriteByte(s[i])
-			i++
-		}
+	if len(pairs) == 0 {
+		return vm.Str(s)
 	}
-	return vm.Str(b.String())
+	sort.SliceStable(pairs, func(i, j int) bool { return len(pairs[i].key) > len(pairs[j].key) })
+	oldnew := make([]string, 0, len(pairs)*2)
+	for _, p := range pairs {
+		oldnew = append(oldnew, p.key, p.rep)
+	}
+	return vm.Str(strings.NewReplacer(oldnew...).Replace(s))
 }
 
 // strtrArgTypeName возвращает имя типа аргумента как его видит PHP: скаляры

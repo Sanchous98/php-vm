@@ -61,6 +61,12 @@ type Function struct {
 	DefLine int
 	// ParamTypes[i] — объявленный тип параметра i, "" — не объявлен.
 	ParamTypes []string
+	// BuiltinParamTypes — типы параметров ВСТРОЕННОЙ функции, снятые с
+	// reflection живого php 8.3 (nativeParamTypes). В отличие от ParamTypes не
+	// виден рефлексии нашего рантайма и используется только для strict-проверки
+	// аргументов internal-функций (ZPP strict_types). Последняя запись с
+	// префиксом "..." — вариативный параметр.
+	BuiltinParamTypes []string
 	// NumRequired — число обязательных параметров (до первого с default).
 	// Позволяет отличать «аргумент не передан» (null-заглушка) от явного null.
 	NumRequired int

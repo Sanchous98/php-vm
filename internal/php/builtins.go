@@ -1803,6 +1803,14 @@ func declareEncodingFn(ctx *vm.Context) vm.Value {
 // функциям. Вызывается и для internalFuncs() (iterator_to_array и пр.).
 func applyIntrinsicSignatures(fs []*vm.Function) {
 	for _, f := range fs {
+		// Типы параметров для strict-проверки аргументов internal-функций
+		// (Zend ZPP strict_types): берём из reflection-таблицы php 8.3. Имена
+		// функций в PHP регистронезависимы, таблица — в нижнем регистре.
+		if len(f.BuiltinParamTypes) == 0 {
+			if types, ok := nativeParamTypes[strings.ToLower(f.Name)]; ok {
+				f.BuiltinParamTypes = types
+			}
+		}
 		sig, ok := intrinsicArity[f.Name]
 		if !ok {
 			continue

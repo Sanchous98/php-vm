@@ -6765,6 +6765,18 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 				}
 				return Slot{}, th
 			}
+			// strict_types=1 в вызывающем файле распространяется на аргументы
+			// встроенных функций как на userland: несовпадение типа — TypeError
+			// без коэрции (Zend ZPP). call_user_func*/forward_static_call
+			// строгость вызывающего не наследуют (vm.cufCall).
+			if vm.argStrict() && !vm.cufCall && len(fn.BuiltinParamTypes) > 0 {
+				if serr := vm.checkNativeStrictParams(fn, args, provided, pmask, pmaskSet); serr != nil {
+					if pushed {
+						vm.popCall()
+					}
+					return Slot{}, serr
+				}
+			}
 			// USED_RET для нативного вызова (array_splice): из ближайшего
 			// опкода вызова; флаг сбрасывается, чтобы не протёк во вложенные.
 			vm.ctx.retUsed = vm.retUsed

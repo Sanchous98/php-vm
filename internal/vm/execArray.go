@@ -1318,6 +1318,57 @@ func (vm *VM) objectAsArrayErr(obj Slot) *Throwable {
 	return NewThrowable("Error", "Cannot use object of type "+name+" as array")
 }
 
+// opAppendCompound — A[] op= B (C — опкод операции, compoundSlow). Zend:
+// массив просто дописывает правый операнд (как OpAppend), ArrayAccess —
+// читает offsetGet(null), применяет операцию и пишет offsetSet(null, ...);
+// результат присваивания — в регистре B. bug69955, bug70117.
+func (vm *VM) opAppendCompound(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	arr := deref(regs[in.A])
+	if arr.typ == ObjectType {
+		if ci := vm.classInfo(arr); ci != nil {
+			setM := ci.lookupMethod("offsetSet")
+			getM := ci.lookupMethod("offsetGet")
+			if setM != nil && getM != nil {
+				res, err := vm.invokeMethod(getM, arr, ci, []Slot{MakeNull()})
+				if err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return execResult{err: err}
+					}
+					return execResult{next: true}
+				}
+				d, oerr := vm.compoundSlow(Opcode(in.C), deref(res), regs[in.B])
+				if oerr != nil {
+					if !vm.handleThrow(chunk, oerr) {
+						return execResult{err: oerr}
+					}
+					return execResult{next: true}
+				}
+				if _, err := vm.invokeMethod(setM, arr, ci, []Slot{MakeNull(), d}); err != nil {
+					if !vm.handleThrow(chunk, err) {
+						return execResult{err: err}
+					}
+					return execResult{next: true}
+				}
+				{
+					old := regs[in.B]
+					regs[in.B] = d
+					if trackedType(old.typ) || trackedType(d.typ) {
+						vm.wRegSlow(int(in.B), old)
+					}
+				}
+				shareSlot(regs[in.B])
+				return execResult{}
+			}
+		}
+		err := vm.objectAsArrayErr(arr)
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
+	return vm.opAppend(regs, consts, chunk, in)
+}
+
 func (vm *VM) opAppend(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	arr := deref(regs[in.A])
 	if arr.typ == ObjectType {

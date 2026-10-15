@@ -495,10 +495,17 @@ const (
 	OpPropSetOverload // PROP_SET_OVERLOAD
 	// OpPropSetOverloadDyn — то же для динамического имени (C — регистр-имя).
 	OpPropSetOverloadDyn // PROP_SET_OVERLOAD_DYN
+
+	// OpAppendCompound — A[] op= B (C — опкод бинарной операции, см.
+	// compoundSlow): для массива Zend просто дописывает правый операнд (как
+	// OpAppend), для ArrayAccess — offsetGet(null) op B, затем
+	// offsetSet(null, результат). Регистр B получает результат присваивания
+	// (bug69955).
+	OpAppendCompound // APPEND_COMPOUND
 )
 
 // numOpcodes — число опкодов (для таблиц, индексируемых опкодом).
-const numOpcodes = int(OpPropSetOverloadDyn) + 1
+const numOpcodes = int(OpAppendCompound) + 1
 
 // IsUnconditionalTerminator сообщает, что после инструкции исполнение не
 // продолжается со следующей позиции (нет fallthrough): компилятор не ставит

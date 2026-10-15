@@ -115,6 +115,7 @@ func init() {
 	s(OpIndexSet, rUseDef, rUse, rUse)
 	s(OpIndexSetOverload, rUseDef, rUse, rUse)
 	s(OpAppend, rUseDef, rUse, rNone)
+	s(OpAppendCompound, rUseDef, rUseDef, rNone)
 	s(OpLen, rDef, rUse, rNone)
 	s(OpUnset, rUseDef, rUse, rNone)
 	s(OpNew, rDef, rNone, rNone)

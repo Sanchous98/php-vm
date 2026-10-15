@@ -4991,6 +4991,14 @@ func (vm *VM) exec(chunk *Chunk) error {
 			} else if hr.next {
 				continue
 			}
+		case OpAppendCompound:
+			if hr := vm.opAppendCompound(regs, consts, chunk, in); hr.err != nil {
+				return hr.err
+			} else if hr.halt {
+				return nil
+			} else if hr.next {
+				continue
+			}
 		case OpLen:
 			if hr := vm.opLen(regs, consts, chunk, in); hr.err != nil {
 				return hr.err

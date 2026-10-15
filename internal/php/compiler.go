@@ -17031,10 +17031,21 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 	if t.Key == nil {
 		r := valReg
 		if op != "=" {
+			bc, ok := binOp(strings.TrimSuffix(op, "="))
+			if !ok {
+				return 0, fmt.Errorf("компилятор: неизвестный оператор %q", op)
+			}
 			r, err = c.expr(value)
 			if err != nil {
 				return 0, err
 			}
+			// `$x[] op= v`: для массива — append, для ArrayAccess —
+			// offsetGet(null)/offsetSet(null) (bug69955).
+			c.chunk.Emit(vm.Instruction{Op: vm.OpAppendCompound, A: arr, B: r, C: int32(compoundOp(bc))})
+			if wb != nil {
+				wb(arr)
+			}
+			return r, nil
 		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpAppend, A: arr, B: r})
 		if wb != nil {

@@ -2520,7 +2520,7 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 	if abs == "" || abs == filepath.Clean(file) || inliningNow[abs] {
 		return x, nil, nil
 	}
-	if x.Once && inc[abs] {
+	if x.Once && (inc[abs] || preIncludedFiles[abs]) {
 		return &IntLit{V: 1}, nil, nil
 	}
 	// Каталог нельзя инлайнить: PHP предупреждает «Failed to open stream»
@@ -2579,6 +2579,11 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 // рантайм-компиляции eval/include: alias (нижний регистр) → имя целевого
 // класса. Устанавливается на время compileFileModeLink в runSubCode.
 var runtimeClassAliases map[string]string
+
+// preIncludedFiles — файлы, уже подключённые до компиляции текущего скрипта
+// (auto_prepend_file): include_once/require_once с таким путём пропускается
+// инлайнером (bug32924).
+var preIncludedFiles = map[string]bool{}
 
 // inlineEvalParents — имена классов (в нижнем регистре), которые в текущем
 // компилируемом юните используются как родитель/интерфейс/трейт. Классы,

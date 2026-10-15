@@ -350,6 +350,7 @@ func exceptionCode(o *Object) int64 {
 
 // findClass ищет класс по имени среди зарегистрированных в VM.
 func (vm *VM) findClass(name string) ClassInfo {
+	name = strings.TrimLeft(name, "\\")
 	for _, ci := range vm.classes {
 		if ClassHidden(ci) {
 			continue
@@ -358,7 +359,16 @@ func (vm *VM) findClass(name string) ClassInfo {
 			return ci
 		}
 	}
-	if ci, ok := vm.classAliases[strings.ToLower(strings.TrimLeft(name, "\\"))]; ok {
+	// PHP: имена классов регистронезависимы (bug78502: тип `closure`).
+	for _, ci := range vm.classes {
+		if ClassHidden(ci) {
+			continue
+		}
+		if strings.EqualFold(ci.Name(), name) {
+			return ci
+		}
+	}
+	if ci, ok := vm.classAliases[strings.ToLower(name)]; ok {
 		return ci
 	}
 	return nil

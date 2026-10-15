@@ -1115,13 +1115,21 @@ func (l *Lexer) heredoc() error {
 	if label == "" {
 		return fmt.Errorf("lexer: пустая метка heredoc на позиции %d", start)
 	}
-	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
+	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t') {
 		l.pos++
 	}
-	if l.pos >= len(l.src) || l.src[l.pos] != '\n' {
+	// Перевод строки после открывающей метки: \n, \r\n или \r (bug79934).
+	switch {
+	case l.pos < len(l.src) && l.src[l.pos] == '\r':
+		l.pos++
+		if l.pos < len(l.src) && l.src[l.pos] == '\n' {
+			l.pos++
+		}
+	case l.pos < len(l.src) && l.src[l.pos] == '\n':
+		l.pos++
+	default:
 		return fmt.Errorf("lexer: heredoc: ожидался перевод строки на позиции %d", l.pos)
 	}
-	l.pos++
 	contentStart := l.pos
 
 	lineStart := contentStart
@@ -1142,11 +1150,11 @@ func (l *Lexer) heredoc() error {
 				break
 			}
 		}
-		nl := strings.IndexByte(l.src[lineStart:], '\n')
-		if nl < 0 {
+		_, next := nextLineBreak(l.src, lineStart)
+		if next <= lineStart {
 			break
 		}
-		lineStart = lineStart + nl + 1
+		lineStart = next
 	}
 	if closing < 0 {
 		if contentStart >= len(l.src) {
@@ -1196,21 +1204,38 @@ func mixedIndent(s string) bool {
 	return hasSpace && hasTab
 }
 
+// nextLineBreak возвращает (конец содержимого строки, начало следующей):
+// переводы строк — \n, \r\n и \r (как в Zend).
+func nextLineBreak(src string, from int) (int, int) {
+	for j := from; j < len(src); j++ {
+		switch src[j] {
+		case '\n':
+			return j, j + 1
+		case '\r':
+			if j+1 < len(src) && src[j+1] == '\n' {
+				return j, j + 2
+			}
+			return j, j + 1
+		}
+	}
+	return len(src), len(src) + 1
+}
+
 // checkHeredocBodyIndent проверяет отступы строк тела гибкого heredoc
 // (повторяет strip_multiline_string_indentation из Zend).
 func checkHeredocBodyIndent(src string, from, to int, indent string) error {
 	usingSpaces := !strings.ContainsRune(indent, '\t')
 	i := from
 	for i < to {
-		rel := strings.IndexByte(src[i:to], '\n')
-		nl := to
-		if rel >= 0 {
-			nl = i + rel
+		nl, next := nextLineBreak(src, i)
+		if nl > to {
+			nl = to
 		}
 		pos := i
 		for skip := 0; skip < len(indent); skip++ {
-			if pos == nl {
-				// Строка только из пробелов: неполный отступ допустим.
+			if pos >= nl {
+				// Строка только из пробелов (или пустая, в т.ч. CRLF):
+				// неполный отступ допустим.
 				break
 			}
 			if pos >= to {
@@ -1225,10 +1250,10 @@ func checkHeredocBodyIndent(src string, from, to int, indent string) error {
 			}
 			pos++
 		}
-		if nl >= to {
+		if next > to {
 			break
 		}
-		i = nl + 1
+		i = next
 	}
 	return nil
 }
@@ -1304,14 +1329,26 @@ func stripHeredocIndent(body, indent string) string {
 	if body == "" {
 		return body
 	}
-	lines := strings.Split(body, "\n")
 	n := len(indent)
-	for i, ln := range lines {
+	var b strings.Builder
+	b.Grow(len(body))
+	i := 0
+	for i < len(body) {
+		nl, next := nextLineBreak(body, i)
+		if nl > len(body) {
+			nl = len(body)
+		}
+		ln := body[i:nl]
 		k := 0
 		for k < n && k < len(ln) && (ln[k] == ' ' || ln[k] == '\t') {
 			k++
 		}
-		lines[i] = ln[k:]
+		b.WriteString(ln[k:])
+		if nl >= len(body) {
+			break
+		}
+		b.WriteString(body[nl:next])
+		i = next
 	}
-	return strings.Join(lines, "\n")
+	return b.String()
 }

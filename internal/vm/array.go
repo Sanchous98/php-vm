@@ -103,6 +103,16 @@ type Array struct {
 	iterState bool
 	iterPz    int32
 
+	// valIter/valSnap/valPos — состояние позиционного обхода ПО ЗНАЧЕНИЮ
+	// (foreach by value, см. iterModeArrayVal): valIter помечает массив как
+	// состояние обхода (регистр компилятора), valSnap указывает на массив-
+	// снимок источника, valPos — позиция текущего элемента в его хранилище.
+	// Снимок во время цикла не меняется (источник помечен shared, записи в тело
+	// уходят в COW-копию), поэтому позиция — просто индекс в entries/values.
+	valIter bool
+	valSnap *Array
+	valPos  int32
+
 	// pos — внутренний указатель массива (как nInternalPointer в Zend):
 	// current/next/prev/reset/end/key. ГЛОБАЛЬНОЕ состояние массива: копируется
 	// при копировании значения и разделяет массив при изменении (COW). foreach

@@ -1882,6 +1882,10 @@ func (vm *VM) opIterInit(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		st = vm.iterInitArrayRef(regs[in.B])
 		vm.anyArrayRefIter = true
 		vm.addIterHint(vm.fp, int(in.A))
+	case 3:
+		// Позиционный обход СНИМКА массива по значению (F3): без array_keys и
+		// повторных INDEX; снимок защищён MARK_SHARED/COW.
+		st = vm.iterInitArrayVal(regs[in.B])
 	case 1:
 		st, err = vm.iterInitByRef(regs[in.B])
 		// ArrayIterator по ссылке использует позиционное состояние обхода

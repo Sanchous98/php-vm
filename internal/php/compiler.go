@@ -13582,40 +13582,35 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 		c.setJump(jf, c.chunk.Len())
 		c.popLoop(lc)
 	} else {
-		// keys = array_keys(src)
-		kr := c.emitCall("array_keys", []uint8{src})
-		c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: keys, B: kr})
-
-		zero := c.chunk.AddConst(vm.IntConst(0))
-		c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: i, C: int32(zero)})
-		c.chunk.Emit(vm.Instruction{Op: vm.OpLen, A: limit, B: keys})
-
+		// --- массив, by-value: позиционный обход снимка (F3) ---
+		// Источник помечен shared (OpMove), записи в теле COW-копируют его,
+		// поэтому позиция по хранилищу снимка (entries/values) эквивалентна
+		// прежнему снимку array_keys() — но без копии всех ключей и без
+		// повторного INDEX на каждый элемент.
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIterInit, A: iterState, B: src, C: 3})
 		start := c.chunk.Len()
 		c.tmp = c.nvars
 		cond := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpLessInt, A: cond, B: i, C: int32(limit)})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIterValid, A: cond, B: iterState})
 		jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfFalse, A: cond})
-
+		// keyR/valR выделяются всегда: они входят в список free цикла (NULL по
+		// выходу), и нулевой регистр — живая переменная main-скоупа.
 		keyR = c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndex, A: keyR, B: keys, C: int32(i)})
 		valR = c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndex, A: valR, B: src, C: int32(keyR)})
 		if s.Key != "" || s.KeyTarget != nil {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIterKey, A: keyR, B: iterState})
 			if err := c.storeForeachTarget(s.Key, s.KeyTarget, keyR); err != nil {
 				return err
 			}
 		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIterCurrent, A: valR, B: iterState})
 		if err := c.storeForeachTarget(s.Val, s.ValTarget, valR); err != nil {
 			return err
 		}
 
 		lc := c.pushLoop()
 		arrLC = lc
-		if rwIter {
-			lc.freeRegs = append(append([]uint8{}, freeObj...), keyR, valR)
-		} else {
-			lc.freeRegs = append([]uint8{}, freeObj...)
-		}
+		lc.freeRegs = append([]uint8{}, freeObj...)
 		if err := c.stmts(s.Body); err != nil {
 			return err
 		}
@@ -13623,7 +13618,7 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 		for _, j := range lc.continueJumps {
 			c.setJump(j, cont)
 		}
-		c.chunk.Emit(vm.Instruction{Op: vm.OpAddIntImm, A: i, B: i, C: 1})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIterNext, B: iterState})
 		c.chunk.Emit(vm.Instruction{Op: vm.OpJump, C: int32(start)})
 		c.setJump(jf, c.chunk.Len())
 		c.popLoop(lc)

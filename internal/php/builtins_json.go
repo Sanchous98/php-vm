@@ -130,14 +130,16 @@ func jsonEncodeFn(ctx *vm.Context) vm.Value {
 			}
 		}
 	}
-	// Опции энкодера: pretty-раскладка как у PHP (4 пробела, ": "), SUBSTITUTE
-	// невалидного UTF-8 — AllowInvalidUTF8 (U+FFFD вместо ошибки).
-	var opts []jsontext.Options
+	// Опции энкодера — в фиксированном буфере на максимум (PreserveRawStrings,
+	// Multiline, WithIndent, SpaceAfterColon, AllowInvalidUTF8, EscapeForJS).
+	var optBuf [6]jsontext.Options
+	opts := optBuf[:1]
 	// Строки и числа отдаём готовыми литералами через jsontext.Value; опция
 	// PreserveRawStrings — документированный механизм «pre-escaped sequences
 	// are preserved to the output» (иначе Encoder их канонизирует).
-	opts = append(opts, jsontext.PreserveRawStrings(true))
+	opts[0] = jsontext.PreserveRawStrings(true)
 	if flags&jsonPrettyPrint != 0 {
+		// pretty-раскладка как у PHP: 4 пробела, ": " после ключа
 		opts = append(opts, jsontext.Multiline(true), jsontext.WithIndent("    "), jsontext.SpaceAfterColon(true))
 	}
 	if flags&jsonInvalidUTF8Substitute != 0 {

@@ -1183,7 +1183,7 @@ func ResetResourceState() {
 	// новый процесс; здесь процессы не должны переживать тест и течь fd).
 	for _, ph := range procHandles {
 		if ph != nil {
-			ph.finish(false)
+			ph.killOrphan()
 		}
 	}
 	// PHP CLI: STDIN/STDOUT/STDERR занимают 1..3, а контекст потока по

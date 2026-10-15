@@ -628,6 +628,11 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	// секунды даже для «зациклившегося» теста, то есть VM не вешается.
 	m.SetStepLimit(100_000_000)
 	ResetResourceState()
+	// В тестах дети процессов не должны переживать прогон (busy-loop воркеров).
+	SetKillOrphansMode(true)
+	// После прогона теста его дочерние процессы не должны пережить тест
+	// (иначе воркеры в busy-loop держат пайпы и роняют go test по WaitDelay).
+	defer ResetResourceState()
 	// Как run-tests.php: путь к PHP-бинарнику для тестов, запускающих
 	// подпроцессы (exec/system).
 	if _, ok := os.LookupEnv("TEST_PHP_EXECUTABLE"); !ok {

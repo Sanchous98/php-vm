@@ -3842,6 +3842,10 @@ func procOpenFn(ctx *vm.Context) vm.Value {
 		c = exec.Command("/bin/sh", "-c", cmd.ToString())
 		progName = cmd.ToString()
 	}
+	// Свой process-group: при строковой команде прямой ребёнок — `sh -c`, а
+	// реальный воркер — его внук; тестовому харнессу нужно уметь погасить всю
+	// группу (killOrphan), иначе потомки переживают тест и держат пайпы.
+	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if len(ctx.Args()) >= 4 && arg(ctx, 3).Type() != vm.NullType {
 		c.Dir = arg(ctx, 3).ToString()
 	}
@@ -4250,11 +4254,41 @@ func (ph *procHandle) finish(wait bool) {
 				ph.closeCode = int64(ws)
 			}
 		} else {
+			// Тестовый харнесс: гасим группу и при финализации ресурса —
+			// иначе ребёнок переживает тест (busy-loop держит пайпы).
+			if procKillOrphans {
+				_ = syscall.Kill(-ph.cmd.Process.Pid, syscall.SIGKILL)
+				_ = ph.cmd.Process.Kill()
+			}
 			_, _, _ = ph.procWaitpid(true)
 			ph.closeCode = -1
 		}
 	}
 	readCollect()
+}
+
+// procKillOrphans — тестовый режим харнесса (SetKillOrphansMode): финализация
+// ресурса процесса гасит всю process-group ребёнка (в PHP dtor не убивает).
+var procKillOrphans bool
+
+// SetKillOrphansMode включает/выключает тестовый режим (PHPT-харнесс).
+func SetKillOrphansMode(b bool) { procKillOrphans = b }
+
+// killOrphan гасит дочерний процесс (тестовый харнесс: воркеры php-src-тестов —
+// например `ServerClientTestCase.inc RUN_WORKER` — при незакрытом stdin на EOF
+// крутятся в busy-loop и держат унаследованные пайпы, из-за чего `go test`
+// ждёт WaitDelay и завершается FAIL'ом «Test I/O incomplete»).
+func (ph *procHandle) killOrphan() {
+	if ph == nil {
+		return
+	}
+	if ph.cmd != nil && ph.cmd.Process != nil {
+		// Бьём всю process-group: при `sh -c` реальный процесс — внук,
+		// SIGKILL одному `sh` его не тронет.
+		_ = syscall.Kill(-ph.cmd.Process.Pid, syscall.SIGKILL)
+		_ = ph.cmd.Process.Kill()
+	}
+	ph.finish(false)
 }
 
 // procFetchHandle достаёт procHandle ресурса и повторяет диагностику

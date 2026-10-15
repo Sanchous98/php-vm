@@ -6062,14 +6062,13 @@ func (vm *VM) checkParamsN(fn *Function, args []Slot, provided int, mask int64, 
 		// нарушением типа (значение подставится default'ом в теле функции).
 		// Явно переданный null (argNum < provided) — нарушение, если тип его
 		// не допускает.
-		// Пропуски именованных аргументов (маска) — не явный null; при
-		// отсутствии маски работаем по числу переданных (provided) и, если оно
-		// неизвестно, по прежнему правилу NumRequired.
+		// Пропуски именованных аргументов (маска) — не явный null; без маски
+		// null-аргумент считается переданным явно (прежнее правило).
 		omitted := false
 		if maskSet {
 			omitted = mask&(1<<uint(i)) == 0
-		} else {
-			omitted = provided < 0 || i >= provided
+		} else if provided >= 0 {
+			omitted = i >= provided
 		}
 		if args[i].typ == NullType && omitted &&
 			(i >= fn.NumRequired || (variadic && i >= fixed)) {

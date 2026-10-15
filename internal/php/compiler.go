@@ -526,6 +526,20 @@ type compiler struct {
 	// встроенные должны видеть локальную таблицу символов кадра. Регистры
 	// всех переменных pin'ятся, а в чанк пишется карта имя→регистр.
 	usesSymtab bool
+
+	// usesDynNames — тело использует динамические имена переменных
+	// (`$$x`, `${expr}`): чанк функции получает карту имя→регистр, чтобы
+	// динамический доступ работал с локальными переменными кадра, а не с
+	// таблицей глобалов (bug71300).
+	usesDynNames bool
+}
+
+// markDynName отмечает использование динамического имени переменной
+// (в функции для этого строится карта имя→регистр).
+func (c *compiler) markDynName() {
+	if !c.isMain {
+		c.usesDynNames = true
+	}
 }
 
 // closureInfo описывает анонимную/стрелочную функцию для компиляции.
@@ -1298,11 +1312,11 @@ func (c *compiler) storeVar(name string, reg uint8) {
 }
 
 // loadVarDyn читает переменную с динамическим именем ($$x, ${expr}).
-// Ограничение: динамические переменные всегда берутся из глобальной таблицы
-// (main-скоуп / global / static). В теле функции они тоже читают/пишут
-// глобальную таблицу, а не локальный кадр — это компромисс (см. README-заметку
-// в отчёте).
+// В main-области переменные берутся из таблицы глобалов; в функции — из
+// локального кадра (карта имя→регистр, при отсутствии имени — runtime-таблица
+// динамических локальных переменных кадра, см. opGlobalGetDyn).
 func (c *compiler) loadVarDyn(nameExpr Expr) (uint8, error) {
+	c.markDynName()
 	ne, err := c.expr(nameExpr)
 	if err != nil {
 		return 0, err
@@ -1314,6 +1328,7 @@ func (c *compiler) loadVarDyn(nameExpr Expr) (uint8, error) {
 
 // storeVarDyn пишет регистр в переменную с динамическим именем.
 func (c *compiler) storeVarDyn(nameExpr Expr, reg uint8) error {
+	c.markDynName()
 	ne, err := c.expr(nameExpr)
 	if err != nil {
 		return err
@@ -1402,17 +1417,9 @@ func (c *compiler) internalName(kind string) string {
 	return "\x00" + kind + fmt.Sprint(c.internal)
 }
 
-// buildSymtab записывает в чанк локальную таблицу символов (имя→регистр и
-// global/static имя→ключ глобалов) для compact()/extract()/get_defined_vars().
-// includeGlobals — включать ли global/static переменные (для функций). Имена
-// без ведущего `$`; внутренние (с `\x00`) исключаются.
-func (c *compiler) buildSymtab(includeGlobals bool) {
-	lv := c.namedRegsMap()
-	c.chunk.SetLocalVars(lv)
-	c.chunk.SetNamedRegs(lv)
-	if !includeGlobals {
-		return
-	}
+// globalVarsMap строит карту имя→ключ таблицы глобалов для global/static
+// переменных чанка (имена без ведущего `$`).
+func (c *compiler) globalVarsMap() map[string]string {
 	gv := make(map[string]string, len(c.globals)+len(c.staticKeys))
 	for name := range c.globals {
 		bn := strings.TrimPrefix(name, "$")
@@ -1428,7 +1435,21 @@ func (c *compiler) buildSymtab(includeGlobals bool) {
 		}
 		gv[bn] = c.staticKeys[name]
 	}
-	c.chunk.SetGlobalVars(gv)
+	return gv
+}
+
+// buildSymtab записывает в чанк локальную таблицу символов (имя→регистр и
+// global/static имя→ключ глобалов) для compact()/extract()/get_defined_vars().
+// includeGlobals — включать ли global/static переменные (для функций). Имена
+// без ведущего `$`; внутренние (с `\x00`) исключаются.
+func (c *compiler) buildSymtab(includeGlobals bool) {
+	lv := c.namedRegsMap()
+	c.chunk.SetLocalVars(lv)
+	c.chunk.SetNamedRegs(lv)
+	if !includeGlobals {
+		return
+	}
+	c.chunk.SetGlobalVars(c.globalVarsMap())
 }
 
 // namedRegsMap строит карту имя→регистр всех именованных переменных (без `$`,
@@ -9218,6 +9239,12 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 	cc.chunk.SetNumParams(len(params) + len(captures))
 	cc.chunk.Optimize()
 	cc.setVarRegs()
+	// Динамические имена переменных ($$x): карта имя→регистр делает доступ к
+	// локальным переменным кадра, а не к таблице глобалов (bug71300).
+	if cc.usesDynNames {
+		cc.chunk.SetDynVarRegs(cc.namedRegsMap())
+		cc.chunk.SetGlobalVars(cc.globalVarsMap())
+	}
 	cc.chunk.AllocateRegisters(pinned, cc.allocEnv())
 	cf := vm.NewCompiledFunction(cc.chunk)
 	if cc.usesThisVar {
@@ -15755,6 +15782,7 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 				if err != nil {
 					return 0, err
 				}
+				c.markDynName()
 				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: r, C: int32(ne)})
 				return r, nil
 			}
@@ -15800,6 +15828,7 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			if nerr != nil {
 				return 0, nerr
 			}
+			c.markDynName()
 			cur := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(ne)})
 			d := c.alloc()
@@ -16561,6 +16590,7 @@ func (c *compiler) refCellForExpr(value Expr) (uint8, error) {
 		if err != nil {
 			return 0, err
 		}
+		c.markDynName()
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 		cur := c.alloc()
 		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(nameReg)})

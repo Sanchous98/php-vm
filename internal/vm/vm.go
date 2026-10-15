@@ -6873,7 +6873,9 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			}
 		}
 		args = cf.PackVariadic(args)
-		vm.mergeNamedVariadic(args, fn)
+		if vm.namedVariadicTail != nil {
+			vm.mergeNamedVariadic(args, fn)
+		}
 	}
 	vm.pendingFrameNamed = extras
 	vm.pushCall(fn, rawArgs)
@@ -8198,7 +8200,9 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		env = vm.enterFuncEnv(cf, namedCount)
 		haveEnv = true
 		args = cf.PackVariadic(args)
-		vm.mergeNamedVariadic(args, fn)
+		if vm.namedVariadicTail != nil {
+			vm.mergeNamedVariadic(args, fn)
+		}
 	}
 	traced := true
 	if vm.suppressNextFrame {

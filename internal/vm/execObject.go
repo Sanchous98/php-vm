@@ -503,7 +503,7 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное объявленное свойство в слоте.
-	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propNameC == nameC && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 		if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) {
 			if ob := vm.objectOf(recv); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 				if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -691,7 +691,7 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		}
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное объявленное свойство в слоте.
-	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propNameC == nameC && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 		if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) {
 			if ob := vm.objectOf(recv); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 				if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -927,7 +927,7 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	// Быстрый путь: инициализированное объявленное не-readonly свойство
 	// в слоте (для `+=` и промежуточных звеньев цепочек записи).
 	if !arrMode {
-		if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propNameC == nameC && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+		if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 			if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) && !pd.readonly {
 				if ob := vm.objectOf(recv); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 					if s := ob.slots[ic.propIdx]; s.typ != slotUninit {
@@ -1370,7 +1370,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	}
 	// Ультра-быстрый путь (IC прогрет): публичное нетипизированное
 	// не-readonly свойство, лежащее в слоте; не снято unset, не ссылка.
-	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ic.propNameC == nameC && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
+	if ic := vm.icAt(chunk); ic != nil && ic.propState == icMono && ic.propClass == ci && ((nameC >= 0 && ic.propNameC == nameC) || (nameC < 0 && ic.propName == pname)) && ic.propScope == vm.ctx.self && ic.propOk && ic.propIdx >= 0 {
 		if pd := ic.propPd; pd != nil && (pd.vis == Public || ic.propAccess) && !pd.readonly && !pd.hasType {
 			if ob := vm.objectOf(o); ob != nil && ic.propIdx < len(ob.slots) && !ob.IsUnset(ic.propKey) {
 				cur := ob.slots[ic.propIdx]

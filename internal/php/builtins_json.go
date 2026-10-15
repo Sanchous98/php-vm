@@ -87,10 +87,11 @@ func jsonLastErrorMsg(code int) string {
 
 // --- JSON ENCODE ---
 
-// jsonEncoder отдаёт значения jsontext.Encoder: всю запись JSON (синтаксис,
-// разделители, отступы, кавычки, экранирование строк, формат чисел) ведёт
-// stdlib; наш код только обходит PHP-значения и вызывает методы энкодера —
-// собственных записей байтов в буфер нет (out — приёмник вывода энкодера).
+// jsonEncoder отдаёт значения jsontext.Encoder: всю запись документа
+// (синтаксис, разделители, отступы, кавычки, экранирование) ведёт stdlib; наш
+// код обходит PHP-значения, а строки/числа передаёт готовыми литералами через
+// raw-API jsontext (Value + PreserveRawStrings) — скретчи scr/lit хранят только
+// текущий литерал, не документ.
 type jsonEncoder struct {
 	vm       *vm.VM
 	ctx      *vm.Context
@@ -99,6 +100,8 @@ type jsonEncoder struct {
 	flags    int64
 	maxDepth int
 	err      int
+	scr      []byte // скретч: строка, закавыченная jsontext.AppendQuote (stdlib)
+	lit      []byte // скретч: PHP-литерал для WriteValue (raw-строка)
 }
 
 type jsonEntry struct {
@@ -130,16 +133,16 @@ func jsonEncodeFn(ctx *vm.Context) vm.Value {
 	// Опции энкодера: pretty-раскладка как у PHP (4 пробела, ": "), SUBSTITUTE
 	// невалидного UTF-8 — AllowInvalidUTF8 (U+FFFD вместо ошибки).
 	var opts []jsontext.Options
+	// Строки и числа отдаём готовыми литералами через jsontext.Value; опция
+	// PreserveRawStrings — документированный механизм «pre-escaped sequences
+	// are preserved to the output» (иначе Encoder их канонизирует).
+	opts = append(opts, jsontext.PreserveRawStrings(true))
 	if flags&jsonPrettyPrint != 0 {
 		opts = append(opts, jsontext.Multiline(true), jsontext.WithIndent("    "), jsontext.SpaceAfterColon(true))
 	}
 	if flags&jsonInvalidUTF8Substitute != 0 {
 		// U+FFFD вместо ошибки — php-семантика JSON_INVALID_UTF8_SUBSTITUTE.
 		opts = append(opts, jsontext.AllowInvalidUTF8(true))
-	}
-	if flags&(jsonHexTag|jsonHexAmp) != 0 {
-		// JSON_HEX_TAG/HEX_AMP: '<', '>' и '&' уходят как \uXXXX (stdlib).
-		opts = append(opts, jsontext.EscapeForHTML(true))
 	}
 	if flags&jsonUnescapedUnicode == 0 || flags&jsonUnescapedLineTerminators == 0 {
 		// U+2028/2029 php экранирует, кроме JSON_UNESCAPED_LINE_TERMINATORS
@@ -365,9 +368,9 @@ func (e *jsonEncoder) encodeEntries(ents []jsonEntry, depth int) bool {
 	return e.writeToken(jsontext.EndObject)
 }
 
-// writeToken отдаёт токен jsontext.Encoder: синтаксис, кавычки и экранирование
-// строк делает stdlib. Единственная ошибка здесь — невалидный UTF-8 в строке
-// (без JSON_INVALID_UTF8_*): для json_encode это false / JsonException.
+// writeToken отдаёт структурный токен/литерал jsontext.Encoder (скобки,
+// запятые, true/false/null). Практическая ошибка тут одна — сбой состояния
+// энкодера; невалидный UTF-8 приходит только от строк (encodeString).
 func (e *jsonEncoder) writeToken(t jsontext.Token) bool {
 	if err := e.enc.WriteToken(t); err != nil {
 		e.err = jsonErrorUTF8
@@ -376,14 +379,112 @@ func (e *jsonEncoder) writeToken(t jsontext.Token) bool {
 	return true
 }
 
+// encodeString: базовое экранирование (кавычки, бэкслеш, control) делает
+// jsontext.AppendQuote; PHP-диалект (phpStringLiteral) дописывается в литерал,
+// который Encoder принимает raw-строкой (PreserveRawStrings) — сам документ и
+// все его байты пишет stdlib.
 func (e *jsonEncoder) encodeString(s string) bool {
-	// IGNORE: невалидные байты выбрасываем до stdlib. SUBSTITUTE делает опция
-	// AllowInvalidUTF8 (U+FFFD); по умолчанию WriteToken вернёт ошибку — это
-	// php-семантика false для JSON_ERROR_UTF8.
+	// IGNORE: невалидные байты выбрасываем до stdlib; SUBSTITUTE — препроцессинг
+	// значения на U+FFFD (AppendQuote сообщает об ошибке, а не подставляет).
 	if e.flags&jsonInvalidUTF8Ignore != 0 {
 		s = sanitizeInvalidUTF8Raw(s, false)
+	} else if e.flags&jsonInvalidUTF8Substitute != 0 {
+		s = sanitizeInvalidUTF8Raw(s, true)
 	}
-	return e.writeToken(jsontext.String(s))
+	q, err := jsontext.AppendQuote(e.scr[:0], s)
+	e.scr = q
+	if err != nil {
+		e.err = jsonErrorUTF8
+		return false
+	}
+	e.lit = phpJSONStringLiteral(e.lit[:0], q, e.flags)
+	if err := e.enc.WriteValue(jsontext.Value(e.lit)); err != nil {
+		e.err = jsonErrorUTF8
+		return false
+	}
+	return true
+}
+
+// phpJSONStringLiteral переводит строковый литерал, подготовленный
+// jsontext.AppendQuote, в формат json_encode: '/' → '\/' (если нет
+// JSON_UNESCAPED_SLASHES), не-ASCII → '\uXXXX' (сурогатные пары; если нет
+// JSON_UNESCAPED_UNICODE), JSON_HEX_TAG/AMP/APOS/QUOT — верхним регистром, как
+// PHP. U+2028/2029 не трогаем — их экранирует опция EscapeForJS. Готовые
+// escape-последовательности копируются целиком, повторного экранирования нет.
+func phpJSONStringLiteral(dst, q []byte, flags int64) []byte {
+	hexTag := flags&jsonHexTag != 0
+	hexAmp := flags&jsonHexAmp != 0
+	hexApos := flags&jsonHexApos != 0
+	hexQuot := flags&jsonHexQuot != 0
+	unescSlash := flags&jsonUnescapedSlashes != 0
+	unescUni := flags&jsonUnescapedUnicode != 0
+	body := q[1 : len(q)-1] // содержимое без внешних кавычек AppendQuote
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(body); {
+		c := body[i]
+		if c == '\\' {
+			if i+1 < len(body) && body[i+1] == '"' && hexQuot {
+				dst = append(dst, body[start:i]...)
+				dst = append(dst, "\\u0022"...)
+				i += 2
+				start = i
+				continue
+			}
+			// escape-последовательность (\n, \", \uXXXX, …) — как есть
+			i++
+			if i < len(body) {
+				i++
+			}
+			continue
+		}
+		if c < utf8.RuneSelf {
+			var repl string
+			switch {
+			case c == '/' && !unescSlash:
+				repl = "\\/"
+			case c == '<' && hexTag:
+				repl = "\\u003C"
+			case c == '>' && hexTag:
+				repl = "\\u003E"
+			case c == '&' && hexAmp:
+				repl = "\\u0026"
+			case c == '\'' && hexApos:
+				repl = "\\u0027"
+			}
+			if repl != "" {
+				dst = append(dst, body[start:i]...)
+				dst = append(dst, repl...)
+				i++
+				start = i
+				continue
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRune(body[i:])
+		if unescUni {
+			i += size // не-ASCII без экранирования (JSON_UNESCAPED_UNICODE)
+			continue
+		}
+		dst = append(dst, body[start:i]...)
+		if r <= 0xFFFF {
+			dst = appendU4(dst, r)
+		} else {
+			r -= 0x10000
+			dst = appendU4(dst, 0xD800+(r>>10))
+			dst = appendU4(dst, 0xDC00+(r&0x3FF))
+		}
+		i += size
+		start = i
+	}
+	dst = append(dst, body[start:]...)
+	return append(dst, '"')
+}
+
+func appendU4(dst []byte, r rune) []byte {
+	return append(dst, '\\', 'u',
+		hexLower[(r>>12)&0xF], hexLower[(r>>8)&0xF], hexLower[(r>>4)&0xF], hexLower[r&0xF])
 }
 
 // jsonTextParser — обход токенов encoding/json/jsontext: синтаксис, кавычки и

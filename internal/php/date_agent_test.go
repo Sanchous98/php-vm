@@ -122,30 +122,9 @@ func TestDateAgentVsPHP(t *testing.T) {
 		`<?php echo json_encode(["1","1.5","abc","1e2","0x1"]), "|", json_encode(["1","1.5","abc","1e2","0x1"], JSON_NUMERIC_CHECK), "|", json_encode("123", JSON_NUMERIC_CHECK);`,
 	}
 
-	// json_encode: '/' и не-ASCII stdlib не экранирует, числа печатает
-	// jsontext.Float — вывод отличается от php байтами (осознанное решение:
-	// энкодер сам байтов не пишет, всё делает encoding/json/jsontext). Эти
-	// случаи фиксируем явно, остальное — по-прежнему сверяется с php.
-	deviation := map[string]string{
-		`<?php echo json_encode([1,2,3]), "|", json_encode(["a"=>1,"b"=>[2,3]]), "|", json_encode("a/b<c>");`:                                  `[1,2,3]|{"a":1,"b":[2,3]}|"a/b<c>"`,
-		`<?php echo json_encode("héllo"), "|", json_encode("héllo", JSON_UNESCAPED_UNICODE), "|", json_encode("a/b", JSON_UNESCAPED_SLASHES);`: `"héllo"|"héllo"|"a/b"`,
-		`<?php $s = "<a>&".chr(39).chr(34); $f = 1+2+4+8; echo json_encode($s), "|", json_encode($s, $f);`:                                     `"<a>&'\""|"\u003ca\u003e\u0026'\""`,
-	}
-
 	for _, src0 := range cases {
 		src := src0
 		code := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(src), "<?php"))
-		if exp, ok := deviation[src0]; ok {
-			got, err := runCompiled(t, src)
-			if err != nil {
-				t.Errorf("%q: run error: %v", src, err)
-				continue
-			}
-			if got != exp {
-				t.Errorf("%q:\n  vm        = %q\n  want(stdlib) = %q", src, got, exp)
-			}
-			continue
-		}
 		want, werr := exec.Command(phppath, "-r", code).Output()
 		if werr != nil {
 			t.Logf("php error for %q: %v", src, werr)

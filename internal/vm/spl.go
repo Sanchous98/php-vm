@@ -193,6 +193,18 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	registerFilterIteratorMembers(filterIter, false)
 	registerFilterIteratorMembers(cbFilterIter, true)
 
+	// IteratorIterator и его наследники: обёртка над внутренним Traversable
+	// (IteratorIterator/InfiniteIterator/LimitIterator).
+	iterIter := RegisterClass[wrapIterData]("IteratorIterator", nil)
+	iterIter.Implements(iterator)
+	infIter := RegisterClass[wrapIterData]("InfiniteIterator", iterIter)
+	infIter.Implements(iterator)
+	limIter := RegisterClass[wrapIterData]("LimitIterator", iterIter)
+	limIter.Implements(iterator)
+	registerWrapIterMembers(iterIter, 0)
+	registerWrapIterMembers(infIter, 1)
+	registerWrapIterMembers(limIter, 2)
+
 	arrayObject.Implements(aggregate, arrayAccess, countable, serializable)
 	arrayIterator.Implements(seekable, arrayAccess, countable, serializable)
 	objStorage.Implements(iterator, countable, serializable, arrayAccess)
@@ -226,7 +238,7 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	observer := NewInterface("SplObserver", nil)
 	subject := NewInterface("SplSubject", nil)
 
-	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter}
+	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject, filterIter, cbFilterIter, iterIter, infIter, limIter}
 }
 
 // filterIterData — состояние FilterIterator/CallbackFilterIterator:
@@ -2123,4 +2135,202 @@ func splFixedIndex(s Slot) (int64, bool) {
 		return floatToInt(s.Float()), true
 	}
 	return 0, false
+}
+
+// --- IteratorIterator / InfiniteIterator / LimitIterator ---
+
+// DualIterHasMethod — method_exists для SPL-обёрток: как spl_dual_it_has_method
+// в Zend, неизвестные методы делегируются внутреннему итератору (bug76901).
+func (vm *VM) DualIterHasMethod(o *Object, name string) bool {
+	if o == nil {
+		return false
+	}
+	switch o.Class().Name() {
+	case "IteratorIterator", "InfiniteIterator", "LimitIterator":
+	default:
+		return false
+	}
+	d := (*wrapIterData)(unsafe.Pointer(o))
+	inner := deref(d.inner)
+	if inner.typ != ObjectType {
+		return false
+	}
+	ci := vm.classInfo(inner)
+	if ci == nil {
+		return false
+	}
+	if ci.HasMethod(name) {
+		return true
+	}
+	if o2 := vm.objectOf(inner); o2 != nil {
+		return vm.DualIterHasMethod(o2, name)
+	}
+	return false
+}
+
+// wrapIterData — состояние обёрток над Traversable.
+type wrapIterData struct {
+	Object
+	inner Slot
+	// mode: 0 — IteratorIterator, 1 — InfiniteIterator, 2 — LimitIterator.
+	mode   uint8
+	offset int64
+	limit  int64
+	cur    int64
+}
+
+func registerWrapIterMembers(ci *runtimeClass, mode uint8) {
+	ci.Constructor(&Function{Name: "__construct", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			d.mode = mode
+			d.limit = -1
+			if len(args) > 0 {
+				d.inner = args[0]
+			}
+			if mode == 2 {
+				if len(args) > 1 {
+					d.offset = deref(args[1]).ToInt()
+				}
+				if len(args) > 2 {
+					d.limit = deref(args[2]).ToInt()
+				}
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("getInnerIterator", &Function{Name: "getInnerIterator", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil {
+				return MakeNull(), nil
+			}
+			return d.inner, nil
+		},
+	}})
+	ci.Method("rewind", &Function{Name: "rewind", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			d.cur = 0
+			if err := ctx.vm.iterInvoke(d.inner, "rewind", nil); err != nil {
+				return Slot{}, err
+			}
+			if mode == 2 {
+				for d.cur < d.offset {
+					ok, err := ctx.vm.iterValid2(d.inner)
+					if err != nil {
+						return Slot{}, err
+					}
+					if !ok {
+						return MakeNull(), nil
+					}
+					if err := ctx.vm.iterInvoke(d.inner, "next", nil); err != nil {
+						return Slot{}, err
+					}
+					d.cur++
+				}
+			}
+			return MakeNull(), nil
+		},
+	}})
+	ci.Method("valid", &Function{Name: "valid", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeBool(false), nil
+			}
+			if mode == 2 && d.limit >= 0 && d.cur >= d.limit {
+				return MakeBool(false), nil
+			}
+			ok, err := ctx.vm.iterValid2(d.inner)
+			if err != nil {
+				return Slot{}, err
+			}
+			return MakeBool(ok), nil
+		},
+	}})
+	ci.Method("current", &Function{Name: "current", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			res, err := ctx.vm.iterCall(d.inner, "current")
+			if err != nil {
+				return Slot{}, err
+			}
+			return res, nil
+		},
+	}})
+	ci.Method("key", &Function{Name: "key", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			res, err := ctx.vm.iterCallOptional(d.inner, "key")
+			if err != nil {
+				return Slot{}, err
+			}
+			return res, nil
+		},
+	}})
+	ci.Method("next", &Function{Name: "next", NumArgs: 0, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil || deref(d.inner).Type() != ObjectType {
+				return MakeNull(), nil
+			}
+			if err := ctx.vm.iterInvoke(d.inner, "next", nil); err != nil {
+				return Slot{}, err
+			}
+			d.cur++
+			if mode == 1 {
+				// InfiniteIterator: после исчерпания внутренний итератор
+				// перезапускается.
+				ok, err := ctx.vm.iterValid2(d.inner)
+				if err != nil {
+					return Slot{}, err
+				}
+				if !ok {
+					if err := ctx.vm.iterInvoke(d.inner, "rewind", nil); err != nil {
+						return Slot{}, err
+					}
+				}
+			}
+			return MakeNull(), nil
+		},
+	}})
+	// Проброс неизвестных методов к внутреннему итератору (SPL __call):
+	// method_exists($it, 'offsetGet') == true, $it->offsetGet(0) работает.
+	ci.Method("__call", &Function{Name: "__call", NumArgs: 2, Executable: &NativeFunction{
+		fn: func(ctx *Context, args []Slot) (Slot, error) {
+			d := ctx.This[wrapIterData]()
+			if d == nil || len(args) < 1 || deref(d.inner).Type() != ObjectType {
+				return Slot{}, NewThrowable("Error", "Call to undefined method")
+			}
+			name := deref(args[0]).ToString()
+			var cargs []Slot
+			if len(args) > 1 {
+				if a := deref(args[1]).AsArray(); a != nil {
+					cargs = a.Values()
+				}
+			}
+			ci := ctx.vm.classInfo(d.inner)
+			if ci == nil {
+				return Slot{}, NewThrowable("Error", "Call to undefined method " + name + "()")
+			}
+			m := ci.lookupMethod(name)
+			if m == nil {
+				return Slot{}, NewThrowable("Error", "Call to undefined method " + classDisplayName(ci) + "::" + name + "()")
+			}
+			return ctx.vm.invokeMethod(m, d.inner, ci, cargs)
+		},
+	}})
 }

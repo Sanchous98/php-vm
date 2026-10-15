@@ -2257,7 +2257,15 @@ func methodExistsFn(ctx *vm.Context) vm.Value {
 		if ci == nil {
 			return vm.Bool(false)
 		}
-		return vm.Bool(ci.HasMethod(name))
+		if ci.HasMethod(name) {
+			return vm.Bool(true)
+		}
+		// SPL-обёртки делегируют неизвестные методы внутреннему итератору
+		// (spl_dual_it_has_method, bug76901).
+		if obj := ctx.VM().SlotObject(s); obj != nil {
+			return vm.Bool(ctx.VM().DualIterHasMethod(obj, name))
+		}
+		return vm.Bool(false)
 	case vm.StringType:
 		ci := findClassAutoload(ctx, s.StringVal())
 		if ci == nil {

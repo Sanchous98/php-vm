@@ -117,15 +117,36 @@ func bitwiseStrings(a, b string, op byte) string {
 		dw := unsafe.Slice((*uint64)(unsafe.Pointer(&buf[0])), w)
 		switch op {
 		case bitAnd:
-			for i := 0; i < w; i++ {
+			i := 0
+			for ; i+4 <= w; i += 4 {
+				dw[i] = aw[i] & bw[i]
+				dw[i+1] = aw[i+1] & bw[i+1]
+				dw[i+2] = aw[i+2] & bw[i+2]
+				dw[i+3] = aw[i+3] & bw[i+3]
+			}
+			for ; i < w; i++ {
 				dw[i] = aw[i] & bw[i]
 			}
 		case bitOr:
-			for i := 0; i < w; i++ {
+			i := 0
+			for ; i+4 <= w; i += 4 {
+				dw[i] = aw[i] | bw[i]
+				dw[i+1] = aw[i+1] | bw[i+1]
+				dw[i+2] = aw[i+2] | bw[i+2]
+				dw[i+3] = aw[i+3] | bw[i+3]
+			}
+			for ; i < w; i++ {
 				dw[i] = aw[i] | bw[i]
 			}
 		default:
-			for i := 0; i < w; i++ {
+			i := 0
+			for ; i+4 <= w; i += 4 {
+				dw[i] = aw[i] ^ bw[i]
+				dw[i+1] = aw[i+1] ^ bw[i+1]
+				dw[i+2] = aw[i+2] ^ bw[i+2]
+				dw[i+3] = aw[i+3] ^ bw[i+3]
+			}
+			for ; i < w; i++ {
 				dw[i] = aw[i] ^ bw[i]
 			}
 		}

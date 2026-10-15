@@ -1079,10 +1079,15 @@ func callUserFuncArrayFn(ctx *vm.Context) vm.Value {
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
-	arr := requireArrayArg(ctx, 1, "call_user_func_array")
-	if ctx.HasThrown() {
-		return *new(vm.Value)
+	if args[1].Type() != vm.ArrayType {
+		// param-имя есть только у аргумента #2 ($args).
+		ctx.Throw(vm.NewThrowable("TypeError",
+			vm.ArgTypeError("call_user_func_array", 2, "args", "array", phpTypeName(ctx, 1), "", 0)))
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
 	}
+	arr := arg(ctx, 1).AsArray()
 	if arr.HasStringKeys() {
 		res, err := ctx.VMInstance().CallCallableNamedDirect(ctx, derefSlot(args[0]), arr)
 		throwCallable(ctx, err)
@@ -1223,7 +1228,15 @@ func callableVisibilityReason(ctx *vm.Context, cb vm.Slot) string {
 		case vm.ObjectType:
 			if o := ctx.VMInstance().SlotObject(vals[0]); o != nil {
 				if ci := ctx.VMInstance().FindClass(o.ClassName()); ci != nil && ctx.VMInstance().ClassHasMethod(ci, mname) {
-					return methodAccessReason(ctx, ci, mname)
+					if r := methodAccessReason(ctx, ci, mname); r != "" {
+						// Недоступный метод всё равно callable, если есть
+						// __call (Zend zend_is_callable: магия покрывает
+						// видимость).
+						if !ctx.VMInstance().ClassHasMethod(ci, "__call") {
+							return r
+						}
+					}
+					return ""
 				}
 			}
 		case vm.StringType:
@@ -1232,7 +1245,12 @@ func callableVisibilityReason(ctx *vm.Context, cb vm.Slot) string {
 				if static, _ := ctx.VMInstance().MethodStatic(ci, mname); !static {
 					return "" // «non-static method ...» имеет приоритет
 				}
-				return methodAccessReason(ctx, ci, mname)
+				if r := methodAccessReason(ctx, ci, mname); r != "" {
+					if !ctx.VMInstance().ClassHasMethod(ci, "__callStatic") {
+						return r
+					}
+				}
+				return ""
 			}
 		}
 	case vm.StringType:
@@ -2348,6 +2366,8 @@ func isACommon(ctx *vm.Context, allowString, strict bool) vm.Value {
 		if o != nil {
 			ci = o.Class()
 		}
+	case vm.ClosureType:
+		ci = ctx.VM().FindClass("Closure")
 	case vm.StringType:
 		if !allowString {
 			return vm.Bool(false)
@@ -3082,6 +3102,20 @@ func iniSetFn(ctx *vm.Context) vm.Value {
 		}
 		return vm.Str(old)
 	}
+	// zend.exception_string_param_max_len: 0..1000000 (PHP_INI_ALL); значения
+	// вне диапазона (в т.ч. -1) отвергаются, ini_set возвращает false.
+	if name == "zend.exception_string_param_max_len" {
+		n, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+		if err != nil || n < 0 || n > 1000000 {
+			return vm.Bool(false)
+		}
+		old, ok := iniValues[name]
+		if !ok {
+			old = "15"
+		}
+		iniValues[name] = strconv.FormatInt(n, 10)
+		return vm.Str(old)
+	}
 	old, ok := iniValues[name]
 	if name == "fiber.stack_size" {
 		// fiber.stack_size: отрицательное значение отвергается с Warning;
@@ -3491,6 +3525,16 @@ func getLoadedExtensionsFn(ctx *vm.Context) vm.Value {
 
 func getExtensionFuncsFn(ctx *vm.Context) vm.Value {
 	ext := normalizeIniKey(arg0(ctx).ToString())
+	// Функции расширения "zend" в php-src живут в отдельной таблице
+	// (zend_version и т.п.) и доступны через get_extension_funcs("zend"),
+	// хотя самого расширения нет в get_loaded_extensions().
+	if ext == "zend" {
+		out := vm.NewArray()
+		for _, n := range internalFuncNames {
+			_, _ = out.Append(vm.MakeString(n))
+		}
+		return vm.MakeArray(out)
+	}
 	for _, e := range knownExtensions {
 		if normalizeIniKey(e) != ext {
 			continue

@@ -405,6 +405,10 @@ func (vm *VM) reflNewClass(ci ClassInfo) Slot {
 	}
 	d.kind = rkClass
 	d.class = ci
+	// Публичное свойство name (Zend ReflectionClass::$name — readonly).
+	if o := vm.objectOf(s); o != nil {
+		o.SetProp("name", MakeString(ci.Name()))
+	}
 	return s
 }
 
@@ -1356,7 +1360,23 @@ func registerReflectionFunctionMembers(ci ClassInfo) {
 		return Slot{}, NewThrowable("Error", "Cannot create closure for this function")
 	})
 	reflMethodReg(ci, "getClosureScopeClass", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
-		return MakeNull(), nil
+		if !d.closure {
+			return MakeNull(), nil
+		}
+		var target ClassInfo
+		if cl := d.closureSlot.asClosure(); cl != nil {
+			if cl.Scope != nil {
+				target = cl.Scope
+			} else if deref(cl.BoundThis).typ == ObjectType {
+				// bindTo($obj) без scope: Zend связывает замыкание с dummy-
+				// классом Closure.
+				target = ctx.VM().FindClass("Closure")
+			}
+		}
+		if target == nil {
+			return MakeNull(), nil
+		}
+		return ctx.VM().reflNewClass(target), nil
 	})
 	reflMethodReg(ci, "getClosureThis", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		return MakeNull(), nil

@@ -932,16 +932,7 @@ func (vm *VM) InstanceOfName(obj Slot, name string) bool {
 	if strings.EqualFold(name, "Stringable") && ci.lookupMethod("__toString") != nil {
 		return true
 	}
-	var target ClassInfo
-	for _, c := range vm.classes {
-		if ClassHidden(c) {
-			continue
-		}
-		if strings.EqualFold(c.Name(), name) {
-			target = c
-			break
-		}
-	}
+	target := vm.FindClass(name)
 	if target == nil {
 		return false
 	}

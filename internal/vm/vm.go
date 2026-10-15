@@ -271,6 +271,9 @@ type VM struct {
 	// подготовленное BindNamedArgs для ближайшего вызова.
 	curNamedCount     int
 	pendingNamedCount int
+	// byRefAlias — имя для диагностики by-ref аргументов при вызове
+	// замыкания через публичный интерфейс Closure::__invoke.
+	byRefAlias string
 	// pendingFrameNamed — extra named args для кадра ближайшего вызова
 	// (pushCall забирает и сбрасывает).
 	pendingFrameNamed *Array
@@ -2195,7 +2198,17 @@ func (vm *VM) FramesArray(frames []callFrameInfo, options int64, limit int) Slot
 
 // DebugBacktraceString рендерит текущий стек (innermost-first, без текущего
 // вызова debug_print_backtrace и без строки {main}) в формате Zend.
-func (vm *VM) DebugBacktraceString() string {
+func (vm *VM) DebugBacktraceString() string { return vm.DebugBacktraceStringOpts(0, false) }
+
+// DebugBacktraceStringLimit — с лимитом кадров (0 — без ограничения).
+func (vm *VM) DebugBacktraceStringLimit(limit int) string {
+	return vm.DebugBacktraceStringOpts(limit, false)
+}
+
+// DebugBacktraceStringOpts — как DebugBacktraceString, но с лимитом кадров
+// (Zend debug_print_backtrace($options, $limit); 0 — без ограничения) и
+// опцией DEBUG_BACKTRACE_IGNORE_ARGS (аргументы кадров не печатаются).
+func (vm *VM) DebugBacktraceStringOpts(limit int, ignoreArgs bool) string {
 	all := vm.traceFrames()
 	n := len(all)
 	if n <= 1 {
@@ -2204,6 +2217,9 @@ func (vm *VM) DebugBacktraceString() string {
 	frames := all[:n-1] // без кадра самой debug_print_backtrace
 	var b strings.Builder
 	for j, i := 0, len(frames)-1; i >= 0; i, j = i-1, j+1 {
+		if limit > 0 && j >= limit {
+			break
+		}
 		fr := frames[i]
 		name := frameCalleeName(fr)
 		if fr.includeFrame {
@@ -2213,8 +2229,16 @@ func (vm *VM) DebugBacktraceString() string {
 			continue
 		}
 		if fr.callerFile == "[internal function]" || fr.callerFile == "" {
+			if ignoreArgs {
+				fmt.Fprintf(&b, "#%d [internal function]: %s()\n", j, name)
+				continue
+			}
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
 			fmt.Fprintf(&b, "#%d [internal function]: %s(%s)\n", j, name, vm.traceArgsNamed(sargs, snamed))
+			continue
+		}
+		if ignoreArgs {
+			fmt.Fprintf(&b, "#%d %s(%d): %s()\n", j, fr.callerFile, fr.callerLine, name)
 			continue
 		}
 		sargs, snamed := vm.traceFrameArgsSensitive(fr)
@@ -2670,8 +2694,18 @@ func (vm *VM) traceArg(s Slot) string {
 		return traceFloat(s.ToFloat())
 	case StringType:
 		raw := s.StringVal()
-		if len(raw) > 15 {
-			raw = raw[:15] + "..."
+		// Лимит zend.exception_string_param_max_len (по умолчанию 15;
+		// настраивается в php.ini/ini_set).
+		lim := 15
+		if vm.iniLookup != nil {
+			if v, ok := vm.iniLookup("zend.exception_string_param_max_len"); ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+					lim = n
+				}
+			}
+		}
+		if len(raw) > lim {
+			raw = raw[:lim] + "..."
 		}
 		return "'" + escapeTraceString(raw) + "'"
 	case ArrayType:
@@ -3219,9 +3253,20 @@ func (vm *VM) exec(chunk *Chunk) error {
 			vm.SuppressOff()
 
 		case OpExit:
-			if s := deref(regs[in.A]); s.typ == StringType {
-				vm.Write(s.StringVal())
+			str, serr := vm.stringify(regs[in.A])
+			if serr != nil {
+				th := serr
+				if t, ok := serr.(*Throwable); ok {
+					th = t
+				} else {
+					th = NewThrowable("Error", serr.Error())
+				}
+				if !vm.handleThrow(chunk, th) {
+					return th
+				}
+				continue
 			}
+			vm.Write(str)
 			return exitSignal{}
 
 		case OpFatal:
@@ -3430,7 +3475,7 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 
 		case OpCast:
-			if CastKind(in.C) == CastString && deref(regs[in.B]).typ == ObjectType {
+			if CastKind(in.C) == CastString && (deref(regs[in.B]).typ == ObjectType || deref(regs[in.B]).typ == ClosureType) {
 				str, serr := vm.stringify(regs[in.B])
 				if serr != nil {
 					th, ok := asThrowable(serr)
@@ -5557,7 +5602,18 @@ func (retSignal) Error() string { return "phpvm: return" }
 
 // warnByRefArgs печатает предупреждение, если by-ref параметр получил
 // аргумент-значение (не ссылку): "must be passed by reference, value given".
-func (vm *VM) warnByRefArgs(fn *Function, args []Slot) {
+// warnByRefArgs печатает предупреждение, если by-ref параметр получил
+// value-аргумент (для внутренних функций; у userland — фатальная ошибка
+// «could not be passed by reference»).
+func (vm *VM) byRefArgsDiag(fn *Function, args []Slot) error {
+	_, compiled := fn.Executable.(*CompiledFunction)
+	display := fn.Name
+	if vm.byRefAlias != "" {
+		display = vm.byRefAlias
+	}
+	// Через внутреннюю диспетчеризацию (call_user_func, __invoke-метод)
+	// значение для by-ref параметра даёт Warning; прямой вызов — Error.
+	indirect := vm.cufCall || vm.argNoLoc > 0
 	for i := range fn.ByRefArgs {
 		if !fn.ByRefArgs[i] {
 			continue
@@ -5575,9 +5631,19 @@ func (vm *VM) warnByRefArgs(fn *Function, args []Slot) {
 			if !tail && i < len(fn.ParamNames) && fn.ParamNames[i] != "" {
 				name = " ($" + fn.ParamNames[i] + ")"
 			}
-			vm.Warning(fmt.Sprintf("%s(): Argument #%d%s must be passed by reference, value given", fn.Name, i+1, name))
+			if compiled && !indirect {
+				// Userland-функция: значение не удалось превратить в ссылку —
+				// Error, как в Zend (zend_wrong_parameter_error).
+				return NewThrowable("Error", fmt.Sprintf("%s(): Argument #%d%s could not be passed by reference", display, i+1, name))
+			}
+			vm.Warning(fmt.Sprintf("%s(): Argument #%d%s must be passed by reference, value given", display, i+1, name))
 		}
 	}
+	return nil
+}
+
+func (vm *VM) warnByRefArgs(fn *Function, args []Slot) {
+	_ = vm.byRefArgsDiag(fn, args)
 }
 
 // tooFewArgs формирует ошибку ArgumentCountError для вызова userland-функции
@@ -5836,7 +5902,9 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 			// Диагностику by-ref смотрим на исходных аргументах: variadic-хвост
 			// ещё не упакован (value-аргументы вариативного by-ref параметра
 			// Zend оборачивает в ссылку без предупреждения).
-			vm.warnByRefArgs(fn, args)
+			if berr := vm.byRefArgsDiag(fn, args); berr != nil {
+				return Slot{}, berr
+			}
 		}
 		args = cf.PackVariadic(args)
 		vm.mergeNamedVariadic(args, fn)
@@ -6761,7 +6829,9 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		return Slot{}, aerr
 	}
 	if len(fn.ByRefArgs) > 0 {
-		vm.warnByRefArgs(fn, args)
+		if berr := vm.byRefArgsDiag(fn, args); berr != nil {
+			return Slot{}, berr
+		}
 	}
 	cf, isCompiled := fn.Executable.(*CompiledFunction)
 	var env funcEnv
@@ -6858,7 +6928,9 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		return Slot{}, aerr
 	}
 	if len(fn.ByRefArgs) > 0 {
-		vm.warnByRefArgs(fn, args)
+		if berr := vm.byRefArgsDiag(fn, args); berr != nil {
+			return Slot{}, berr
+		}
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedPending := vm.pendingThis
@@ -7004,6 +7076,28 @@ func (vm *VM) DynStaticGet(cls Slot, name string) (Slot, error) {
 		return *s, nil
 	}
 	return Slot{}, NewThrowable("Error", "Access to undeclared static property "+ci.Name()+"::$"+name)
+}
+
+// StaticUnset — unset() статического свойства по селектору класса (0=self,
+// 1=static, 2=parent, N+3 — индекс класса). Zend не удаляет статическое
+// свойство: бросается Error "Attempt to unset static property <cls>::$<name>"
+// (до этого резолвится класс и проверяется область видимости).
+func (vm *VM) StaticUnset(sel uint8, name string) error {
+	cls := vm.classSel(sel)
+	if cls == nil {
+		return scopeClassErr(sel)
+	}
+	return NewThrowable("Error", "Attempt to unset static property "+cls.Name()+"::$"+name)
+}
+
+// DynStaticUnsetByName — unset() статического свойства класса, заданного
+// значением (EXPR::$p).
+func (vm *VM) DynStaticUnsetByName(cls Slot, name string) error {
+	ci, err := vm.DynClassByName(cls)
+	if err != nil {
+		return err
+	}
+	return NewThrowable("Error", "Attempt to unset static property "+ci.Name()+"::$"+name)
 }
 
 // DynStaticSetByName — запись в статическое свойство класса, заданного
@@ -7539,6 +7633,9 @@ func (vm *VM) objClassName(s Slot) string {
 // stringify приводит слот к строке с учётом __toString (конкатенация/echo).
 func (vm *VM) stringify(s Slot) (string, error) {
 	s = deref(s)
+	if s.typ == ClosureType {
+		return "", NewThrowable("Error", "Object of class Closure could not be converted to string")
+	}
 	if s.typ == ObjectType {
 		if ci := vm.classInfo(s); ci != nil {
 			if m := ci.lookupMethod("__toString"); m != nil {

@@ -269,7 +269,7 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			shareSlot(res)
 			return execResult{}
 		}
-		err := NewThrowable("Error", "Call to undefined function "+name+"()")
+		err := NewThrowable("Error", "Call to undefined function "+strings.TrimPrefix(name, "\\")+"()")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}

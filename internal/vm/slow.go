@@ -141,10 +141,8 @@ func negSlow(a Slot) Slot { return Neg(a) }
 
 //go:noinline
 func (vm *VM) notSlow(a Slot) Slot {
-	// Для строк ~ — побитовая операция над строкой (без приведения к int).
-	if deref(a).typ == FloatType {
-		vm.floatToIntWarn(a)
-	}
+	// Логическое отрицание не приводит float к int (приведение к int —
+	// только у ~, он идёт через OpBitNot), поэтому Deprecated здесь не бывает.
 	return Not(a)
 }
 

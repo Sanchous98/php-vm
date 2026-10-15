@@ -284,6 +284,9 @@ func (c *runtimeClass) defaultSlotValue(pd *propDecl, name string, v Value) (Slo
 type runtimeClass struct {
 	name   string
 	parent *runtimeClass
+	// visibleName — имя для get_class()/::class у анонимных классов
+	// (`class@anonymous\0<file>:<line>$<n>`); пусто у обычных.
+	visibleName string
 
 	methods map[string]*Function
 	ctor    *Function
@@ -815,6 +818,26 @@ func RegisterClass[T any](name string, parent ClassInfo) *runtimeClass {
 
 func (c *runtimeClass) Name() string { return c.name }
 
+// ClassVisibleName возвращает имя класса, как его видят get_class()/::class:
+// у анонимных классов это Zend-форма `class@anonymous\0<file>:<line>$<n>`
+// (видимая часть — до NUL), у остальных — обычное имя.
+func (vm *VM) ClassVisibleName(ci ClassInfo) string {
+	if ci == nil {
+		return ""
+	}
+	if rc, ok := ci.(*runtimeClass); ok && rc.visibleName != "" {
+		return rc.visibleName
+	}
+	return ci.Name()
+}
+
+// SetAnonVisibleName сохраняет видимое имя анонимного класса (компилятор).
+func SetAnonVisibleName(ci ClassInfo, name string) {
+	if rc, ok := ci.(*runtimeClass); ok {
+		rc.visibleName = name
+	}
+}
+
 // SetFinal помечает класс как final.
 func (c *runtimeClass) SetFinal() { c.final = true }
 
@@ -1179,7 +1202,9 @@ func (c *runtimeClass) link() {
 		fm := flatMethod{fn: fn, decl: c, vis: vis}
 		// Переопределение унаследованного метода: запоминаем корневой
 		// прототип (Zend GH-14009 — проверка protected-доступа идёт по нему).
-		if old, ok := am[name]; ok && old.fn != fn {
+		// Приватный метод родителя не наследуется и прототипом не является
+		// (B1::mp не переопределяет приватный A::mp).
+		if old, ok := am[name]; ok && old.fn != fn && old.vis != Private {
 			if old.proto != nil {
 				fm.proto = old.proto
 			} else {
@@ -1200,11 +1225,17 @@ func (c *runtimeClass) link() {
 		ac[k] = v
 		acv[k] = c.constVis[k]
 		acd[k] = c
+		// Собственная статическая константа перекрывает унаследованную
+		// ленивую с тем же именем.
+		delete(alc, k)
 	}
 	for k, v := range c.lazyConsts {
 		alc[k] = v
 		acv[k] = c.constVis[k]
 		acd[k] = c
+		// Собственная ленивая константа перекрывает унаследованную
+		// статическую (иначе в плоской таблице побеждал бы родитель).
+		delete(ac, k)
 	}
 	for k, v := range c.staticProps {
 		as[k] = v

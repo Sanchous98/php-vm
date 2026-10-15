@@ -2282,6 +2282,17 @@ func promoteConstructor(_ string, params []Param, body []Stmt) []Stmt {
 			continue
 		}
 		prop := strings.TrimPrefix(pr.Name, "$")
+		if pr.ByRef {
+			// `public array &$array` — promoted-свойство связывается с
+			// параметром по ссылке (Zend: ZEND_ASSIGN_REF при промоушене).
+			pre = append(pre, &ExprStmt{X: &AssignExpr{
+				Target: &PropExpr{Recv: &VarExpr{Name: "$this"}, Name: prop},
+				Op:     "=",
+				Value:  &VarExpr{Name: pr.Name},
+				ByRef:  true,
+			}})
+			continue
+		}
 		pre = append(pre, &ExprStmt{X: &AssignExpr{
 			Target: &PropExpr{Recv: &VarExpr{Name: "$this"}, Name: prop},
 			Op:     "=",
@@ -4342,8 +4353,9 @@ func classRefName(x Expr) string {
 		return ""
 	case *ConstExpr:
 		// `Test::NAME::CONST` — имя класса вычисляется из значения константы;
-		// резолвим в рантайме (имя содержит "::").
-		if strings.Contains(v.Name, "::") {
+		// резолвим в рантайме (имя содержит "::"), как и динамический fetch
+		// `Foo::{a()}::{b()}` (ClassExpr/NameExpr — выражение слева).
+		if strings.Contains(v.Name, "::") || v.ClassExpr != nil || v.NameExpr != nil {
 			return ""
 		}
 		return v.Name
@@ -4747,8 +4759,13 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 		case p.is(TOp, "::"):
 			// x::name(...) / x::CONST / x::$prop / x::${expr} / x::$var(...)
 			// Литеральное/константное не-строковое имя класса слева от `::`
-			// Zend отвергает на этапе компиляции (bug70782, bug77530).
-			if constClassNameNonString(x) {
+			// Zend отвергает на этапе компиляции (bug70782, bug77530) — кроме
+			// `::class`, где литерал оценивается и даёт «Cannot use "::class"
+			// on <type>» / «(expression)::class ...» (см. classKeyword).
+			p.next()
+			t := p.next()
+			isClassKw := t.Kind != TVar && t.Kind != TOp && strings.EqualFold(t.Val, "class")
+			if !isClassKw && constClassNameNonString(x) {
 				line := 0
 				if p.exprLines != nil {
 					line = p.exprLines[x]
@@ -4758,8 +4775,6 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 				}
 				return nil, &fatalError{msg: "Illegal class name", line: line}
 			}
-			p.next()
-			t := p.next()
 			clsName := classRefName(x)
 			// Класс задан произвольным выражением (`('A' . '')::$b`, `$a[0]::C`):
 			// сохраняем выражение и резолвим класс в рантайме.

@@ -172,6 +172,14 @@ func registerExceptionMembers(ci ClassInfo) {
 				} else {
 					o.SetProp("severity", MakeInt(1)) // E_ERROR
 				}
+				// ErrorException(): previous — ШЕСТОЙ аргумент (после
+				// severity/filename/line); базовый конструктор по ошибке
+				// трактует третий как previous — перезаписываем корректно.
+				if len(args) > 5 {
+					o.SetProp("previous", args[5])
+				} else {
+					o.SetProp("previous", MakeNull())
+				}
 				if len(args) > 3 {
 					a := deref(args[3])
 					if a.typ != NullType {
@@ -474,7 +482,7 @@ func (vm *VM) BailOut() { panic(fatalSignal{}) }
 // объекты, реализующие Throwable.
 func (vm *VM) makeThrowable(v Slot) error {
 	if v.typ != ObjectType {
-		return NewThrowable("TypeError", "Can only throw objects")
+		return NewThrowable("Error", "Can only throw objects")
 	}
 	ci := vm.classInfo(v)
 	throwable := vm.findClass("Throwable")

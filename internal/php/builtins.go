@@ -85,7 +85,7 @@ func builtins() []*vm.Function {
 				// вне класса — Error (без deprecation).
 				if ci := ctx.Self(); ci != nil {
 					ctx.VM().Deprecated("Calling get_class() without arguments is deprecated")
-					return vm.Str(ci.Name())
+					return vm.Str(ctx.VM().ClassVisibleName(ci))
 				}
 				ctx.Throw(vm.NewThrowable("Error", "get_class() without arguments must be called from within a class"))
 				if ctx.HasThrown() {
@@ -109,7 +109,7 @@ func builtins() []*vm.Function {
 			if o == nil {
 				return vm.Bool(false)
 			}
-			return vm.Str(o.ClassName())
+			return vm.Str(ctx.VM().ClassVisibleName(o.Class()))
 		}),
 		vm.Register("get_class_methods", getClassMethodsFn),
 		vm.Register("get_object_vars", getObjectVarsFn),
@@ -726,7 +726,7 @@ func builtins() []*vm.Function {
 			}
 			pos := int(arg0(ctx).ToInt())
 			if pos < 0 {
-				ctx.Throw(vm.NewThrowable("Error", "func_get_arg(): Argument #1 ($position) must be greater than or equal to 0"))
+				ctx.Throw(vm.NewThrowable("ValueError", "func_get_arg(): Argument #1 ($position) must be greater than or equal to 0"))
 				if ctx.HasThrown() {
 					return *new(vm.Value)
 				}
@@ -1371,7 +1371,16 @@ func builtins() []*vm.Function {
 		}),
 		vm.Register("debug_backtrace", debugBacktraceFn),
 		vm.Register("debug_print_backtrace", func(ctx *vm.Context) vm.Value {
-			if s := ctx.VM().DebugBacktraceString(); s != "" {
+			limit := 0
+			ignoreArgs := false
+			if len(ctx.Args()) > 0 {
+				// DEBUG_BACKTRACE_IGNORE_ARGS = 2.
+				ignoreArgs = ctx.Args()[0].ToInt()&2 != 0
+			}
+			if len(ctx.Args()) > 1 {
+				limit = int(ctx.Args()[1].ToInt())
+			}
+			if s := ctx.VM().DebugBacktraceStringOpts(limit, ignoreArgs); s != "" {
 				ctx.VM().Write(s)
 			}
 			return vm.MakeNull()

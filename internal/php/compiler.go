@@ -4184,7 +4184,13 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 				return *new(vm.Slot)
 			}
 		} else {
-			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+			// Сбой пользовательского фильтра во время чтения уже дал
+			// Warning «Unprocessed filter buckets remaining»: Zend не
+			// повторяет «Failed to open stream», только «Failed opening»
+			// (include_fail_during_read).
+			if !lastFilterReadFailed {
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+			}
 			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)

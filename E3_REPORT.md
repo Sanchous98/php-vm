@@ -66,6 +66,11 @@
    блок выровнен по формату с ctxPrefix.
 8. **`null`/`true`/`false` как имена функций** (`parser.go`): в грамматике Zend
    это T_STRING; `function NULL() {}` снова парсится (`is_callable_basic1`).
+9. **Возвращён guard `lastFilterReadFailed`** (`compiler.go`, диагностика include):
+   при сбое пользовательского фильтра во время чтения Zend не печатает
+   «Failed to open stream», только «Failed opening … for inclusion»
+   (`Zend/tests/include_fail_during_read`; guard был в master 3197be0, потерян
+   при мерже e2).
 
 ## Проверки
 

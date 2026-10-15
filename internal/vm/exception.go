@@ -610,6 +610,9 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 					// Zend освобождает его при раскручивании (FREE), до тела
 					// catch. От этого зависит порядок возврата #N в free-list
 					// (typed_properties_class_loading и т.п.).
+					// Отложенные записи-обратно прерванного оператора
+					// отменяются вместе с ним.
+					vm.wbSkip = vm.wbSkip[:0]
 					vm.dropDeadRegs(chunk, int(ce.PC))
 					if vm.lifeCandidate || vm.zeroObjs > 0 {
 						if res := vm.sweepLifetime(false, chunk, int(ce.PC)); res.err != nil && vm.pendingDestroyErr == nil {
@@ -625,6 +628,7 @@ func (vm *VM) handleThrow(chunk *Chunk, err error) bool {
 			vm.tries = vm.tries[:i+1]
 			vm.tries[i].savedErr = th
 			vm.tries[i].inFinally = true
+			vm.wbSkip = vm.wbSkip[:0]
 			vm.ip = int(ti.FinallyPC)
 			return true
 		}

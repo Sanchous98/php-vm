@@ -911,6 +911,11 @@ func registerReflectionClassMembers(ci ClassInfo) {
 		}
 		return MakeInt(m), nil
 	})
+	// getTraitAliases: таблица псевдонимов трейтов (у нас не отслеживается —
+	// как Zend при отсутствии `as`-правил, отдаём пустой массив).
+	reflMethodReg(ci, "getTraitAliases", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		return MakeArray(NewArray()), nil
+	})
 	reflMethodReg(ci, "getDefaultProperties", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		arr := NewArray()
 		c := asRC(d.class)
@@ -1434,6 +1439,11 @@ func registerFunctionAbstractMembers(ci ClassInfo, isMethod bool) {
 			arr.Append(ctx.vm.reflNewParameter(owner, i))
 		}
 		return MakeArray(arr), nil
+	})
+	// getDocComment: doc-блоки не сохраняются — как Zend для методов без
+	// комментария, отдаём false.
+	reflMethodReg(ci, "getDocComment", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		return MakeBool(false), nil
 	})
 	reflMethodReg(ci, "getNumberOfParameters", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		return MakeInt(int64(paramCount(d.fn))), nil

@@ -637,6 +637,31 @@ func builtins() []*vm.Function {
 		vm.Register("unregister_tick_function", unregisterTickFunctionFn),
 		vm.Register("session_save_path", func(ctx *vm.Context) vm.Value { return vm.Str("") }),
 		vm.Register("session_start", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("session_unset", func(ctx *vm.Context) vm.Value {
+			// Освобождает все переменные сессии: $_SESSION становится [].
+			ctx.VM().GlobalSet("$_SESSION", vm.MakeArray(vm.NewArray()))
+			return vm.MakeNull()
+		}),
+		vm.Register("get_resources", func(ctx *vm.Context) vm.Value {
+			// get_resources(?string $type = null): активные ресурсы (id => resource).
+			filter := ""
+			if len(ctx.Args()) > 0 {
+				if a0 := vm.Deref(arg(ctx, 0)); a0.Type() != vm.NullType {
+					filter = a0.ToString()
+				}
+			}
+			arr := vm.NewArray()
+			for id, h := range fsHandles {
+				if h == nil || h.res == nil || h.res.Closed || h.resSlot.Type() == vm.NullType {
+					continue
+				}
+				if filter != "" && h.res.Kind != filter {
+					continue
+				}
+				arr.Set(vm.MakeIntKey(id), h.resSlot)
+			}
+			return vm.MakeArray(arr)
+		}),
 		vm.Register("output_add_rewrite_var", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
 		vm.Register("header_register_callback", headerRegisterCallbackFn),
 		vm.Register("phpcredits", phpcreditsFn),

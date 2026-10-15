@@ -344,6 +344,13 @@ type VM struct {
 	// (__get/__set/__isset/__unset) для одного и того же свойства объекта.
 	magicBusy map[string]bool
 
+	// wbSkip — стек «отменённых» записей-обратно после дим-записи в
+	// перегруженное свойство: Zend читает свойство через __get, модифицирует
+	// временную копию и не пишет её назад (fetch_property_address, ветка
+	// overloaded). real=true — by-ref __get вернул реальную ячейку и значение
+	// нужно записать в само свойство (обход проверки видимости).
+	wbSkip []wbSkipEntry
+
 	// liveObjs — объекты в порядке создания (для вызова деструкторов при
 	// завершении скрипта); destructed/shutdownDone — защита от повторного вызова.
 	liveObjs     []*Object
@@ -569,6 +576,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.autoloaders = nil
 	vm.autoloading = nil
 	vm.magicBusy = nil
+	vm.wbSkip = vm.wbSkip[:0]
 	vm.liveObjs = nil
 	vm.weakRefs = nil
 	vm.haltRequested = false
@@ -5672,6 +5680,24 @@ func (vm *VM) checkParams(fn *Function, args []Slot) ([]Slot, error) {
 		}
 	}
 	return args, nil
+}
+
+// wbSkipEntry — запись в стеке vm.wbSkip: свойство ob::$name было прочитано
+// через __get для записи (дим-запись/косвенная модификация). real — значение
+// пришло из by-ref __get (запись в свойство нужна), иначе запись-обратно
+// отменяется (Zend: «Indirect modification ... has no effect»).
+type wbSkipEntry struct {
+	ob   *Object
+	name string
+	real bool
+}
+
+// pushWbSkip регистрирует отмену записи-обратно для ob::$name.
+func (vm *VM) pushWbSkip(ob *Object, name string, real bool) {
+	if ob == nil {
+		return
+	}
+	vm.wbSkip = append(vm.wbSkip, wbSkipEntry{ob: ob, name: name, real: real})
 }
 
 // accessError формирует PHP-совместимую ошибку доступа к непубличному методу.

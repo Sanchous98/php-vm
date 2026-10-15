@@ -599,7 +599,7 @@ type Parser struct {
 	ns        string            // текущее пространство ("" — глобальное)
 	classUses map[string]string // alias(ниж.регистр) -> FQ для классов
 	funcUses  map[string]string // для use function
-	constUses map[string]string // для use const (alias в нижнем регистре -> FQ)
+	constUses map[string]string // для use const (псевдоним регистрозависим, как в Zend)
 	// constImports — таблица импортов const с точным регистром псевдонима
 	// (имена констант регистрозависимы) и seenConsts — имена const-объявлений
 	// и целей импорта в текущем файле (FC(seen_symbols) в Zend) для диагностик
@@ -1968,7 +1968,7 @@ func (p *Parser) addConstUse(full, alias string) error {
 	if p.constUses == nil {
 		p.constUses = map[string]string{}
 	}
-	p.constUses[strings.ToLower(alias)] = full
+	p.constUses[alias] = full
 	if p.seenConsts == nil {
 		p.seenConsts = map[string]bool{}
 	}
@@ -3778,16 +3778,23 @@ func (p *Parser) resolveFuncName(raw string) (name, fallback string) {
 		return raw[1:], ""
 	}
 	first, rest := splitFirstName(raw)
-	if mapped, ok := p.funcUses[strings.ToLower(first)]; ok {
-		if rest == "" {
-			return mapped, ""
+	if rest != "" {
+		// Квалифицированное имя (`C\f`): первый сегмент ищется только в
+		// таблице импортов классов (Zend zend_resolve_function_name смотрит
+		// FC(imports); импорты function/const для квалифицированных имён не
+		// применяются). Отката к глобальному пространству нет.
+		if mapped, ok := p.classUses[strings.ToLower(first)]; ok {
+			return mapped + "\\" + rest, ""
 		}
-		return mapped + "\\" + rest, ""
-	}
-	if p.ns != "" {
-		if rest != "" {
+		if p.ns != "" {
 			return p.ns + "\\" + raw, ""
 		}
+		return raw, ""
+	}
+	if mapped, ok := p.funcUses[strings.ToLower(first)]; ok {
+		return mapped, ""
+	}
+	if p.ns != "" {
 		return p.ns + "\\" + raw, raw
 	}
 	return raw, ""
@@ -3802,16 +3809,22 @@ func (p *Parser) resolveConstName(raw string) (name, fallback string) {
 		return raw[1:], ""
 	}
 	first, rest := splitFirstName(raw)
-	if mapped, ok := p.constUses[strings.ToLower(first)]; ok {
-		if rest == "" {
-			return mapped, ""
+	if rest != "" {
+		// Квалифицированное имя (`C\K`): как и для функций, применяется
+		// только таблица импортов классов; импорты const не действуют
+		// (Zend zend_resolve_const_name → FC(imports) kind == class).
+		if mapped, ok := p.classUses[strings.ToLower(first)]; ok {
+			return mapped + "\\" + rest, ""
 		}
-		return mapped + "\\" + rest, ""
-	}
-	if p.ns != "" {
-		if rest != "" {
+		if p.ns != "" {
 			return p.ns + "\\" + raw, ""
 		}
+		return raw, ""
+	}
+	if mapped, ok := p.constUses[first]; ok {
+		return mapped, ""
+	}
+	if p.ns != "" {
 		return p.ns + "\\" + raw, raw
 	}
 	return raw, ""

@@ -1499,6 +1499,15 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 	}
 	if pd, decl, ok := vm.scopedProp(vm.ctx.self, ci, pname); ok && pd != nil {
 		if err := vm.propAccessErr(pd, decl, pname); err != nil {
+			// Недоступное объявленное свойство + __get: Zend не выдаёт
+			// реальную ячейку, а берёт значение __get (Zend
+			// fetch_property_address).
+			if cell, _, mok, merr := vm.magicRefCell(ci, recv, pname); mok {
+				if merr != nil {
+					return Slot{}, merr
+				}
+				return cell, nil
+			}
 			return Slot{}, err
 		}
 		key := vm.propKey(pd, decl, pname)
@@ -1547,6 +1556,14 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 		vm.setProp(recv, pname, cell)
 		return cell, nil
 	}
+	// Необъявленное свойство с __get: Zend не создаёт динамическое свойство,
+	// а берёт значение __get.
+	if cell, _, mok, merr := vm.magicRefCell(ci, recv, pname); mok {
+		if merr != nil {
+			return Slot{}, merr
+		}
+		return cell, nil
+	}
 	// Создание нового динамического свойства по ссылке: те же ограничения,
 	// что и у обычной записи (WeakReference и т.п.).
 	if err := checkDynamicProp(ci, pname); err != nil {
@@ -1555,6 +1572,25 @@ func (vm *VM) propRefCell(recv Slot, pname string) (Slot, error) {
 	cell := MakeRef(&Ref{v: MakeNull()})
 	vm.setProp(recv, pname, cell)
 	return cell, nil
+}
+
+// magicRefCell берёт ячейку свойства через __get при недоступном/необъявленном
+// свойстве (BP_VAR_W/REF). By-ref __get возвращает реальную ячейку (real=true);
+// by-value — значение, а Zend предупреждает «Indirect modification of overloaded
+// property ... has no effect» (zend_fetch_property_address).
+func (vm *VM) magicRefCell(ci ClassInfo, recv Slot, pname string) (cell Slot, real bool, ok bool, err error) {
+	g, mok, merr := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)})
+	if !mok {
+		return Slot{}, false, false, nil
+	}
+	if merr != nil {
+		return Slot{}, false, true, merr
+	}
+	if g.typ == RefType {
+		return g, true, true, nil
+	}
+	vm.Notice("Indirect modification of overloaded property " + ci.Name() + "::$" + pname + " has no effect")
+	return MakeRef(&Ref{v: valueSlot(g)}), false, true, nil
 }
 
 // markTypedRefHolder отмечает объект как держащий типизированную ссылку.

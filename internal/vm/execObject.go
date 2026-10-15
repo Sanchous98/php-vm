@@ -636,6 +636,37 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	}
 	if declared {
 		if err := vm.propAccessErr(pd, decl, pname); err != nil {
+			// Недоступное объявленное свойство + __get: Zend берёт значение
+			// через __get и не пишет временную копию назад (Zend
+			// zend_fetch_property_address, ветка overloaded). By-ref __get
+			// даёт реальную ячейку — тогда значение пишется в свойство.
+			g, mok, merr := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)})
+			if mok {
+				if merr != nil {
+					if !vm.handleThrow(chunk, merr) {
+						return execResult{err: merr}
+					}
+					return execResult{next: true}
+				}
+				real := g.typ == RefType
+				val := deref(g)
+				if !real {
+					if a := val.AsArray(); a != nil {
+						a.MarkShared()
+					}
+				}
+				vm.pushWbSkip(vm.objectOf(recv), pname, real)
+				{
+					old := regs[in.A]
+					wv := val
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+				}
+				shareSlot(val)
+				return execResult{}
+			}
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
 			}
@@ -726,6 +757,17 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			}
 			return execResult{next: true}
 		}
+		// Необъявленное свойство с __get: запись-обратно не выполняется
+		// (Zend: модификация временной копии без эффекта).
+		if !readMode {
+			real := res.typ == RefType
+			if !real {
+				if a := deref(res).AsArray(); a != nil {
+					a.MarkShared()
+				}
+			}
+			vm.pushWbSkip(vm.objectOf(recv), pname, real)
+		}
 		{
 			old := regs[in.A]
 			wv := res
@@ -797,6 +839,37 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			return execResult{err: err}
 		}
 		return execResult{next: true}
+	}
+	// Запись-обратно после дим-записи в перегруженное/недоступное свойство:
+	// Zend не пишет временную копию (модификация без эффекта); для by-ref
+	// __get значение ложится прямо в объявленное свойство (обход проверки
+	// видимости — реальная ячейка уже выдана).
+	if n := len(vm.wbSkip); n > 0 {
+		if e := vm.wbSkip[n-1]; e.ob == vm.objectOf(o) && e.name == pname {
+			vm.wbSkip = vm.wbSkip[:n-1]
+			if !e.real {
+				// Zend печатает notice в точке записи (вне внутреннего
+				// подавления компилятора, но под `@` пользователя).
+				vm.Notice("Indirect modification of overloaded property " + ci.Name() + "::$" + pname + " has no effect")
+			}
+			if e.real {
+				pd, decl, declared := vm.scopedProp(vm.ctx.self, ci, pname)
+				if declared {
+					key := vm.propKey(pd, decl, pname)
+					val, verr := vm.coercePropValue(pd, decl, pname, deref(regs[in.B]), vm.chunk != nil && vm.chunk.Strict, false)
+					if verr != nil {
+						if !vm.handleThrow(chunk, verr) {
+							return execResult{err: verr}
+						}
+						return execResult{next: true}
+					}
+					vm.setProp(o, key, val)
+				} else {
+					vm.setProp(o, pname, deref(regs[in.B]))
+				}
+			}
+			return execResult{}
+		}
 	}
 	// Целевое свойство уже ссылка — писать сквозь неё (с guard типизированного
 	// свойства), а не заменять ячейку. Ключ хранения: private — по классу
@@ -1729,6 +1802,30 @@ func (vm *VM) opMethodCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		if !vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
 			pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
 			if !ok {
+				// Zend zend_std_get_method: недоступный метод при наличии
+				// __call вызывает __call, а не бросает Error.
+				var passed []Slot
+				if argc > 0 && int(in.B)+1+argc <= len(regs) {
+					passed = regs[int(in.B)+1 : int(in.B)+1+argc]
+				}
+				if res, mok, merr := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArray(passed)}); mok {
+					if merr != nil {
+						if !vm.handleThrow(chunk, merr) {
+							return execResult{err: merr}
+						}
+						return execResult{next: true}
+					}
+					{
+						old := regs[in.A]
+						wv := res
+						regs[in.A] = wv
+						if trackedType(old.typ) || trackedType(wv.typ) {
+							vm.wRegSlow(int(in.A), old)
+						}
+					}
+					shareSlot(res)
+					return execResult{}
+				}
 				err := vm.accessError(decl, mname, vis)
 				if !vm.handleThrow(chunk, err) {
 					return execResult{err: err}

@@ -150,6 +150,30 @@ func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if vis != Public && !vm.methodAccessibleFromProto(ci, decl, methodNameForProto(m, mname), vis, vm.ctx.self) {
 		pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
 		if !ok {
+			// Zend zend_std_get_method: недоступный метод при наличии __call
+			// вызывает __call, а не бросает Error.
+			var passed []Slot
+			if argc > 0 && int(in.B)+1+argc <= len(regs) {
+				passed = regs[int(in.B)+1 : int(in.B)+1+argc]
+			}
+			if res, mok, merr := vm.callMagicMethod(ci, recv, "__call", []Slot{MakeString(mname), argsArray(passed)}); mok {
+				if merr != nil {
+					if !vm.handleThrow(chunk, merr) {
+						return execResult{err: merr}
+					}
+					return execResult{next: true}
+				}
+				{
+					old := regs[in.A]
+					wv := res
+					regs[in.A] = wv
+					if trackedType(old.typ) || trackedType(wv.typ) {
+						vm.wRegSlow(int(in.A), old)
+					}
+				}
+				shareSlot(res)
+				return execResult{}
+			}
 			err := vm.accessError(decl, mname, vis)
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}
@@ -272,6 +296,36 @@ func (vm *VM) opStaticCall(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		}
 		pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
 		if !ok {
+			// Zend zend_std_get_static_method: недоступный статический метод
+			// при наличии __callStatic вызывает __callStatic, а не Error.
+			if mname != "__construct" && mname != "__destruct" {
+				var passed []Slot
+				if argc > 0 && int(in.A)+1+argc <= len(regs) {
+					passed = regs[int(in.A)+1 : int(in.A)+1+argc]
+				}
+				calledM := cls
+				if in.B <= 2 && vm.ctx.called != nil {
+					calledM = vm.ctx.called
+				}
+				if sres, mok, merr := vm.callMagicUndefStatic(cls, calledM, mname, passed); mok {
+					if merr != nil {
+						if !vm.handleThrow(chunk, merr) {
+							return execResult{err: merr}
+						}
+						return execResult{next: true}
+					}
+					{
+						old := regs[in.A]
+						wv := sres
+						regs[in.A] = wv
+						if trackedType(old.typ) || trackedType(wv.typ) {
+							vm.wRegSlow(int(in.A), old)
+						}
+					}
+					shareSlot(sres)
+					return execResult{}
+				}
+			}
 			var err error
 			if mname == "__construct" || mname == "__destruct" {
 				err = NewThrowable("Error", "Cannot call "+visWord(vis)+" "+classDisplayName(decl)+"::"+mname+"()")
@@ -405,6 +459,35 @@ func (vm *VM) opStaticCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instr
 	if vis != Public && !vm.methodAccessibleFromProto(cls, decl, methodNameForProto(m, mname), vis, vm.ctx.self) {
 		pm, pdecl, pvis, ok := scopeMethod(vm.ctx.self, mname)
 		if !ok {
+			// Недоступный статический метод + __callStatic → __callStatic.
+			if mname != "__construct" && mname != "__destruct" {
+				var passed []Slot
+				if argc > 0 && int(in.A)+1+argc <= len(regs) {
+					passed = regs[int(in.A)+1 : int(in.A)+1+argc]
+				}
+				calledM := cls
+				if in.B <= 2 && vm.ctx.called != nil {
+					calledM = vm.ctx.called
+				}
+				if sres, mok, merr := vm.callMagicUndefStatic(cls, calledM, mname, passed); mok {
+					if merr != nil {
+						if !vm.handleThrow(chunk, merr) {
+							return execResult{err: merr}
+						}
+						return execResult{next: true}
+					}
+					{
+						old := regs[in.A]
+						wv := sres
+						regs[in.A] = wv
+						if trackedType(old.typ) || trackedType(wv.typ) {
+							vm.wRegSlow(int(in.A), old)
+						}
+					}
+					shareSlot(sres)
+					return execResult{}
+				}
+			}
 			err := vm.accessError(decl, mname, vis)
 			if !vm.handleThrow(chunk, err) {
 				return execResult{err: err}

@@ -11207,7 +11207,12 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 	// Ключом foreach не может быть деструктуризация list(...)/[...] (Zend:
 	// "Cannot use list as key element").
 	if s.KeyTarget != nil {
-		return c.newFatal("Cannot use list as key element")
+		// Ключом foreach не может быть деструктуризация list(...)/[...]
+		// (Zend: "Cannot use list as key element"); свойства и элементы
+		// массива — допустимые цели ключа.
+		if _, isList := asListTarget(s.KeyTarget).(*ListExpr); isList {
+			return c.newFatal("Cannot use list as key element")
+		}
 	}
 	if s.KeyRef {
 		c.emitLine(c.curLine)

@@ -207,7 +207,12 @@ func NewSplClasses(builtin []ClassInfo) []ClassInfo {
 	registerWeakReferenceMembers(weakRef)
 
 	// Порядок: сначала интерфейс, затем классы.
-	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter}
+	// SplObserver/SplSubject — маркерные интерфейсы SPL (реализуются
+	// пользовательскими классами; собственных методов нет).
+	observer := NewInterface("SplObserver", nil)
+	subject := NewInterface("SplSubject", nil)
+
+	return []ClassInfo{seekable, arrayObject, arrayIterator, objStorage, multiIter, emptyIter, fixedArray, dll, stack, queue, fileInfo, fileObject, weakMap, weakRef, recFilterIter, observer, subject}
 }
 
 // registerSplObjectStorageSerialize реализует нативные __serialize/__unserialize

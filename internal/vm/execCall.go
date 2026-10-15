@@ -195,6 +195,28 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		}
 	}
 	if fn == nil {
+		// Строковое вызываемое "Class::method" (Zend: INIT_STATIC_METHOD_CALL
+		// по строке). Резолвим общим путём строковых callable: он умеет
+		// автозагрузку, __callStatic и снятие ведущего "\".
+		if strings.IndexByte(name, ':') >= 0 {
+			res, cerr := vm.callStringCallable(name, args)
+			if cerr != nil {
+				if !vm.handleThrow(chunk, cerr) {
+					return execResult{err: cerr}
+				}
+				return execResult{next: true}
+			}
+			{
+				old := regs[in.A]
+				wv := res
+				regs[in.A] = wv
+				if trackedType(old.typ) || trackedType(wv.typ) {
+					vm.wRegSlow(int(in.A), old)
+				}
+			}
+			shareSlot(res)
+			return execResult{}
+		}
 		err := NewThrowable("Error", "Call to undefined function "+name+"()")
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}

@@ -334,6 +334,19 @@ func (vm *VM) closureFromCallable(c Slot) (Slot, error) {
 				vm.Deprecated(`Use of "` + rawCls + `" in callables is deprecated`)
 			}
 		}
+		if recv.typ == ClosureType {
+			// Замыкание — объект класса Closure: [Closure, "__invoke"]
+			// разворачивается в само замыкание (Zend do_closure_from_callable).
+			if strings.EqualFold(mname, "__invoke") {
+				return recv, nil
+			}
+			if ci := vm.findClass("Closure"); ci != nil {
+				if m := methodOrCtor(ci, mname); m != nil {
+					return MakeClosure(&Closure{Fn: m, BoundThis: recv, Scope: ci, Called: ci, Fake: true}), nil
+				}
+			}
+			return Slot{}, NewThrowable("TypeError", "Failed to create closure from callable: class Closure does not have a method \""+mname+"\"")
+		}
 		if recv.typ == ObjectType {
 			ci := vm.classInfo(recv)
 			if ci == nil {
@@ -556,6 +569,13 @@ func (vm *VM) FCCObjectSlot(ci ClassInfo, recv Slot, mname string) (Slot, error)
 
 // fccObjectMethod — FCC для массива [obj, "method"].
 func (vm *VM) fccObjectMethod(ci ClassInfo, recv Slot, mname string) (Slot, error) {
+	if recv.typ == ClosureType && strings.EqualFold(mname, "__invoke") {
+		// $f->__invoke(...) — FCC по __invoke замыкания: сама вызываемая
+		// сущность (Closure::__invoke вызывает замыкание).
+		if cl := recv.asClosure(); cl != nil && cl.Fn != nil {
+			return recv, nil
+		}
+	}
 	m, decl, vis := ci.methodInfo(mname)
 	if m != nil && decl != nil && vis != Public && !vm.methodAccessibleFrom(decl, vis, vm.fccScope()) {
 		if ci.lookupMethod("__call") != nil {
@@ -585,6 +605,11 @@ func (vm *VM) SlotClassInfo(s Slot) ClassInfo {
 	d := deref(s)
 	if d.typ == ObjectType {
 		return vm.classInfo(d)
+	}
+	if d.typ == ClosureType {
+		// Замыкание — объект класса Closure (Zend): нужен для FCC
+		// `$f->__invoke(...)` и `[Closure, "method"]`.
+		return vm.findClass("Closure")
 	}
 	if d.typ == StringType {
 		return vm.findClass(strings.TrimLeft(d.StringVal(), "\\"))
@@ -1579,6 +1604,18 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
 	vals := a.Values()
 	recv := deref(vals[0])
 	mname := strings.TrimLeft(deref(vals[1]).ToString(), "\\")
+
+	// [Closure, "__invoke"] — вызываемое: Zend зовёт __invoke замыкания.
+	if recv.typ == ClosureType {
+		cl := recv.asClosure()
+		if cl == nil || cl.Fn == nil {
+			return Slot{}, NewThrowable("Error", "Value is not callable")
+		}
+		if strings.EqualFold(mname, "__invoke") {
+			return vm.invokeClosure(cl, args)
+		}
+		return Slot{}, NewThrowable("Error", "Call to undefined method Closure::"+mname+"()")
+	}
 
 	if recv.typ == ObjectType {
 		ci := vm.classInfo(recv)

@@ -4137,6 +4137,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		classes = append(classes, vm.NewSensitiveParameterValueClass())
 		classes = append(classes, vm.NewDateClasses()...)
 		classes = append(classes, vm.NewSplClasses(builtinIfaces)...)
+		classes = append(classes, vm.NewExtClasses()...)
 		classes = append(classes, vm.NewStreamClasses()...)
 		classes = append(classes, vm.NewReflectionClasses()...)
 	}

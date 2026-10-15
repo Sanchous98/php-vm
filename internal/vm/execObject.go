@@ -53,7 +53,9 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 	if ci.IsAbstract() {
 		return execResult{err: NewThrowable("Error", "Cannot instantiate abstract class "+ci.Name())}
 	}
-	// disable_classes: предупреждение, объект создаётся как обычно (Zend).
+	// disable_classes: Zend убирает класс из таблицы, оставляя имя: new даёт
+	// Warning, конструктор не вызывается, объявленных свойств у объекта нет.
+	disabled := vm.classDisabled(ci)
 	vm.warnDisabledClass(ci)
 	if cerr := vm.resolveAllLazyConsts(ci); cerr != nil {
 		if !vm.handleThrow(chunk, cerr) {
@@ -97,7 +99,7 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 			vm.wRegSlow(int(in.A), old)
 		}
 	}
-	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil {
+	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil && !disabled {
 		if !canAccess(ctorVis, ctorDecl, vm.ctx.self) {
 			err := vm.ctorAccessError(ctorVis, classDisplayName(ctorDecl), "__construct")
 			if !vm.handleThrow(chunk, err) {
@@ -119,8 +121,32 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 		}
 	}
 	vm.UnmarkNoDestruct(obj)
-
+	if disabled {
+		vm.unsetDeclaredProps(obj, ci)
+	}
 	return execResult{}
+}
+
+// unsetDeclaredProps помечает все объявленные свойства объекта как снятые:
+// чтение даёт «Undefined property: X::$name» (объект отключённого класса).
+func (vm *VM) unsetDeclaredProps(o *Object, ci ClassInfo) {
+	rc, ok := ci.(*runtimeClass)
+	if !ok || o == nil {
+		return
+	}
+	o.bareObj = true
+	if o.unset == nil {
+		o.unset = map[string]bool{}
+	}
+	for c := rc; c != nil; c = c.parent {
+		for _, name := range c.propOrder {
+			key := name
+			if pd, ok := c.ownProps[name]; ok && pd.vis == Private {
+				key = mangledPropKey(c, name)
+			}
+			o.unset[key] = true
+		}
+	}
 }
 
 func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
@@ -239,7 +265,9 @@ func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction)
 	if ci.IsAbstract() {
 		return execResult{err: NewThrowable("Error", "Cannot instantiate abstract class "+ci.Name())}
 	}
-	// disable_classes: предупреждение, объект создаётся как обычно (Zend).
+	// disable_classes: Zend убирает класс из таблицы, оставляя имя: new даёт
+	// Warning, конструктор не вызывается, объявленных свойств у объекта нет.
+	disabled := vm.classDisabled(ci)
 	vm.warnDisabledClass(ci)
 	if cerr := vm.resolveAllLazyConsts(ci); cerr != nil {
 		if !vm.handleThrow(chunk, cerr) {
@@ -267,7 +295,7 @@ func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction)
 			vm.wRegSlow(int(in.A), old)
 		}
 	}
-	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil {
+	if ctor, ctorDecl, ctorVis := ci.CtorInfo(); ctor != nil && !disabled {
 		if !canAccess(ctorVis, ctorDecl, vm.ctx.self) {
 			err := vm.ctorAccessError(ctorVis, classDisplayName(ctorDecl), "__construct")
 			if !vm.handleThrow(chunk, err) {
@@ -356,6 +384,35 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, operandTypeName(recv)))
+		{
+			old := regs[in.A]
+			wv := MakeNull()
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
+	}
+	// Объект отключённого класса (disable_classes): объявленных свойств нет —
+	// чтение даёт «Undefined property» (bug77494), как у динамического.
+	if ob := vm.objectOf(recv); ob != nil && ob.bareObj {
+		if res, ok, err := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)}); ok {
+			if err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+			old := regs[in.A]
+			regs[in.A] = res
+			if trackedType(old.typ) || trackedType(res.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+			shareSlot(res)
+			return execResult{}
+		}
+		vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
 		{
 			old := regs[in.A]
 			wv := MakeNull()
@@ -508,6 +565,35 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, operandTypeName(recv)))
+		{
+			old := regs[in.A]
+			wv := MakeNull()
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
+	}
+	// Объект отключённого класса (disable_classes): объявленных свойств нет —
+	// чтение даёт «Undefined property» (bug77494), как у динамического.
+	if ob := vm.objectOf(recv); ob != nil && ob.bareObj {
+		if res, ok, err := vm.callMagicMethod(ci, recv, "__get", []Slot{MakeString(pname)}); ok {
+			if err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
+			}
+			old := regs[in.A]
+			regs[in.A] = res
+			if trackedType(old.typ) || trackedType(res.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+			shareSlot(res)
+			return execResult{}
+		}
+		vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
 		{
 			old := regs[in.A]
 			wv := MakeNull()

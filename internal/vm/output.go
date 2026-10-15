@@ -629,6 +629,12 @@ func (vm *VM) AppendErrorLog(path, text string) {
 	if path == "" {
 		return
 	}
+	// CLI: error_log с пустой директивой пишет в stderr без префикса времени
+	// (run-tests объединяет потоки — bug79919).
+	if path == "php://stderr" || path == "php://stdout" {
+		fmt.Fprintln(vm.out, text)
+		return
+	}
 	tz := "UTC"
 	if vm.iniLookup != nil {
 		if t, ok := vm.iniLookup("date.timezone"); ok && t != "" {

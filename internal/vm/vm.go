@@ -2186,7 +2186,7 @@ func (vm *VM) FramesArray(frames []callFrameInfo, options int64, limit int) Slot
 				_ = e.SetStr("type", MakeString(typ))
 			}
 		}
-		if options&2 == 0 {
+		if options&2 == 0 && !(fr.callee != nil && fr.callee.Name == "eval") {
 			ea := NewArray()
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
 			for _, a := range sargs {
@@ -6355,7 +6355,15 @@ func (vm *VM) checkReturnType(fn *Function, res Slot) (Slot, error) {
 			vm.deprecateFloatToInt(line, chk)
 		}
 		if fn.ByRefReturn {
-			return res, nil
+			// Zend проверяет тип по значению ссылки, а приведение пишет в
+			// саму ячейку (bug70117: `&foo(): string` возвращает "1", и
+			// исходный элемент массива тоже становится строкой).
+			if res.typ == RefType {
+				if r := res.Ref(); r != nil {
+					r.Set(out)
+				}
+			}
+			return out, nil
 		}
 		return out, nil
 	}

@@ -44,6 +44,9 @@ type Object struct {
 	// lazyID — объект-обёртка рефлексии (Zend lazy object): хендл выдаётся не
 	// при создании, а при материализации (первый дамп/использование).
 	lazyID bool
+	// bareObj — объект класса из disable_classes: объявленных свойств нет,
+	// чтение/запись идут как для динамических (bug77494).
+	bareObj bool
 	// dead — объект уничтожен сборщиком (lifetime.go): __destruct вызван,
 	// хендл возвращён в free-list. Повторный markObj хендл не выдаёт.
 	dead bool

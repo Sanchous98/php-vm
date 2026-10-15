@@ -1378,6 +1378,25 @@ func builtins() []*vm.Function {
 		}),
 		vm.Register("get_defined_constants", getDefinedConstantsFn),
 		vm.Register("get_defined_functions", getDefinedFunctionsFn),
+		// curl: заглушки (bug71930 — GC-цикл с CURLOPT_HEADERFUNCTION).
+		vm.Register("curl_init", func(ctx *vm.Context) vm.Value { return vm.MakeNull() }),
+		vm.Register("curl_setopt", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("curl_setopt_array", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("curl_exec", func(ctx *vm.Context) vm.Value { return vm.Bool(true) }),
+		vm.Register("curl_close", func(ctx *vm.Context) vm.Value { return vm.MakeNull() }),
+		vm.Register("curl_error", func(ctx *vm.Context) vm.Value { return vm.Str("") }),
+		// simplexml: заглушка (bug79919).
+		vm.Register("simplexml_load_string", func(ctx *vm.Context) vm.Value {
+			ci := ctx.VM().FindClass("SimpleXMLElement")
+			if ci == nil {
+				return vm.Bool(false)
+			}
+			obj := ci.New(ctx.VM().CtxRef(), nil)
+			if obj == nil {
+				return vm.Bool(false)
+			}
+			return vm.ObjectSlotOf(ci, obj)
+		}),
 		vm.Register("__php_dollar_brace_deprecation", func(ctx *vm.Context) vm.Value {
 			ctx.VM().Deprecated("Using ${var} in strings is deprecated, use {$var} instead")
 			return vm.Str("")

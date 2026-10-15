@@ -1062,6 +1062,12 @@ func stdConst(name string) (vm.Slot, bool) {
 		return vm.MakeInt(0), true
 	case "CASE_UPPER":
 		return vm.MakeInt(1), true
+	case "CURLOPT_HEADERFUNCTION":
+		return vm.MakeInt(10079), true
+	case "CURLOPT_URL":
+		return vm.MakeInt(10002), true
+	case "CURLOPT_RETURNTRANSFER":
+		return vm.MakeInt(19913), true
 	case "SORT_REGULAR":
 		return vm.MakeInt(0), true
 	case "SORT_NUMERIC":

@@ -2477,6 +2477,11 @@ modsDone:
 					if p.accept(TOp, ";") {
 						continue
 					}
+					if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+						// `<?=` в позиции имени метода адаптации (Zend:
+						// "Cannot use "<?=" as an identifier").
+						return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
+					}
 					ta := &TraitAdapt{}
 					first := p.className()
 					if p.accept(TOp, "::") {
@@ -2513,6 +2518,12 @@ modsDone:
 							// Zend: readonly-модификатор к методу неприменим
 							// (в т.ч. в позиции имени псевдонима).
 							return nil, &fatalError{msg: "Cannot use the readonly modifier on a method", line: p.lineAt(p.cur().Pos)}
+						}
+						if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+							// `<?=` в позиции имени псевдонима: Zend сообщает
+							// Parse error "Cannot use "<?=" as an identifier"
+							// (short_echo_as_identifier).
+							return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
 						}
 						if p.is(TIdent, "") || p.is(TKeyword, "") {
 							ta.AliasName = tokName(p.next())
@@ -5197,6 +5208,11 @@ mods:
 					if p.accept(TOp, ";") {
 						continue
 					}
+					if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+						// `<?=` в позиции имени метода адаптации (Zend:
+						// "Cannot use "<?=" as an identifier").
+						return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
+					}
 					ta := &TraitAdapt{}
 					first := p.className()
 					if p.accept(TOp, "::") {
@@ -5233,6 +5249,12 @@ mods:
 							// Zend: readonly-модификатор к методу неприменим
 							// (в т.ч. в позиции имени псевдонима).
 							return nil, &fatalError{msg: "Cannot use the readonly modifier on a method", line: p.lineAt(p.cur().Pos)}
+						}
+						if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+							// `<?=` в позиции имени псевдонима: Zend сообщает
+							// Parse error "Cannot use "<?=" as an identifier"
+							// (short_echo_as_identifier).
+							return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
 						}
 						if p.is(TIdent, "") || p.is(TKeyword, "") {
 							ta.AliasName = tokName(p.next())

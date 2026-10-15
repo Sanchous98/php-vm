@@ -705,7 +705,12 @@ func (vm *VM) stringOffsetSet(arr Slot, keyReg Slot, valReg Slot) (Slot, Slot, e
 		vm.Warn("Illegal string offset " + intToString(orig))
 		return arr, MakeNull(), nil
 	}
-	ch := valReg.ToString()
+	// Значение приводится через __toString: исключение из него всплывает
+	// наружу (exception_from_toString: $str[0] = $badStr).
+	ch, cerr := vm.ToStringValue(valReg)
+	if cerr != nil {
+		return Slot{}, Slot{}, cerr
+	}
 	if ch == "" {
 		return Slot{}, Slot{}, NewThrowable("Error", "Cannot assign an empty string to a string offset")
 	}

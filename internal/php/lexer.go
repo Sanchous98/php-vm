@@ -471,6 +471,10 @@ func (l *Lexer) number() error {
 			}
 			l.pos = j
 			txt := strings.ReplaceAll(l.src[start:l.pos], "_", "")
+			if strings.ContainsAny(txt, "89") {
+				// PHP 8: 078/09 — Invalid numeric literal (не восьмеричное).
+				return &parseError{msg: "Invalid numeric literal", line: lineOf(l.src, start)}
+			}
 			l.emitBased(txt, 8, start)
 			return nil
 		}

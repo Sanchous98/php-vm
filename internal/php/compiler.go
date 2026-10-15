@@ -3680,7 +3680,14 @@ func runSubCode(ctx *vm.Context, src, file string, phpMode bool) (vm.Slot, bool)
 	}
 	compilerWarnings = compilerWarnings[:warnMark]
 	if err != nil {
-		ctx.Throw(vm.NewThrowable("ParseError", err.Error()))
+		th := vm.NewThrowable("ParseError", err.Error())
+		if pe, ok := err.(*parseError); ok {
+			// Локация — строка в подключаемом файле (getLine()).
+			th.LocFile = file
+			th.LocLine = pe.line
+			th.LocOverridden = pe.line > 0
+		}
+		ctx.Throw(th)
 		if ctx.HasThrown() {
 			return *new(vm.Slot), *new(bool)
 		}
@@ -3762,7 +3769,21 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	var p, file string
 	var flags int64
 	if len(args) > 0 {
-		p = args[0].ToString()
+		// Путь-объект приводится через __toString; исключение из него
+		// всплывает наружу (exception_from_toString: include $badStr).
+		if args[0].Type() == vm.ObjectType {
+			sp, serr := ctx.VM().ToStringValue(args[0])
+			if serr != nil {
+				throwCallable(ctx, serr)
+				if ctx.HasThrown() {
+					return *new(vm.Slot)
+				}
+				return vm.MakeBool(false)
+			}
+			p = sp
+		} else {
+			p = args[0].ToString()
+		}
 	}
 	if len(args) > 1 {
 		file = args[1].ToString()
@@ -3925,6 +3946,12 @@ func compileFileModeLink(src, file string, phpMode bool, linkBase *Compiled) (*C
 			return fatalCompiled(fe, file), nil
 		}
 		if pe, ok := err.(*parseError); ok {
+			// Рантайм-include/eval (linkBase != nil): синтаксическая ошибка —
+			// перехватываемое исключение ParseError (require_parse_exception);
+			// главный скрипт печатает фатал через чанк-заглушку.
+			if linkBase != nil {
+				return nil, err
+			}
 			return parseFatalCompiled(pe, file), nil
 		}
 		return nil, err

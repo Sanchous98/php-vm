@@ -52,3 +52,88 @@ func (vm *VM) debugSlotHolders(pred func(Slot) bool) int {
 	}
 	return n
 }
+
+// DebugArrayRefCensus — «держатели» массива a в куче: zend_reference-ячейки
+// (каждая считается один раз — Zend учитывает саму ячейку, а не число её
+// указателей) и прямые ячейки-элементы/свойства контейнеров. Обход идёт от
+// слотов кадра (globals/dynLocals/регистры) по массивам и объектам.
+// Zend в refcount массива для debug_zval_dump учитывает ровно такие zval'ы
+// (плюс holder-слоты, их считает DebugArrayHolders).
+func (vm *VM) DebugArrayRefCensus(a *Array) int {
+	if a == nil {
+		return 0
+	}
+	n := 0
+	refs := map[*Ref]bool{}
+	arrs := map[*Array]bool{}
+	objs := map[*Object]bool{}
+	var walk func(s Slot)
+	count := func(s Slot) {
+		if s.typ == RefType {
+			r := s.Ref()
+			if r != nil && !refs[r] {
+				refs[r] = true
+				if v := deref(r.Value()); v.typ == ArrayType && v.AsArray() == a {
+					n++
+				}
+			}
+		} else if s.typ == ArrayType && s.AsArray() == a {
+			n++
+		}
+	}
+	walk = func(s Slot) {
+		switch s.typ {
+		case RefType:
+			r := s.Ref()
+			if r == nil || refs[r] {
+				return
+			}
+			refs[r] = true
+			if v := deref(r.Value()); v.typ == ArrayType && v.AsArray() == a {
+				n++
+			}
+			walk(r.Value())
+		case ArrayType:
+			arr := s.AsArray()
+			if arr == nil || arrs[arr] {
+				return
+			}
+			arrs[arr] = true
+			for _, v := range arr.All() {
+				count(v)
+				walk(v)
+			}
+		case ObjectType:
+			o := vm.SlotObject(s)
+			if o == nil || objs[o] {
+				return
+			}
+			objs[o] = true
+			o.forEachPropValue(func(v Slot) {
+				count(v)
+				walk(v)
+			})
+		}
+	}
+	for k, s := range vm.globals {
+		if k == "$GLOBALS" {
+			continue
+		}
+		walk(s)
+	}
+	if f := vm.cur; f != nil {
+		for k, s := range f.dynLocals {
+			if k == "$GLOBALS" {
+				continue
+			}
+			walk(s)
+		}
+		for i := range f.regs {
+			if f.tracked[i>>6]&(uint64(1)<<uint(i&63)) == 0 {
+				continue
+			}
+			walk(f.regs[i])
+		}
+	}
+	return n
+}

@@ -1147,6 +1147,19 @@ func byrefMask(params []Param) []bool {
 	return m
 }
 
+// byrefMaskFull — как byrefMask, но всегда возвращает непустую по смыслу
+// маску (все false), если by-ref параметров нет. Нужна для methodRefs:
+// nil там означает «сигнатура метода неизвестна» (forWrite-путь без
+// диагностик), а метод известного класса без by-ref параметров должен
+// компилироваться как честная передача по значению (предупреждения об
+// undefined-переменных, passByReference_005).
+func byrefMaskFull(params []Param) []bool {
+	if m := byrefMask(params); m != nil {
+		return m
+	}
+	return make([]bool, len(params))
+}
+
 // mergeMask поэлементно объединяет маску by-ref (OR), возвращая новую.
 func mergeMask(dst, src []bool) []bool {
 	if len(src) > len(dst) {
@@ -1310,8 +1323,12 @@ func (c *compiler) emitUndefReadWarn(name string, line int) {
 	}
 }
 
-// emitUndefCheck эмитит проверку флага «переменная определена»: если он поднят// (переменная была снята unset()-ом), печатается «Undefined variable» и флаг
-// опускается.
+// emitUndefCheck эмитит проверку флага «переменная определена»: если он поднят// (переменная была снята unset()-ом), печатается «Undefined variable».
+// Флаг опускается только у не-ссылочных переменных: у ссылочной CV чтение
+// не возвращает её в определённое состояние (Zend: IS_REFERENCE остаётся,
+// повторные чтения снова дают «Undefined variable» — passByReference_005),
+// а у регистровой не-ссылки опускание флага подавляет дубли диагностики,
+// если компилятор эмитит проверку дважды в одной точке чтения.
 func (c *compiler) emitUndefCheck(name string, line int) {
 	def, ok := c.defRegs[name]
 	if !ok {
@@ -1322,7 +1339,9 @@ func (c *compiler) emitUndefCheck(name string, line int) {
 	nm := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nm, C: int32(c.chunk.AddConst(vm.StrConst(name)))})
 	c.emitCall("__php_warn_undef", []uint8{nm})
-	c.chunk.Emit(vm.Instruction{Op: vm.OpFalse, A: def})
+	if !c.isRef(name) {
+		c.chunk.Emit(vm.Instruction{Op: vm.OpFalse, A: def})
+	}
 	c.setJump(jf, c.chunk.Len())
 }
 
@@ -5162,7 +5181,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			if m.Kind != "method" {
 				continue
 			}
-			if mask := byrefMask(m.Params); mask != nil {
+			if mask := byrefMaskFull(m.Params); len(mask) > 0 {
 				base.methodRefs[m.MName] = mergeMask(base.methodRefs[m.MName], mask)
 			}
 		}
@@ -5532,7 +5551,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 					if err := base.validateType(m.RetType); err != nil {
 						return nil, err
 					}
-					if mask := byrefMask(m.Params); mask != nil {
+					if mask := byrefMaskFull(m.Params); len(mask) > 0 {
 						base.methodRefs[m.MName] = mergeMask(base.methodRefs[m.MName], mask)
 					}
 					savedStrict := base.strict
@@ -15147,9 +15166,11 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			// Унарный плюс — приведение к числу умножением на 1 (Zend
 			// компилирует ZEND_MUL с константой 1): float -0.0 сохраняет знак,
 			// ведуще-числовая строка даёт Warning, нечисловая — TypeError.
+			// Операнд — op1 (порядок важен для сообщения об ошибке:
+			// `+"abc"` → "string * int").
 			z := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: z, C: int32(c.chunk.AddConst(vm.IntConst(1)))})
-			c.chunk.Emit(vm.Instruction{Op: vm.OpMul, A: d, B: z, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpMul, A: d, B: r, C: int32(z)})
 			return d, nil
 		default:
 			return 0, fmt.Errorf("компилятор: неизвестный унарный оператор %q", x.Op)
@@ -15429,7 +15450,7 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 		c.emitLine(c.exprLine(x))
 		if ix, ok := x.X.(*IndexExpr); ok && ix.Key != nil {
 			// empty($a[$k]) — семантика через isset: для ArrayAccess
-			// сначала offsetExists (без offsetGet, если элемента нет).
+			// ровно один offsetExists и (если элемент есть) один offsetGet.
 			// Для UNDEF-базы ключ не читается (Zend ISSET_ISEMPTY_DIM_OBJ).
 			jundef := c.undefBaseJump(ix.Arr)
 			arr, err := c.exprIssetBase(ix.Arr)
@@ -15440,17 +15461,8 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			if err != nil {
 				return 0, err
 			}
-			ir := c.alloc()
-			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexIsset, A: ir, B: arr, C: int32(k)})
 			d := c.alloc()
-			c.chunk.Emit(vm.Instruction{Op: vm.OpTrue, A: d})
-			jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfFalse, A: ir})
-			val := c.alloc()
-			// IS-режим (как OpIndexIsset): в empty() приведение ключа не
-			// диагностируется (Zend ISSET_ISEMPTY_DIM_OBJ).
-			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSafe, A: val, B: arr, C: int32(k)})
-			c.chunk.Emit(vm.Instruction{Op: vm.OpNot, A: d, B: val})
-			c.setJump(jf, c.chunk.Len())
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexEmpty, A: d, B: arr, C: int32(k)})
 			if jundef >= 0 {
 				jover := c.chunk.Emit(vm.Instruction{Op: vm.OpJump})
 				c.setJump(jundef, c.chunk.Len())
@@ -19682,6 +19694,7 @@ func (c *compiler) binExprTo(x *BinExpr, dst uint8) (uint8, error) {
 		if err != nil {
 			return 0, err
 		}
+		l, r = commutativeSwap(op, x.L, x.R, l, r)
 		if s := specOp(op); s != op {
 			op = s
 		}
@@ -19696,11 +19709,63 @@ func (c *compiler) binExprTo(x *BinExpr, dst uint8) (uint8, error) {
 	if err != nil {
 		return 0, err
 	}
+	l, r = commutativeSwap(op, x.L, x.R, l, r)
 	if s := specOp(op); s != op {
 		op = s
 	}
 	c.chunk.Emit(vm.Instruction{Op: op, A: dst, B: l, C: int32(r)})
 	return dst, nil
+}
+
+// commutativeSwap повторяет перестановку операндов коммутативных опкодов,
+// которую делает Zend при установке обработчика: если op1_type < op2_type
+// (IS_CONST=1 < IS_TMP_VAR=2/IS_VAR=4 < IS_CV=16), ZEND_MUL/BW_AND/BW_OR/
+// BW_XOR меняют операнды местами. Это влияет и на порядок имён типов в
+// сообщении "Unsupported operand types" (`"abc" * $r` → "resource * string",
+// а `$a * $b` с int/resource → "int * resource").
+func commutativeSwap(op vm.Opcode, l, r Expr, lr, rr uint8) (uint8, uint8) {
+	switch op {
+	case vm.OpMul, vm.OpBitAnd, vm.OpBitOr, vm.OpBitXor:
+	default:
+		return lr, rr
+	}
+	if operandKindRank(l) < operandKindRank(r) {
+		return rr, lr
+	}
+	return lr, rr
+}
+
+// operandKindRank — приближение Zend-порядка типов операндов (IS_CONST=1 <
+// IS_TMP_VAR=2/IS_VAR=4 < IS_CV=16): литералы и свёрнутые константные
+// выражения — CONST, переменные — CV, остальные результаты — TMP/VAR.
+func operandKindRank(e Expr) int {
+	switch x := e.(type) {
+	case *VarExpr:
+		return 16
+	case *IntLit, *FloatLit, *StrLit, *BoolLit, *NullLit, *MagicExpr:
+		return 1
+	case *ArrayLit:
+		// Zend выделяет литерал массива в CONST-операнд, только если все его
+		// элементы — константы (иначе это TMP после ZEND_ARRAY).
+		for _, el := range x.Elems {
+			if el.Spread {
+				return 2
+			}
+			if el.Key != nil {
+				if _, ok := foldConstExpr(el.Key); !ok {
+					return 2
+				}
+			}
+			if _, ok := foldConstExpr(el.Val); !ok {
+				return 2
+			}
+		}
+		return 1
+	}
+	if _, ok := foldConstExpr(e); ok {
+		return 1
+	}
+	return 2
 }
 
 // binOperand компилирует операнд бинарной операции как значение: чтение

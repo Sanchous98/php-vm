@@ -2733,6 +2733,7 @@ func defaultIniValues() map[string]string {
 		"session.trans_sid_hosts":             "",
 		"session.trans_sid_tags":              "a=href,area=href,frame=src,form=",
 		"session.name":                        "PHPSESSID",
+		"session.serialize_handler":           "php",
 		"session.use_trans_sid":               "0",
 		"session.use_only_cookies":            "1",
 		"session.use_cookies":                 "1",
@@ -4779,7 +4780,7 @@ func debugZvalDumpFn(ctx *vm.Context) vm.Value {
 	// массива-аргумента внешних держателей два: сама переменная и
 	// регистр-копия аргумента — в Zend это и даёт refcount(2)).
 	for a, n := range st.arrCount {
-		if h := ctx.VM().DebugArrayHolders(a); h > n {
+		if h := ctx.VM().DebugArrayHolders(a) + ctx.VM().DebugArrayRefCensus(a); h > n {
 			st.arrCount[a] = h
 		}
 	}

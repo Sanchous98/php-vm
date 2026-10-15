@@ -242,6 +242,12 @@ const (
 	// OpIndexIsset — A = isset(B[C]) с учётом ArrayAccess::offsetExists.
 	OpIndexIsset // INDEX_ISSET (A = bool, B = container/object, C = ключ-регистр)
 
+	// OpIndexEmpty — A = empty(B[C]) (ISSET_ISEMPTY_DIM_OBJ с isempty=1):
+	// как OpIndexIsset, но при существующем элементе читает значение и
+	// инвертирует его истинность. Для ArrayAccess это ровно один вызов
+	// offsetExists и один offsetGet.
+	OpIndexEmpty // INDEX_EMPTY (A = bool, B = container/object, C = ключ-регистр)
+
 	// OpSpaceship — оператор `<=>`: A = B <=> C (-1/0/1).
 	OpSpaceship // SPACESHIP (A = B <=> C)
 

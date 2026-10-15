@@ -370,8 +370,11 @@ func (c *runtimeClass) UnimplementedAbstract() []string {
 			req = append(req, reqEntry{cls, name})
 		}
 	}
-	// Zend перечисляет сначала нереализованные абстрактные методы классов-
-	// предков, затем интерфейсов (bug44414: "(A::foo, B::bar)").
+	// Zend перечисляет нереализованные требования от ближайшего класса к
+	// предкам, затем интерфейсов (bug44414: "(A::foo, B::bar)"). Порядок
+	// важен и для перекрытия: abstract-объявление в самом классе не
+	// «реализуется» конкретным методом предка (abstract_redeclare), поэтому
+	// конкретные методы и сигнатуры просматриваются в одном проходе.
 	for k := c; k != nil; k = k.parent {
 		for _, name := range k.methodOrder {
 			if _, ok := k.methods[name]; ok {
@@ -381,8 +384,6 @@ func (c *runtimeClass) UnimplementedAbstract() []string {
 				resolved[name] = true
 			}
 		}
-	}
-	for k := c; k != nil; k = k.parent {
 		for _, name := range k.sigOrder {
 			addReq(k, name)
 		}

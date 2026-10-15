@@ -1396,6 +1396,13 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	if existing, ok := vm.getProp(o, declKey); ok {
 		if s := valueSlot(existing); s.typ == RefType {
 			if r := s.Ref(); r != nil {
+				// Запись-обратно той же самой ячейки (дим-запись в свойство-
+				// ссылку): значение уже лежит в ячейке — это no-op. Иначе
+				// ячейка обернула бы саму себя (Ref→Ref) и последующее чтение
+				// свойства отдавало бы голую ссылку.
+				if regs[in.B].typ == RefType && regs[in.B].Ref() == r {
+					return execResult{}
+				}
 				out, werr := vm.writeRefPropValue(ci, pname, r, regs[in.B], vm.chunk != nil && vm.chunk.Strict)
 				if werr != nil {
 					if !vm.handleThrow(chunk, werr) {

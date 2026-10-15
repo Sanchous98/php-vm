@@ -2861,7 +2861,9 @@ func phpArrayWalk(ctx *vm.Context, src *walkSource, cb, userdata vm.Slot, hasExt
 			// копируется: копию нужно вернуть в элемент родителя
 			// (bug34982).
 			srcSub := &walkSource{value: val}
+			a.MarkWalkBusy(true)
 			phpArrayWalk(ctx, srcSub, cb, userdata, hasExt, true)
+			a.MarkWalkBusy(false)
 			if srcSub.local != nil {
 				if curVal, ok := a.WalkElementAt(i); ok && curVal == val {
 					a.WalkSetAt(i, vm.MakeArray(srcSub.local))
@@ -2881,7 +2883,11 @@ func phpArrayWalk(ctx *vm.Context, src *walkSource, cb, userdata vm.Slot, hasExt
 		if hasExt {
 			callArgs = append(callArgs, userdata)
 		}
+		// Курсор array_walk (visited) адресует физические позиции entries:
+		// на время колбэка компактизация массива запрещена (walkBusy).
+		a.MarkWalkBusy(true)
 		_, err := m.CallCallable(ctx, cb, callArgs)
+		a.MarkWalkBusy(false)
 		throwCallable(ctx, err)
 		if ctx.HasThrown() {
 			return

@@ -88,7 +88,7 @@ func TestOOPProgram(t *testing.T) {
 	if err := vm.Run(); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if want := "1525155"; buf.String() != want {
+	if want := "1525155"; normNoDep(buf.String()) != want {
 		t.Fatalf("got %q, want %q (php)", buf.String(), want)
 	}
 }

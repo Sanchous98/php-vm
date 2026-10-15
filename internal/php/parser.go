@@ -754,12 +754,14 @@ type pendingClassUse struct {
 
 // maxParseDepth ограничивает рекурсию парсера, чтобы глубоко вложенный вход
 // (например, 17000 подряд "[") давал ошибку, а не переполнение стека Go.
+// Zend на исчерпании памяти при разборе печатает «Parse error: memory
+// exhausted» (bug64660), поэтому лимит оформлен как обычная ошибка разбора.
 const maxParseDepth = 1500
 
 func (p *Parser) enter() error {
 	p.depth++
 	if p.depth > maxParseDepth {
-		return fmt.Errorf("parser: превышена максимальная глубина вложенности")
+		return &parseError{msg: "memory exhausted", line: p.lineAt(p.cur().Pos)}
 	}
 	return nil
 }
@@ -3684,7 +3686,7 @@ func (p *Parser) resolveTypeAlias(name string) string {
 		return p.ns + "\\" + rest
 	}
 	low := strings.ToLower(name)
-	if typeKeywords[low] || builtinTypeNames[low] {
+	if typeKeywords[low] || builtinTypeNames[low] || low == "self" || low == "parent" {
 		return name
 	}
 	first, rest := splitFirstName(name)
@@ -5287,6 +5289,11 @@ func (p *Parser) argList() ([]Expr, error) {
 
 func (p *Parser) newExpr() (Expr, error) {
 	p.next() // new
+	// Zend: голый `namespace` в позиции имени класса — синтаксическая ошибка
+	// (bug43343: «unexpected token "namespace", expecting ":"»).
+	if p.kw("namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "::" {
+		return nil, p.syntaxErrExpect(p.cur(), `":"`)
+	}
 	// Строка имени класса: Zend привязывает кадр NEW к аргументу, если он
 	// есть, иначе — к имени класса (gh8810_7).
 	namePos := p.cur().Pos

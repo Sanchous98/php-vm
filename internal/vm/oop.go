@@ -691,6 +691,41 @@ func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) C
 	return c
 }
 
+// AliasMethodBefore регистрирует псевдоним непосредственно перед исходным
+// методом трейта: Zend применяет `as`-псевдонимы раньше копирования методов
+// трейта, поэтому в get_class_methods псевдоним идёт первым (bug64239_1:
+// [Bmethod, t2method]). Если класс объявляет собственный метод с тем же
+// именем, применяется обычный AliasMethod (порядок bug65579).
+func (c *runtimeClass) AliasMethodBefore(alias string, fn *Function, vis Visibility) ClassInfo {
+	nf := *fn
+	orig := fn.Name
+	nf.Name = alias
+	nf.Scope = c
+	// Псевдоним — отдельная копия метода: своя ячейка статических переменных
+	// (иначе алиас и исходный метод делили бы статику — static_variables_traits).
+	nf.RebindStaticKeys()
+	c.methods[alias] = &nf
+	idx := -1
+	for i, n := range c.methodOrder {
+		if n == alias {
+			idx = -2 // уже есть
+			break
+		}
+		if idx < 0 && n == orig {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		c.methodOrder = append(c.methodOrder, "")
+		copy(c.methodOrder[idx+1:], c.methodOrder[idx:])
+		c.methodOrder[idx] = alias
+	} else if idx == -1 {
+		appendUnique(&c.methodOrder, alias)
+	}
+	c.setMethodVis(alias, vis)
+	return c
+}
+
 // SetMethodVis меняет видимость существующего метода.
 func (c *runtimeClass) SetMethodVis(name string, vis Visibility) ClassInfo {
 	if _, ok := c.methods[name]; ok {
@@ -2640,11 +2675,9 @@ func (vm *VM) MaybeDeprecateDynamicProp(ci ClassInfo, o *Object, name string) {
 	if ci.Name() == "stdClass" || ci.Name() == "__PHP_Incomplete_Class" {
 		return
 	}
-	if !classIsUserDefined(ci) {
-		// Встроенные классы не проверяем: у части из них (Exception и т.п.)
-		// свойства моделируются как «динамические» внутри VM.
-		return
-	}
+	// Встроенные классы: Zend тоже депрецирует создание динамических свойств
+	// (bug64960: Exception::$_trace), кроме свойств, объявленных в модели
+	// класса/внутренним хендлером (HasProperty их знает).
 	if ci.HasProperty(name) {
 		return
 	}

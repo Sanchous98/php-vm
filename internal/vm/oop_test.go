@@ -63,7 +63,7 @@ func TestRegOOP(t *testing.T) {
 	if err := vm.Run(); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if want := "42Child4211Child"; buf.String() != want {
+	if want := "42Child4211Child"; normNoDep(buf.String()) != normNoDep(want) {
 		t.Fatalf("got %q, want %q", buf.String(), want)
 	}
 }

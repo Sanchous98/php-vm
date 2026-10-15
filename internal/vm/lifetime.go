@@ -1584,6 +1584,36 @@ func (vm *VM) sweepLifetime(force bool, chunk *Chunk, pc int) sweepOutcome {
 			delete(vm.cyclicArrs, a)
 		}
 		collected = len(countedObjs) + len(countedArrs)
+		// Замыкания — отдельный тип узла (не *Object): Zend считает их
+		// собранными, когда они уничтожаются как часть цикла (bug60139:
+		// объект со свойством-замыканием, связанным с ним через $this, даёт 2).
+		countedClos := map[*Closure]bool{}
+		addClos := func(s Slot) {
+			for i := 0; s.typ == RefType && i < 100; i++ {
+				r := s.Ref()
+				if r == nil {
+					return
+				}
+				s = r.v
+			}
+			if s.typ != ClosureType {
+				return
+			}
+			if c := s.asClosure(); c != nil && !m.clos[c] {
+				countedClos[c] = true
+			}
+		}
+		for _, o := range countedObjs {
+			vm.walkObjectRefs(o, addClos)
+		}
+		for _, a := range countedArrs {
+			if a.objRefs {
+				for _, v := range a.All() {
+					addClos(v)
+				}
+			}
+		}
+		collected += len(countedClos)
 		if vm.gcDtorCount != dtorsBefore && collected > 0 {
 			// Деструкторы могли воскресить узлы ($GLOBALS['x'] = $this):
 			// достижимые после их выполнения Zend не считает собранными

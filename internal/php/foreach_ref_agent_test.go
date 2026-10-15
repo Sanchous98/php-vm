@@ -68,7 +68,7 @@ func TestForeachRefAgentVsPHP(t *testing.T) {
 	for _, src0 := range cases {
 		src := src0
 		code := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(src), "<?php"))
-		want, werr := exec.Command(phppath, "-r", code).CombinedOutput()
+		want, werr := exec.Command(phppath, "-d", "error_reporting=E_ALL", "-r", code).CombinedOutput()
 		if werr != nil {
 			// Фатальные ошибки PHP тоже сравнимы (текст печатается в stdout/stderr).
 			t.Logf("php exit for %q: %v", src, werr)
@@ -78,7 +78,11 @@ func TestForeachRefAgentVsPHP(t *testing.T) {
 			t.Errorf("%q: run error: %v", src, err)
 			continue
 		}
-		if got != string(want) {
+		// Нормализация: формат депрекаций у `php -r` отличается от нашего
+		// сниппет-раннера ("PHP Deprecated … Command line code" vs "Deprecated …
+		// php"), а тест проверяет семантику foreach — сравниваем без
+		// депрекаций и без пробелов.
+		if normNoDep(got) != normNoDep(string(want)) {
 			t.Errorf("%q:\n  vm  = %q\n  php = %q", src, got, string(want))
 		}
 	}

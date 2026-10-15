@@ -446,7 +446,21 @@ func (vm *VM) propReadNonObjectWarn(recv Slot, pname string) {
 		vm.Warn("Undefined property: Closure::$" + pname)
 		return
 	}
-	vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
+	vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, propertyOperandTypeName(recv)))
+}
+
+// propertyOperandTypeName — имя типа для диагностик свойства: в PHP 8.3
+// null/bool печатаются как null/true/false (в отличие от сообщений об
+// операндах, где bool остаётся «bool»).
+func propertyOperandTypeName(s Slot) string {
+	switch deref(s).typ {
+	case BoolType:
+		if s.ToBool() {
+			return "true"
+		}
+		return "false"
+	}
+	return operandTypeName(s)
 }
 
 func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {

@@ -2768,15 +2768,15 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 	// Первым делом регистрируем файл в get_included_files() (как рантайм
 	// include; inline-подстановка не проходит через includeBuiltin).
 	record := &ExprStmt{X: &CallExpr{Name: "__php_record_included", Args: []Expr{&StrLit{V: abs}}}}
-	callName := "include"
+	incName := "include"
 	if x.Require {
-		callName = "require"
+		incName = "require"
 	}
 	if x.Once {
-		callName += "_once"
+		incName += "_once"
 	}
 	pre = append([]Stmt{record, &StrictStmt{Push: true, Strict: sub.StrictTypes, File: abs,
-		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: callName, CallNode: x}}, pre...)
+		Lines: sub.Lines, ExprLines: sub.ExprLines, CallName: incName, CallNode: x}}, pre...)
 	pre = append(pre, &StrictStmt{Push: false})
 	return val, pre, nil
 }
@@ -4153,6 +4153,10 @@ func evalBuiltin(ctx *vm.Context) vm.Slot {
 	if file != "" && line > 0 {
 		label = fmt.Sprintf("%s(%d) : eval()'d code", file, line)
 	}
+	// Синтетический кадр eval(): в трейсе Zend печатает `#0 file(line): eval()`
+	// (bug31102) без аргументов.
+	popEvalFrame := ctx.VM().PushIncludeFrame("eval", nil)
+	defer popEvalFrame()
 	res, _ := runSubCode(ctx, src, label, true)
 	if ctx.HasThrown() {
 		return *new(vm.Slot)
@@ -4189,17 +4193,19 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	}
 	require := flags&2 != 0
 	once := flags&1 != 0
-	// Zend: include/require — отдельный кадр вызова (между кадром main и
-	// кадрами подключаемого файла); виден в debug_print_backtrace и трейсах.
-	callName := "include"
+	// Синтетический кадр конструкции include/require: Zend исполняет
+	// подключаемый файл отдельным кадром, и он виден в трейсах
+	// (bug60909_1: `#1 file(8): require()`; типовая включённая ошибка даёт
+	// `require('...')` — аргумент печатается маркером).
+	incName := "include"
 	if require {
-		callName = "require"
+		incName = "require"
 	}
 	if once {
-		callName += "_once"
+		incName += "_once"
 	}
-	removeIncludeFrame := ctx.VM().PushIncludeFrame(callName)
-	defer removeIncludeFrame()
+	popIncludeFrame := ctx.VM().PushIncludeFrame(incName, nil)
+	defer popIncludeFrame()
 	// Имя конструкции для диагностик пользовательских фильтров
 	// ("include(): Unprocessed filter buckets remaining...").
 	readCallerName = "include"
@@ -4228,36 +4234,30 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 			if streamWrapperURL[strings.ToLower(scheme)] {
 				if !iniEnabled("allow_url_include") {
 					ctx.VM().Warning("include(): " + scheme + ":// wrapper is disabled in the server configuration by allow_url_include=0")
-					ctx.VM().Warning(callName + "(" + p + "): Failed to open stream: no suitable wrapper could be found")
+					ctx.VM().Warning(incName + "(" + p + "): Failed to open stream: no suitable wrapper could be found")
 					if require {
-						// Кадр include/require не попадает в трейс исключения
-						// (Zend снимает его до throw, bug35176), но виден
-						// debug_print_backtrace из обработчика ошибок (bug28213).
-						removeIncludeFrame()
+						ctx.VM().DropTopIncludeFrame()
 						ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
 						if ctx.HasThrown() {
 							return *new(vm.Slot)
 						}
 						return vm.MakeBool(false)
 					}
-					ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
+					ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", incName, p, fsIncludePath))
 					return vm.MakeBool(false)
 				}
 				if !iniEnabled("allow_url_fopen") {
 					ctx.VM().Warning("include(): " + scheme + ":// wrapper is disabled in the server configuration by allow_url_fopen=0")
-					ctx.VM().Warning(callName + "(" + p + "): Failed to open stream: no suitable wrapper could be found")
+					ctx.VM().Warning(incName + "(" + p + "): Failed to open stream: no suitable wrapper could be found")
 					if require {
-						// Кадр include/require не попадает в трейс исключения
-						// (Zend снимает его до throw, bug35176), но виден
-						// debug_print_backtrace из обработчика ошибок (bug28213).
-						removeIncludeFrame()
+						ctx.VM().DropTopIncludeFrame()
 						ctx.Throw(vm.NewThrowable("Error", "require(): Failed opening required '"+p+"'"))
 						if ctx.HasThrown() {
 							return *new(vm.Slot)
 						}
 						return vm.MakeBool(false)
 					}
-					ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
+					ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", incName, p, fsIncludePath))
 					return vm.MakeBool(false)
 				}
 			}
@@ -4272,13 +4272,15 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 				if reason == "" {
 					reason = "operation failed"
 				}
-				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, path, reason))
-				ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", incName, path, reason))
+				ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", incName, p, fsIncludePath))
 				return vm.MakeBool(false)
 			}
 			if !once {
 				ctx.VM().RecordIncluded(path)
 			}
+			// Файл открыт: аргумент конструкции печатается в трейсе ('...').
+			ctx.VM().SetTopIncludeFrameArgs([]vm.Slot{vm.MakeString(path)})
 			res, returned := runSubCode(ctx, string(data), path, false)
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
@@ -4308,8 +4310,11 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 		if require {
 			// Zend: сначала Warning о потоке, затем Error (include_path в
 			// тексте исключения).
-			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
-			removeIncludeFrame()
+			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
+			// Ошибку поднимает сама конструкция require: в трейсе Zend кадра
+			// require() нет (include_stat_is_quiet), в отличие от ошибок,
+			// поднятых кодом подключаемого файла или из обработчика warning.
+			ctx.VM().DropTopIncludeFrame()
 			ctx.Throw(vm.NewThrowable("Error", fmt.Sprintf("Failed opening required '%s' (include_path='%s')", p, fsIncludePath)))
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
@@ -4320,15 +4325,16 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 			// повторяет «Failed to open stream», только «Failed opening»
 			// (include_fail_during_read).
 			if !lastFilterReadFailed {
-				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", callName, p, fileOpenReason(path, "")))
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", incName, p, fileOpenReason(path, "")))
 			}
-			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", callName, p, fsIncludePath))
+			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", incName, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)
 	}
 	if !once {
 		ctx.VM().RecordIncluded(path)
 	}
+	ctx.VM().SetTopIncludeFrameArgs([]vm.Slot{vm.MakeString(path)})
 	res, returned := runSubCode(ctx, string(data), path, false)
 	if ctx.HasThrown() {
 		return *new(vm.Slot)
@@ -6140,7 +6146,11 @@ classLoop:
 								other, ta.AliasName, cd.Name, ta.AliasName, srcName, ta.AliasName))
 						}
 					}
-					ci.AliasMethod(ta.AliasName, fn, vis)
+					if classDeclaresMethod(cd, ta.Method) {
+						ci.AliasMethod(ta.AliasName, fn, vis)
+					} else {
+						ci.AliasMethodBefore(ta.AliasName, fn, vis)
+					}
 				}
 			} else if ta.Vis != "" {
 				if !classDeclaresMethod(cd, ta.Method) {
@@ -9417,6 +9427,11 @@ func (c *compiler) checkReservedRelativeTypeName(t string) error {
 			}
 			seg := a[strings.LastIndex(a, "\\")+1:]
 			if reservedTypeNames[strings.ToLower(seg)] {
+				// `\self` (ведущий слэш + чисто относительное имя) — отдельная
+				// диагностика Zend («is an invalid class name»).
+				if strings.HasPrefix(a, "\\") && strings.Count(a, "\\") == 1 {
+					return c.newFatal("'" + a + "' is an invalid class name")
+				}
 				return c.newFatal("Cannot use '" + a + "' as class name as it is reserved")
 			}
 		}
@@ -14643,6 +14658,25 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRef, A: cell, B: arr, C: int32(k)})
 			return cell, nil, nil
 		}
+		// Вызов метода/статический вызов: by-ref-ность результата известна
+		// только в рантайме. Zend передаёт элемент в ячейку-ссылку: если метод
+		// вернул значение (не ссылку), запись уходит в временный массив
+		// без диагностики (bug52614: `$foo->f7($foo->f6()[0])` записывает
+		// через ссылку, `$foo->f1()[0]++` — в копию).
+		switch ix.Arr.(type) {
+		case *MethodCallExpr, *StaticCallExpr, *DynCallExpr:
+			arr, err := c.expr(ix.Arr)
+			if err != nil {
+				return 0, nil, err
+			}
+			k, err := c.expr(ix.Key)
+			if err != nil {
+				return 0, nil, err
+			}
+			cell := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRef, A: cell, B: arr, C: int32(k)})
+			return cell, nil, nil
+		}
 		// Временное выражение (результат вызова/константа) в by-ref позиции:
 		// Zend бросает Error "Cannot use temporary expression in write
 		// context" (gh12102_1/3).
@@ -15960,6 +15994,17 @@ func (c *compiler) newExpr(x *NewExpr) (uint8, error) {
 	if strings.EqualFold(x.Class, "static") && c.curClass != nil {
 		return c.newStatic(x.Args)
 	}
+	// В теле трейта `new self`/`new parent` разрешаются в рантайме от класса,
+	// в который примешан трейт (Zend: примешанный метод видит класс-получатель;
+	// bug53748 — «Cannot instantiate trait Singleton»).
+	if c.curClass != nil && c.curClass.IsTrait() {
+		switch strings.ToLower(strings.TrimLeft(x.Class, "\\")) {
+		case "self":
+			return c.newSelClass(0, x.Args)
+		case "parent":
+			return c.newSelClass(2, x.Args)
+		}
+	}
 	// Без области класса Zend резолвит self/parent/static в рантайме и бросает
 	// перехватываемый Error (bug70918), а не «Class "static" not found».
 	if c.curClass == nil {
@@ -15973,6 +16018,52 @@ func (c *compiler) newExpr(x *NewExpr) (uint8, error) {
 		}
 	}
 	return c.newNamed(x.Class, x.Args)
+}
+
+// newSelClass компилирует `new self/parent` (sel 0/2) с классом, вычисляемым
+// в рантайме от области видимости кадра. Используется в телах трейтов, где
+// self/parent зависят от класса, в который примешан трейт.
+func (c *compiler) newSelClass(sel uint8, args []Expr) (uint8, error) {
+	if hasNamedArg(args) {
+		if msg := argOrderError(args); msg != "" {
+			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
+		}
+		nameReg := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel})
+		arr, err := c.buildArgArray(args, true, nil)
+		if err != nil {
+			return 0, err
+		}
+		return c.emitCall("__php_new_named", []uint8{nameReg, arr}), nil
+	}
+	nameReg := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: nameReg, B: sel})
+	argRegs, wbs, err := c.evalArgs(c.methodRefs["__construct"], args, byRefInfo{})
+	if err != nil {
+		return 0, err
+	}
+	base := c.alloc()
+	for range argRegs {
+		c.alloc()
+	}
+	if base != nameReg {
+		c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: base, B: nameReg})
+	}
+	for k, a := range argRegs {
+		dst := base + 1 + uint8(k)
+		if dst != a {
+			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: dst, B: a})
+		}
+	}
+	d := c.alloc()
+	c.emitCallLineHere()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpNewDyn, A: d, B: base, C: int32(len(argRegs))})
+	c.restoreStmtLine()
+	c.tmp = d + 1
+	for _, wb := range wbs {
+		wb()
+	}
+	return d, nil
 }
 
 // newStatic компилирует `new static` с поздним статическим связыванием:

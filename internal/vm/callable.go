@@ -76,6 +76,33 @@ func methodNameForProto(m *Function, name string) string {
 	return name
 }
 
+// protectedSigProtoAccess — protected-доступ по корневому прототипу-сигнатуре:
+// метод реализует абстрактную сигнатуру (или метод интерфейса), объявленную в
+// классе-предке/интерфейсе, родственном области видимости (bug61782).
+func protectedSigProtoAccess(ci ClassInfo, name string, scope ClassInfo) bool {
+	rc, ok := ci.(*runtimeClass)
+	if !ok || rc == nil || scope == nil {
+		return false
+	}
+	for k := rc; k != nil; k = k.parent {
+		if sig, ok := k.sigs[name]; ok && sig != Private {
+			if scope.IsA(k) || k.IsA(scope) {
+				return true
+			}
+		}
+		for _, i := range k.ifaces {
+			if r, ok2 := i.(*runtimeClass); ok2 && r != nil {
+				if sig, ok3 := r.sigs[name]; ok3 && sig != Private {
+					if scope.IsA(i) || i.IsA(scope) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
 // methodAccessibleFromProto — как methodAccessibleFrom, но для protected
 // дополнительно учитывает корневой прототип метода (GH-14009:
 // zend_get_function_root_class): доступ разрешён области, связанной с классом
@@ -1528,6 +1555,7 @@ func splitFirstArg(arr *Array) (Slot, *Array, bool) {
 // (`$obj->m(a: 1)`). Повторяет резолв OpMethodCallDyn (видимость, __call,
 // магические получатели), но аргументы раскладывает по именам в рантайме.
 func (vm *VM) MethodCallNamed(recv Slot, mname string, arr *Array) (Slot, error) {
+	mname = methodNameCString(mname)
 	recv = deref(recv)
 	if recv.typ == ClosureType {
 		// Методы замыканий (call/bindTo/...) — через общий array-callable путь.
@@ -1906,14 +1934,36 @@ func (vm *VM) callArrayCallable(c Slot, args []Slot, strict bool) (Slot, error) 
 		}
 		if strings.Contains(mname, "::") {
 			if qci, meth, _ := vm.resolveQualifiedMethod(ci, mname); qci != nil {
-				if m := methodOrCtor(qci, meth); m != nil {
+				qm, qdecl, qvis := qci.methodInfo(meth)
+				if qm != nil {
+					// Доступ проверяется по текущей области видимости
+					// (bug48770_2: `parent::func22` — private A::func22 при
+					// области B недоступен; класс в диагностике — цель
+					// разрешения `parent::`, т.е. B).
+					if qvis != Public && !vm.methodAccessibleFrom(qdecl, qvis, vm.ctx.self) {
+						return Slot{}, NewThrowable("TypeError",
+							"call_user_func_array(): Argument #1 ($callback) must be a valid callback, cannot access "+visWord(qvis)+" method "+qci.Name()+"::"+meth+"()")
+					}
 					called := qci
 					if vm.forwardCalled != nil && vm.forwardCalled.IsA(qci) {
 						called = vm.forwardCalled
 					}
-					return vm.invokeMethod(m, recv, called, args)
+					return vm.invokeMethod(qm, recv, called, args)
 				}
+				// Метод не найден: Zend называет разрешённый класс и имя без
+				// префикса `self::`/`parent::` (bug48770_3).
+				return Slot{}, NewThrowable("TypeError",
+					"call_user_func_array(): Argument #1 ($callback) must be a valid callback, class "+qci.Name()+" does not have a method \""+meth+"\"")
 			}
+		}
+		// Private-метод вызывающей области приоритетнее переопределения в
+		// классе объекта (bug46246: call_user_func([$b,'Test']) из A зовёт A::Test).
+		if pm, _, _, ok := vm.scopePrivateMethod(ci, mname); ok {
+			called := tci
+			if vm.forwardCalled != nil && vm.forwardCalled.IsA(ci) {
+				called = vm.forwardCalled
+			}
+			return vm.invokeMethod(pm, recv, called, args)
 		}
 		if m := methodOrCtor(ci, mname); m != nil {
 			if _, decl, vis := ci.methodInfo(mname); decl != nil && vis != Public &&

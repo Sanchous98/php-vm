@@ -41,7 +41,9 @@ var_dump($p);
 echo $p->a + $p->b, "\n";
 var_dump(property_exists($p, "c"), isset($p->c));
 `)
-	wantSlots(t, out, `object(P)#1 (4) {
+	wantSlots(t, out, `
+Deprecated: Creation of dynamic property P::$dyn is deprecated in php on line 5
+object(P)#1 (4) {
   ["a"]=>
   int(10)
   ["b"]=>
@@ -235,7 +237,11 @@ $u = unserialize($ser);
 var_dump($u);
 echo $u->a, " ", $u->c, "\n";
 `)
-	wantSlots(t, out, `O:1:"S":4:{s:1:"a";i:1;s:4:"`+"\x00"+`S`+"\x00"+`b";i:2;s:3:"dyn";N;s:1:"c";i:3;}
+	wantSlots(t, out, `
+Deprecated: Creation of dynamic property S::$c is deprecated in php on line 4
+O:1:"S":4:{s:1:"a";i:1;s:4:"`+"\x00"+`S`+"\x00"+`b";i:2;s:3:"dyn";N;s:1:"c";i:3;}
+
+Deprecated: Creation of dynamic property S::$c is deprecated in php on line 7
 object(S)#2 (4) {
   ["a"]=>
   int(1)
@@ -386,6 +392,8 @@ var_dump($u);
 	wantSlots(t, out, `bool(false)
 bool(true)
 int(2)
+
+Deprecated: Creation of dynamic property U::$dyn is deprecated in php on line 8
 bool(false)
 bool(false)
 object(U)#1 (3) {

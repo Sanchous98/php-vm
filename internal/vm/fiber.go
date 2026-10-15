@@ -299,8 +299,19 @@ func (vm *VM) resolveStack() []callFrameInfo {
 	// при входе в функцию (callEntry.frameIdx): у вызовов, упавших на проверке
 	// арности/типов, кадра нет, и позиционное сопоставление подставляло бы
 	// регистры вызывающего (attributes/030).
+	constExprSeen := false
 	for i := range vm.callStack {
 		e := &vm.callStack[i]
+		// Вложенное вычисление константного выражения не создаёт новый кадр:
+		// Zend показывает один кадр «[constant expression]» с местом внешнего
+		// обращения (bug41633_3: цепочка self-ссылок даёт #0 … [constant
+		// expression]() и #1 {main}).
+		if e.callee != nil && e.callee.Name == "[constant expression]" {
+			if constExprSeen {
+				continue
+			}
+			constExprSeen = true
+		}
 		if e.callerChunk != 0 && len((*Chunk)(unsafe.Pointer(e.callerChunk)).inlineRegions) > 0 {
 			out = vm.appendInlineFrames(out, e)
 		}

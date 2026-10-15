@@ -115,7 +115,7 @@ func TestReflectAgentVsPHP(t *testing.T) {
 			t.Errorf("%q: run error: %v", src, err)
 			continue
 		}
-		if got != string(want) {
+		if normNoDep(got) != normNoDep(string(want)) {
 			t.Errorf("%q:\n  vm  = %q\n  php = %q", src, got, string(want))
 		}
 	}

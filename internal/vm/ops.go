@@ -466,6 +466,7 @@ func closuresEqual(a, b Slot) bool {
 // ключ-значение, порядок не важен.
 func arraysEqual(vm *VM, x, y *Array) bool {
 	if cmpDepth >= cmpDepthMax {
+		vm.noteCmpOverflow()
 		return false
 	}
 	cmpDepth++
@@ -660,12 +661,39 @@ func numericCompare(s Slot) bool {
 // порядке объявления.
 // cmpDepth — защита от бесконечной рекурсии при сравнении циклических
 // структур (объект/массив, ссылающийся на себя). Тесты однопоточные.
+// При превышении Zend падает фатальной ошибкой «Nesting level too deep -
+// recursive dependency?» (bug63882): факт переполнения запоминается в
+// vm.cmpFatal и поднимается обработчиком опкода сравнения.
 var cmpDepth int
 
 const cmpDepthMax = 512
 
+// cmpFatalError возвращает накопленную ошибку переполнения глубины сравнения
+// и сбрасывает её.
+func (vm *VM) cmpFatalError() *Throwable {
+	if vm == nil || vm.cmpFatal == nil {
+		return nil
+	}
+	th := vm.cmpFatal
+	vm.cmpFatal = nil
+	return th
+}
+
+// noteCmpOverflow фиксирует переполнение глубины сравнения (фатал Zend).
+func (vm *VM) noteCmpOverflow() {
+	if vm == nil || vm.cmpFatal != nil {
+		return
+	}
+	th := NewFatal("Nesting level too deep - recursive dependency?")
+	vm.cmpFatal = th
+	// Фатал поднимается через ctx: его проверяют обработчики опкодов
+	// сравнения (в т.ч. специализированные формы OpEqualInt и т.п.).
+	vm.ctx.Throw(th)
+}
+
 func compareObjects(vm *VM, a, b Slot) int {
 	if cmpDepth >= cmpDepthMax {
+		vm.noteCmpOverflow()
 		return 1
 	}
 	cmpDepth++

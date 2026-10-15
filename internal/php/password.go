@@ -34,7 +34,7 @@ func passwordAlgoFromArg(ctx *vm.Context, fn string, s vm.Slot) (string, bool) {
 			}
 		}
 		ctx.Throw(vm.NewThrowable("ValueError",
-			fn+": Argument #2 ($algo) must be a valid password hashing algorithm"))
+			fn+"(): Argument #2 ($algo) must be a valid password hashing algorithm"))
 		return "", false
 	case vm.IntType:
 		// Устаревшие целочисленные идентификаторы (PHP < 8.3).

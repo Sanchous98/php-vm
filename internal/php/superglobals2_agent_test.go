@@ -303,12 +303,27 @@ func insertParamCfg(root *vm.Array, rawKey string, val vm.Slot, cfg *inputConfig
 
 // --- cookie с array-синтаксисом имён ---
 
+// cookieForbiddenBase — проверка GHSA-wpj3-hf5j-x4v4 (неполный фикс
+// CVE-2022-31629): имя, которое после мангла (' '/'.' → '_') начинается с
+// "__Host-"/"__Secure-", а до мангла нет, отбрасывается целиком.
+func cookieForbiddenBase(mangledBase, preBase string) bool {
+	if strings.HasPrefix(mangledBase, "__Host-") && !strings.HasPrefix(preBase, "__Host-") {
+		return true
+	}
+	if strings.HasPrefix(mangledBase, "__Secure-") && !strings.HasPrefix(preBase, "__Secure-") {
+		return true
+	}
+	return false
+}
+
 func parseCookiesInto(arr *vm.Array, raw string) {
 	if raw == "" {
 		return
 	}
 	for _, part := range strings.Split(raw, ";") {
-		seg := strings.TrimLeft(part, " \t")
+		// php_default_treat_data(PARSE_COOKIE): ведущие пробельные символы
+		// (включая переводы строк из секции --COOKIE--) отбрасываются.
+		seg := strings.TrimLeft(part, " \t\r\n\v\f")
 		if seg == "" {
 			continue
 		}
@@ -316,21 +331,34 @@ func parseCookiesInto(arr *vm.Array, raw string) {
 		if i := strings.IndexByte(seg, '='); i >= 0 {
 			name, val = seg[:i], seg[i+1:]
 		}
+		// php_register_variable_ex: ведущие пробелы имени игнорируются.
+		name = strings.TrimLeft(name, " ")
 		if name == "" {
 			continue
 		}
+		preBase := name
+		if i := strings.IndexByte(name, '['); i >= 0 {
+			preBase = name[:i]
+		}
 		// Имена cookie не percent-decode'ятся, но могут использовать array-
-		// синтаксис ("a[b]=1" -> $_COOKIE['a']['b']).
-		if strings.Contains(name, "[") && strings.Contains(name, "]") {
+		// синтаксис ("a[b]=1" -> $_COOKIE['a']['b']); ' ' и '.' в основе
+		// манглятся в '_'.
+		if i := strings.IndexByte(name, '['); i >= 0 && strings.Contains(name[i:], "]") {
+			// php_register_variable_ex: пустое базовое имя (var_len == 0)
+			// отбрасывается целиком.
+			if phpVarName(preBase) == "" || cookieForbiddenBase(phpVarName(preBase), preBase) {
+				continue
+			}
 			insertParamCfg(arr, name, vm.MakeString(percentDecode(val)), &inputConfig{maxInputVars: 0, maxNesting: 0})
 			continue
 		}
-		key := phpVarName(name)
-		if key == "" {
+		// Без закрывающей ']' имя плоское: ' ', '.', '[' → '_'.
+		key := flatVarName(name)
+		if key == "" || cookieForbiddenBase(key, preBase) {
 			continue
 		}
 		if _, ok := arr.Get(vm.MakeStrKey(key)); ok {
-			continue // первое вхождение побеждает
+			continue // первое вхождение побеждает (rfc2965, как в php_variables.c)
 		}
 		arr.SetStr(key, vm.MakeString(percentDecode(val)))
 	}

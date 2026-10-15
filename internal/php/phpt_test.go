@@ -40,6 +40,7 @@ type PhpT struct {
 	Stdin   string // --STDIN--  данные стандартного ввода
 
 	HasGet     bool
+	HasCGI     bool
 	HasPost    bool
 	HasPostRaw bool
 	HasCookie  bool
@@ -88,6 +89,8 @@ func parsePhpt(data string) PhpT {
 					p.Extensions = append(p.Extensions, ln)
 				}
 			}
+		case "CGI":
+			p.HasCGI = true
 		case "GET":
 			p.Get, p.HasGet = content, true
 		case "POST":

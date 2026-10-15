@@ -568,6 +568,14 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	// на поведение компилятора. Повторное применение в installSuperglobals
 	// идемпотентно.
 	p.Ini = expandIniPlaceholders(p.Ini, file)
+	// run-tests.php запускает тесты с CGI-секциями (--CGI--/--GET--/--POST--/
+	// --COOKIE--/--POST_RAW--) через php-cgi: phpinfo() печатает HTML,
+	// php_sapi_name() = "cgi-fcgi". Остальные — CLI.
+	if p.HasCGI || p.HasGet || p.HasPost || p.HasPostRaw || p.HasCookie {
+		SetSAPIEmulation("cgi-fcgi", false)
+	} else {
+		SetSAPIEmulation("cli", true)
+	}
 	SetIniString(p.Ini)
 	// --INI--: применяем влияющие на разбор настройки (short_open_tag).
 	if p.HasIni {
@@ -609,7 +617,10 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	if v, ok := iniValues["fiber.stack_size"]; ok {
 		m.SetFiberStackSize(v)
 	}
-	m.SetStepLimit(5000000)
+	// Бюджет инструкций: 5M резал длинные, но легитимные тесты корпуса
+	// (hrtime: цикл 1M итераций ~6M шагов). 100M при ~7нс/шаг — это меньше
+	// секунды даже для «зациклившегося» теста, то есть VM не вешается.
+	m.SetStepLimit(100_000_000)
 	ResetResourceState()
 	// Как run-tests.php: путь к PHP-бинарнику для тестов, запускающих
 	// подпроцессы (exec/system).
@@ -621,7 +632,7 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	}
 	var buf bytes.Buffer
 	m.SetOutput(&buf)
-	installSuperglobals(m, p, file)
+	installSuperglobals(m, p, diagFile)
 	// --ENV-- как в run-tests.php: переменные реально выставляются в окружении
 	// процесса (getenv/zend_getenv), с восстановлением после прогона.
 	type envSaved struct {
@@ -748,7 +759,9 @@ func TestSuperglobalsArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if want := "4-test.phpt,ab,ef-4"; got != want {
+	// argv[0] — запускаемый файл .php (run-tests.php пишет секцию FILE рядом с
+	// .phpt и запускает именно .php).
+	if want := "4-test.php,ab,ef-4"; got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }

@@ -371,9 +371,13 @@ func htmlEntityForRune(r rune, doctype int64, all bool) (string, bool) {
 	}
 	if all {
 		if doctype == 48 {
+			// ENT_HTML5: только HTML5-таблица. У U+2329/U+232A (HTML4
+			// &lang;/&rang;) в HTML5 сущностей нет — откат на HTML4-таблицу
+			// давал их ошибочную замену.
 			if e, ok := html5EntityByRune[r]; ok {
 				return e, true
 			}
+			return "", false
 		}
 		if e, ok := html4EntityByRune[r]; ok {
 			return e, true
@@ -384,6 +388,46 @@ func htmlEntityForRune(r rune, doctype int64, all bool) (string, bool) {
 		return e, true
 	}
 	return "", false
+}
+
+// html5MultiEntity — многокодовая сущность HTML5 (напр. U+003C U+20D2 ->
+// &nvlt;). Таблица-источник — html5TableUTF8 (инверсия справочной таблицы
+// PHP 8.3), поэтому имена совпадают с каноническими именами php-src.
+type html5MultiEntity struct {
+	seq string
+	ent string
+}
+
+// html5MultiEntityByFirst — многокодовые сущности по первой руне.
+var html5MultiEntityByFirst = func() map[rune][]html5MultiEntity {
+	m := map[rune][]html5MultiEntity{}
+	for seq, ent := range html5TableUTF8 {
+		rs := []rune(seq)
+		if len(rs) < 2 {
+			continue
+		}
+		m[rs[0]] = append(m[rs[0]], html5MultiEntity{seq: seq, ent: ent})
+	}
+	return m
+}()
+
+// html5MultiEntityAt ищет самую длинную многокодовую сущность в позиции start
+// (вход в UTF-8).
+func html5MultiEntityAt(s string, start int) (string, int, bool) {
+	first, adv, ok := htmlNextChar(s, start, "UTF-8")
+	if !ok || adv <= 0 {
+		return "", 0, false
+	}
+	bestEnt, bestLen := "", 0
+	for _, e := range html5MultiEntityByFirst[first] {
+		if len(e.seq) > bestLen && strings.HasPrefix(s[start:], e.seq) {
+			bestEnt, bestLen = e.ent, len(e.seq)
+		}
+	}
+	if bestLen > 0 {
+		return bestEnt, bestLen, true
+	}
+	return "", 0, false
 }
 
 // htmlEncodeCore реализует php_escape_html_entities_ex.
@@ -438,6 +482,15 @@ func htmlEncodeCore(s string, flags int64, doubleEncode, allArg bool, enc string
 						b.WriteString(mbseq)
 						continue
 					}
+				}
+			}
+			// HTML5: многокодовые сущности (&nvlt; и т.п.) имеют приоритет
+			// над одиночными (php_escape_html_entities_ex).
+			if all && doctype == 48 && cs == "UTF-8" {
+				if ent, n, ok := html5MultiEntityAt(s, start); ok {
+					b.WriteString(ent)
+					i = start + n
+					continue
 				}
 			}
 			if e, ok := htmlEntityForRune(cp, doctype, all); ok {

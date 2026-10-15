@@ -1957,7 +1957,13 @@ func fopenFn(ctx *vm.Context) vm.Value {
 		ctx.VM().Warning(fmt.Sprintf("fopen(%s): Failed to open stream: %s", origName, "Operation not permitted"))
 		return vm.Bool(false)
 	}
-	h, ok := fsOpen(ctx, name, mode)
+	var h *fsHandle
+	var ok bool
+	if isHTTPURL(name) {
+		h, ok = httpOpenStream(ctx, name, mode, 3, "fopen")
+	} else {
+		h, ok = fsOpen(ctx, name, mode)
+	}
 	if ctx.HasThrown() {
 		return *new(vm.Value)
 	}
@@ -3210,7 +3216,16 @@ func fileGetContentsFn(ctx *vm.Context) vm.Value {
 		path = p2
 	}
 	var data []byte
-	if h, ok := openUserStream(ctx, path, "r"); ok {
+	if isHTTPURL(path) {
+		if h, ok := httpOpenStream(ctx, path, "r", 2, "file_get_contents"); ok {
+			d, _ := io.ReadAll(h)
+			h.Close()
+			data = d
+		} else {
+			ctx.VM().Warning("file_get_contents(" + raw0 + "): Failed to open stream: " + openFailReason(path, "r"))
+			return vm.Bool(false)
+		}
+	} else if h, ok := openUserStream(ctx, path, "r"); ok {
 		d, _ := io.ReadAll(h)
 		h.Close()
 		data = d

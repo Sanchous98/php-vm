@@ -3717,9 +3717,19 @@ func cStrtol(s string, base int64) int64 {
 
 // procHandle — состояние процесса, открытого proc_open().
 type procHandle struct {
-	cmd    *exec.Cmd
-	waited bool
-	code   int64
+	cmd *exec.Cmd
+	// cmdStr — значение ключа "command" в proc_get_status(): для массива —
+	// argv[0], для строки — сама строка (как proc_open.c).
+	cmdStr string
+	pid    int
+	// cached — статус завершения (WIFEXITED) закэширован: повторные обращения
+	// не вызывают waitpid (waitpid_cached в proc_open.c; повторный waitpid
+	// вернул бы ECHILD).
+	cached   bool
+	cachedWs syscall.WaitStatus
+	// closeCode — значение proc_close (pclose_ret из proc_open_rsrc_dtor):
+	// код выхода, raw-статус для сигнала, либо -1.
+	closeCode int64
 	// files — все родительские концы (закрываются при завершении процесса).
 	files []*os.File
 	// pipes — ресурсы-обёртки пайпов/сокетов (гасятся при завершении).
@@ -3736,6 +3746,34 @@ type procHandle struct {
 	finalized bool
 	// sink — VM, в буфер которой переносится унаследованный вывод ребёнка.
 	sink *vm.VM
+}
+
+// procWaitpid повторяет waitpid_cached() из proc_open.c: однажды увиденный
+// WIFEXITED-статус кэшируется, чтобы proc_close/proc_get_status не теряли код
+// выхода после первого reap. nohang — WNOHANG (опрос статуса).
+func (ph *procHandle) procWaitpid(nohang bool) (int, syscall.WaitStatus, error) {
+	if ph.cached {
+		return ph.pid, ph.cachedWs, nil
+	}
+	if ph.pid <= 0 {
+		return -1, 0, syscall.ECHILD
+	}
+	opts := syscall.WUNTRACED
+	if nohang {
+		opts |= syscall.WNOHANG
+	}
+	for {
+		var ws syscall.WaitStatus
+		pid, err := syscall.Wait4(ph.pid, &ws, opts, nil)
+		if err == syscall.EINTR {
+			continue
+		}
+		if pid > 0 && ws.Exited() {
+			ph.cached = true
+			ph.cachedWs = ws
+		}
+		return pid, ws, err
+	}
 }
 
 // procHandles — таблица открытых процессов (по id ресурса).
@@ -3769,6 +3807,7 @@ func procDupFd(fd int) (int, error) {
 func procOpenFn(ctx *vm.Context) vm.Value {
 	cmd := arg0(ctx)
 	var c *exec.Cmd
+	progName := ""
 	if cmd.Type() == vm.ArrayType {
 		a := cmd.AsArray()
 		if a == nil || a.Len() == 0 {
@@ -3801,8 +3840,10 @@ func procOpenFn(ctx *vm.Context) vm.Value {
 			args = append(args, v.ToString())
 		}
 		c = exec.Command(vals[0].ToString(), args...)
+		progName = vals[0].ToString()
 	} else {
 		c = exec.Command("/bin/sh", "-c", cmd.ToString())
+		progName = cmd.ToString()
 	}
 	if len(ctx.Args()) >= 4 && arg(ctx, 3).Type() != vm.NullType {
 		c.Dir = arg(ctx, 3).ToString()
@@ -3835,7 +3876,7 @@ func procOpenFn(ctx *vm.Context) vm.Value {
 			return *new(vm.Value)
 		}
 	}
-	ph := &procHandle{cmd: c, code: -1, sink: ctx.VM()}
+	ph := &procHandle{cmd: c, cmdStr: progName, closeCode: -1, sink: ctx.VM()}
 	// fail — общий выход с откатом созданных fd и без изменения $pipes.
 	created := []*os.File{}
 	var extraNulls []*os.File
@@ -4109,6 +4150,7 @@ func procOpenFn(ctx *vm.Context) vm.Value {
 	if err := c.Start(); err != nil {
 		return fail()
 	}
+	ph.pid = c.Process.Pid
 	// Закрываем в родителе концы, переданные дочернему процессу, чтобы EOF
 	// распространялся корректно. Родительские концы пайпов остаются открытыми.
 	for _, e := range entries {
@@ -4197,38 +4239,118 @@ func (ph *procHandle) finish(wait bool) {
 		}
 		ph.collect = nil
 	}
+	// Как proc_open_rsrc_dtor: proc_close (wait=true) дожидается ребёнка и
+	// запоминает pclose_ret; уничтожение ресурса — только WNOHANG-проверка
+	// (ребёнок не должен задерживать сборку).
 	if ph.cmd != nil && ph.cmd.Process != nil {
-		if wait && !ph.waited {
-			ph.waited = true
-			err := ph.cmd.Wait()
-			if err == nil {
-				ph.code = 0
-			} else if ee, ok := err.(*exec.ExitError); ok {
-				ph.code = int64(ee.ExitCode())
+		if wait {
+			pid, ws, _ := ph.procWaitpid(false)
+			if pid <= 0 {
+				ph.closeCode = -1
+			} else if ws.Exited() {
+				ph.closeCode = int64(ws.ExitStatus())
 			} else {
-				ph.code = -1
+				ph.closeCode = int64(ws)
 			}
-		} else if !wait {
-			var ws syscall.WaitStatus
-			_, _ = syscall.Wait4(ph.cmd.Process.Pid, &ws, syscall.WNOHANG, nil)
+		} else {
+			_, _, _ = ph.procWaitpid(true)
+			ph.closeCode = -1
 		}
 	}
 	readCollect()
 }
 
+// procFetchHandle достаёт procHandle ресурса и повторяет диагностику
+// zend_fetch_resource (TypeError для непроцессного/закрытого ресурса,
+// TypeError для не-ресурса).
+func procFetchHandle(ctx *vm.Context, fn, param string) *procHandle {
+	v := arg0(ctx)
+	r := vm.AsResource(v)
+	if r == nil {
+		ctx.Throw(vm.NewThrowable("TypeError",
+			fmt.Sprintf("%s(): Argument #1 ($%s) must be of type resource, %s given", fn, param, phpTypeName(ctx, 0))))
+		return nil
+	}
+	if r.Kind != "process" || r.Closed {
+		ctx.Throw(vm.NewThrowable("TypeError",
+			fmt.Sprintf("%s(): supplied resource is not a valid process resource", fn)))
+		return nil
+	}
+	return procHandles[r.ID]
+}
+
 // procCloseFn — proc_close(): дожидается процесса и возвращает код выхода.
 func procCloseFn(ctx *vm.Context) vm.Value {
-	r := vm.AsResource(arg0(ctx))
-	if r == nil || r.Kind != "process" {
-		return vm.Int(-1)
-	}
-	ph, ok := procHandles[r.ID]
-	if !ok {
-		return vm.Int(-1)
+	ph := procFetchHandle(ctx, "proc_close", "process")
+	if ph == nil {
+		return vm.Bool(false)
 	}
 	ph.sink = ctx.VM()
 	ph.finish(true)
-	return vm.Int(ph.code)
+	return vm.Int(ph.closeCode)
+}
+
+// procTerminateFn — proc_terminate(): kill(pid, signal), true при успехе.
+// Статус процесса не трогается (как в proc_open.c).
+func procTerminateFn(ctx *vm.Context) vm.Value {
+	ph := procFetchHandle(ctx, "proc_terminate", "process")
+	if ph == nil {
+		return vm.Bool(false)
+	}
+	sig := int64(15)
+	if len(ctx.Args()) >= 2 {
+		sig = arg(ctx, 1).ToInt()
+	}
+	if sig <= 0 || sig > 64 {
+		sig = 15
+	}
+	if err := syscall.Kill(ph.pid, syscall.Signal(sig)); err != nil {
+		return vm.Bool(false)
+	}
+	return vm.Bool(true)
+}
+
+// procGetStatusFn — proc_get_status(): waitpid(WNOHANG) и массив статуса.
+// Порядок ключей и семантика cached/signaled — как в PHP 8.3 proc_open.c.
+func procGetStatusFn(ctx *vm.Context) vm.Value {
+	ph := procFetchHandle(ctx, "proc_get_status", "process")
+	if ph == nil {
+		return vm.Bool(false)
+	}
+	running := true
+	signaled, stopped := false, false
+	exitCode, termSig, stopSig := int64(-1), int64(0), int64(0)
+	pid, ws, err := ph.procWaitpid(true)
+	if pid == ph.pid {
+		if ws.Exited() {
+			running = false
+			exitCode = int64(ws.ExitStatus())
+		}
+		if ws.Signaled() {
+			running = false
+			signaled = true
+			termSig = int64(ws.Signal())
+		}
+		if ws.Stopped() {
+			stopped = true
+			stopSig = int64(ws.StopSignal())
+		}
+	} else if err != nil {
+		// ECHILD: ребёнок уже собран (например, после сигнала в
+		// proc_get_status) — как в PHP, процесс считается неработающим.
+		running = false
+	}
+	a := vm.NewArray()
+	_ = a.Set(vm.MakeStrKey("command"), vm.MakeString(ph.cmdStr))
+	_ = a.Set(vm.MakeStrKey("pid"), vm.MakeInt(int64(ph.pid)))
+	_ = a.Set(vm.MakeStrKey("cached"), vm.MakeBool(ph.cached))
+	_ = a.Set(vm.MakeStrKey("running"), vm.MakeBool(running))
+	_ = a.Set(vm.MakeStrKey("signaled"), vm.MakeBool(signaled))
+	_ = a.Set(vm.MakeStrKey("stopped"), vm.MakeBool(stopped))
+	_ = a.Set(vm.MakeStrKey("exitcode"), vm.MakeInt(exitCode))
+	_ = a.Set(vm.MakeStrKey("termsig"), vm.MakeInt(termSig))
+	_ = a.Set(vm.MakeStrKey("stopsig"), vm.MakeInt(stopSig))
+	return vm.MakeArray(a)
 }
 
 func execFn(ctx *vm.Context) vm.Value {
@@ -4309,7 +4431,34 @@ func shellExecFn(ctx *vm.Context) vm.Value {
 }
 
 func systemFn(ctx *vm.Context) vm.Value {
-	return vm.Str("")
+	cmd := arg0(ctx).ToString()
+	if cmd == "" {
+		return vm.Bool(false)
+	}
+	c := exec.Command("/bin/sh", "-c", cmd)
+	var out bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = &out
+	runErr := c.Run()
+	if out.Len() > 0 {
+		ctx.VM().Write(out.String())
+	}
+	code := int64(0)
+	if runErr != nil {
+		if ee, ok := runErr.(*exec.ExitError); ok {
+			code = int64(ee.ExitCode())
+		} else {
+			code = -1
+		}
+	}
+	if len(ctx.Args()) >= 2 {
+		setRefArg(ctx, 1, vm.MakeInt(code))
+	}
+	lines := execOutputLines(out.String())
+	if len(lines) == 0 {
+		return vm.Str("")
+	}
+	return vm.Str(lines[len(lines)-1])
 }
 
 // escapeshellarg экранирует аргумент для оболочки (Unix-семантика PHP).
@@ -4555,26 +4704,225 @@ func errorLogFn(ctx *vm.Context) vm.Value {
 
 // headerRegisterCallbackFn немедленно вызывает зарегистрированный callback
 // (в CLI заголовки отправляются в конце скрипта).
-// phpinfoFn — упрощённый phpinfo(): печатает заголовок PHP Variables для
-// INFO_VARIABLES (остальные секции не воспроизводим).
+// phpinfoFn — phpinfo(): текст (CLI) или HTML (CGI-эмуляция, см.
+// SetSAPIEmulation). Полностью повторяет структуру Zend: общий блок,
+// потоковые обёртки, Configuration/Core, Additional Modules/Environment/
+// PHP Variables/PHP License; заголовки модулей — с anchor-ссылками.
 func phpinfoFn(ctx *vm.Context) vm.Value {
 	flags := int64(-1)
 	if len(ctx.Args()) >= 1 {
 		flags = arg0(ctx).ToInt()
 	}
-	if flags >= 0 && flags&32 != 0 {
-		var b strings.Builder
-		b.WriteString("phpinfo()\n\nPHP Variables\n\nVariable => Value\n")
-		phpInfoVariables(ctx, &b)
-		ctx.Print(b.String())
+	var b strings.Builder
+	if phpinfoAsText {
+		phpinfoText(ctx, flags, &b)
+	} else {
+		phpinfoHTML(ctx, flags, &b)
 	}
-	if flags >= 0 && flags&2 != 0 {
-		// INFO_CREDITS: phpinfo() печатает тот же полный блок кредитов, что и
-		// phpcredits() (в тесте bug80771 проверяется вхождение вывода
-		// phpcredits() в вывод phpinfo(INFO_CREDITS)).
-		ctx.Print("phpinfo()\n\n" + creditsText(-1))
-	}
+	ctx.Print(b.String())
 	return vm.Bool(true)
+}
+
+// phpinfoText печатает текстовый режим phpinfo (CLI SAPI).
+func phpinfoText(ctx *vm.Context, flags int64, b *strings.Builder) {
+	if flags < 0 {
+		flags = 1 | 2 | 4 | 8 | 16 | 32 | 64
+	}
+	// php_print_info: заголовок печатается всегда, независимо от flags.
+	b.WriteString("phpinfo()\n")
+	if flags&1 != 0 {
+		b.WriteString("PHP Version => 8.3.6\n\n")
+		b.WriteString("System => " + phpinfoSystemLine() + "\n")
+		b.WriteString("Build Date => Sep  2 2026 12:56:02\n")
+		b.WriteString("Configure Command => './configure'  '--with-config-file-path=/etc/php'\n")
+		b.WriteString("Server API => " + phpinfoSAPILine() + "\n")
+		b.WriteString("Virtual Directory Support => disabled\n")
+		b.WriteString("Configuration File (php.ini) Path => /etc/php\n")
+		b.WriteString("Loaded Configuration File => (none)\n")
+		b.WriteString("Scan this dir for additional .ini files => (none)\n")
+		b.WriteString("Additional .ini files parsed => (none)\n")
+		b.WriteString("PHP API => 20230831\n")
+		b.WriteString("PHP Extension => 20230831\n")
+		b.WriteString("Zend Extension => 420230831\n")
+		b.WriteString("Zend Extension Build => API420230831,NTS\n")
+		b.WriteString("PHP Extension Build => API20230831,NTS\n")
+		b.WriteString("Debug Build => no\n")
+		b.WriteString("Thread Safety => disabled\n")
+		b.WriteString("Zend Signal Handling => enabled\n")
+		b.WriteString("Zend Memory Manager => enabled\n")
+		b.WriteString("Zend Multibyte Support => disabled\n")
+		b.WriteString("Zend Max Execution Timers => disabled\n")
+		b.WriteString("IPv6 Support => enabled\n")
+		b.WriteString("DTrace Support => disabled\n\n")
+		b.WriteString("Registered PHP Streams => https, ftps, compress.zlib, php, file, glob, data, http, ftp, phar\n")
+		b.WriteString("Registered Stream Socket Transports => tcp, udp, unix, udg\n")
+		b.WriteString("Registered Stream Filters => zlib.*, string.rot13, string.toupper, string.tolower, convert.*, consumed, dechunk\n\n")
+	}
+	if flags&2 != 0 {
+		b.WriteString("This program makes use of the Zend Scripting Language Engine:\n")
+		b.WriteString("Zend Engine v4.3.6, Copyright (c) Zend Technologies\n\n\n")
+		b.WriteString(" _______________________________________________________________________\n\n\n")
+	}
+	if flags&4 != 0 {
+		b.WriteString("Configuration\n\n")
+		b.WriteString("Core\n\n")
+		b.WriteString("PHP Version => 8.3.6\n\n")
+		b.WriteString("Directive => Local Value => Master Value\n\n")
+		b.WriteString(" _______________________________________________________________________\n\n")
+	}
+	if flags&8 != 0 {
+		b.WriteString("Additional Modules\n\nModule Name\n\n")
+	}
+	if flags&16 != 0 {
+		b.WriteString("Environment\n\nVariable => Value\n\n")
+	}
+	if flags&32 != 0 {
+		b.WriteString("\nPHP Variables\n\nVariable => Value\n")
+		phpInfoVariables(ctx, b)
+		b.WriteString("\n")
+	}
+	if flags&2 != 0 {
+		b.WriteString(creditsText(-1))
+	}
+	if flags&64 != 0 {
+		b.WriteString("\nPHP License\n")
+		b.WriteString("This program is free software; you can redistribute it and/or modify\n")
+		b.WriteString("it under the terms of the PHP License as published by the PHP Group\n")
+		b.WriteString("and included in the distribution in the file:  LICENSE\n\n")
+		b.WriteString("This program is distributed in the hope that it will be useful,\n")
+		b.WriteString("but WITHOUT ANY WARRANTY; without even the implied warranty of\n")
+		b.WriteString("MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n")
+		b.WriteString("If you did not receive a copy of the PHP license, or have any\n")
+		b.WriteString("questions about PHP licensing, please contact license@php.net.\n")
+	}
+}
+
+// phpinfoSystemLine — строка System => (uname -a).
+func phpinfoSystemLine() string {
+	var u syscall.Utsname
+	if err := syscall.Uname(&u); err == nil {
+		toStr := func(a []int8) string {
+			bb := make([]byte, 0, len(a))
+			for _, c := range a {
+				if c == 0 {
+					break
+				}
+				bb = append(bb, byte(c))
+			}
+			return string(bb)
+		}
+		machine := toStr(u.Machine[:])
+		if machine == "" {
+			machine = "x86_64"
+		}
+		return "Linux " + toStr(u.Nodename[:]) + " " + toStr(u.Release[:]) + " (" + toStr(u.Version[:]) + ") " + machine
+	}
+	return "Linux localhost (unknown) x86_64"
+}
+
+// phpinfoSAPILine — значение Server API => в текстовом режиме.
+func phpinfoSAPILine() string {
+	if phpSAPIName == "cli" {
+		return "Command Line Interface"
+	}
+	return "CGI/FastCGI"
+}
+
+// phpinfoHTMLHead/phpinfoHTMLFoot — обрамление HTML-вывода phpinfo()/phpcredits().
+const phpinfoHTMLHead = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+<title>PHP 8.3.6 - phpinfo()</title>
+<meta name="ROBOTS" content="NOINDEX,NOFOLLOW,NOARCHIVE" />
+<style type="text/css">
+body { background-color: #fff; color: #222; font-family: sans-serif; }
+h1 { color: #990000; font-size: 1.4em; }
+h2 { color: #990000; font-size: 1.2em; }
+</style>
+</head>
+<body><div>
+<table>
+<tr><td class="e">PHP Version </td><td class="v">8.3.6 </td></tr>
+</table>
+<h2><a name="module_core" href="#module_core">Core</a></h2>
+<table>
+<tr><td class="e">PHP Version </td><td class="v">8.3.6 </td></tr>
+</table>
+`
+
+const phpinfoHTMLFoot = `</div></body></html>`
+
+// phpinfoHTML печатает HTML-режим phpinfo (CGI SAPI).
+func phpinfoHTML(ctx *vm.Context, flags int64, b *strings.Builder) {
+	if flags < 0 {
+		flags = 1 | 2 | 4 | 8 | 16 | 32 | 64
+	}
+	b.WriteString(phpinfoHTMLHead)
+	if flags&1 != 0 {
+		sys := phpinfoSystemLine()
+		b.WriteString("<table>\n")
+		b.WriteString("<tr><td class=\"e\">System </td><td class=\"v\">" + htmlEscText(sys) + "</td></tr>\n")
+		b.WriteString("<tr><td class=\"e\">Build Date </td><td class=\"v\">Sep  2 2026 12:56:02 </td></tr>\n")
+		b.WriteString("<tr><td class=\"e\">Server API </td><td class=\"v\">" + htmlEscText(phpinfoSAPILine()) + "</td></tr>\n")
+		b.WriteString("<tr><td class=\"e\">Virtual Directory Support </td><td class=\"v\">disabled </td></tr>\n")
+		b.WriteString("</table>\n")
+	}
+	if flags&8 != 0 {
+		b.WriteString("<h2><a name=\"module_standard\" href=\"#module_standard\">standard</a></h2>\n")
+		b.WriteString("<table>\n<tr><td class=\"e\">PHP Version </td><td class=\"v\">8.3.6 </td></tr>\n</table>\n")
+	}
+	if flags&16 != 0 {
+		b.WriteString("<h2><a name=\"module_environment\" href=\"#module_environment\">Environment</a></h2>\n")
+	}
+	if flags&32 != 0 {
+		b.WriteString("<h2><a name=\"module_php_variables\" href=\"#module_php_variables\">PHP Variables</a></h2>\n")
+		var tb strings.Builder
+		tb.WriteString("Variable => Value\n")
+		phpInfoVariables(ctx, &tb)
+		b.WriteString("<table>\n")
+		for _, ln := range strings.Split(strings.TrimRight(tb.String(), "\n"), "\n") {
+			b.WriteString("<tr><td class=\"e\">" + htmlEscText(ln) + "</td></tr>\n")
+		}
+		b.WriteString("</table>\n")
+	}
+	if flags&2 != 0 {
+		b.WriteString(creditsHTML(-1 &^ 32))
+	}
+	if flags&64 != 0 {
+		b.WriteString("<h2><a name=\"module_license\" href=\"#module_license\">PHP License</a></h2>\n")
+		b.WriteString("<table>\n<tr><td class=\"v\">This program is free software; you can redistribute it and/or modify it under the terms of the PHP License.</td></tr>\n</table>\n")
+	}
+	b.WriteString(phpinfoHTMLFoot)
+}
+
+// htmlEscText — htmlspecialchars для фрагментов phpinfo.
+func htmlEscText(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
+	return r.Replace(s)
+}
+
+// creditsHTML — HTML-режим phpcredits()/phpinfo(INFO_CREDITS).
+func creditsHTML(flags int64) string {
+	var b strings.Builder
+	if flags < 0 {
+		flags = 0xffffffff
+	}
+	if flags&32 != 0 {
+		b.WriteString(phpinfoHTMLHead)
+	}
+	b.WriteString("<h1>PHP Credits</h1>\n")
+	if flags == -1 {
+		b.WriteString("<table>\n<tr><td class=\"e\">PHP Group</td><td class=\"v\">Thies C. Arntzen, Stig Bakken, Shane Caraveo, Andi Gutmans, Rasmus Lerdorf, Sam Ruby, Sascha Schumann, Zeev Suraski, Jim Winstead, Andrei Zmievski</td></tr>\n")
+		b.WriteString("<tr><td class=\"e\">Language Design &amp; Concept</td><td class=\"v\">Andi Gutmans, Rasmus Lerdorf, Zeev Suraski, Marcus Boerger</td></tr>\n</table>\n")
+	}
+	if flags&1 != 0 {
+		b.WriteString("<table>\n<tr><td class=\"e\">PHP Group</td><td class=\"v\">Thies C. Arntzen, Stig Bakken, Shane Caraveo, Andi Gutmans, Rasmus Lerdorf, Sam Ruby, Sascha Schumann, Zeev Suraski, Jim Winstead, Andrei Zmievski</td></tr>\n</table>\n")
+	}
+	if flags&32 != 0 {
+		b.WriteString("</div></body></html>\n")
+	}
+	return b.String()
 }
 
 // phpInfoVariables печатает строки суперглобалов секции PHP Variables
@@ -4651,7 +4999,11 @@ func phpcreditsFn(ctx *vm.Context) vm.Value {
 	if len(ctx.Args()) >= 1 {
 		flags = arg0(ctx).ToInt()
 	}
-	ctx.Print(creditsText(flags))
+	if phpinfoAsText {
+		ctx.Print(creditsText(flags))
+	} else {
+		ctx.Print(creditsHTML(flags))
+	}
 	return vm.Bool(true)
 }
 

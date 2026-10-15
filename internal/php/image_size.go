@@ -985,13 +985,28 @@ func getimagesizeFromPathFn(ctx *vm.Context) vm.Value {
 		return *new(vm.Value)
 	}
 	wantInfo := refArgIsUsable(ctx, 1)
+	// Ячейку by-ref аргумента запоминаем до чтения: при пользовательской
+	// обёртке чтение заходит в userland и слот аргумента может стать
+	// недоступен к моменту записи $image_info.
+	var infoRef *vm.Ref
 	if wantInfo {
+		if sl := arg(ctx, 1); sl.IsRef() {
+			infoRef = sl.Ref()
+		}
 		netWriteRef(ctx, 1, vm.MakeArray(vm.NewArray()))
 	}
-	data, err := os.ReadFile(name)
-	if err != nil {
-		ctx.VM().Warn("getimagesize(" + name + "): Failed to open stream: " + sysErrText(err))
-		return vm.Bool(false)
+	var data []byte
+	if h, uok := openUserStream(ctx, name, "r"); uok {
+		// Пользовательская обёртка (stream_register_wrapper).
+		data, _ = io.ReadAll(h)
+		h.Close()
+	} else {
+		var rok bool
+		data, rok = readPathBytes(name, ctx)
+		if !rok {
+			ctx.VM().Warn("getimagesize(" + name + "): Failed to open stream: " + openFailReason(name, "r"))
+			return vm.Bool(false)
+		}
 	}
 	res, itype, info := imageSizeFromData(ctx, data, name, wantInfo, "getimagesize")
 	if res == nil {
@@ -1001,7 +1016,14 @@ func getimagesizeFromPathFn(ctx *vm.Context) vm.Value {
 		return vm.Bool(false)
 	}
 	if wantInfo {
-		netWriteRef(ctx, 1, imageSizeInfoResult(res, info))
+		out := imageSizeInfoResult(res, info)
+		if infoRef != nil {
+			var sl vm.Slot
+			vm.SlotOf(&sl, out)
+			infoRef.Set(sl)
+		} else {
+			netWriteRef(ctx, 1, out)
+		}
 	}
 	return vm.MakeArray(buildImageSizeResult(res, itype))
 }

@@ -84,19 +84,102 @@ func pregWriteRef(ctx *vm.Context, i int, v vm.Value) {
 // pregCompile разбирает PHP-паттерн, транслирует его в RE2 и компилирует.
 // Возвращает скомпилированное выражение и признак флага u.
 func pregCompile(pattern string) (*regexp.Regexp, bool, error) {
-	body, mods, err := pregSplitPattern(pattern)
+	re, lb, utf8mode, err := pregCompileLB(pattern)
 	if err != nil {
 		return nil, false, err
 	}
-	src, err := pregTranslate(body, mods)
+	if lb != nil {
+		// Прочие preg-функции не умеют проверять lookbehind вручную.
+		return nil, false, fmt.Errorf("lookbehind is not supported")
+	}
+	return re, utf8mode, nil
+}
+
+// pregLookbehind — простейший lookbehind вида (?<!X)/(?<=X) для одного
+// литерального байта в начале шаблона. RE2 lookaround не поддерживает;
+// утверждение проверяется вручную по байту перед началом совпадения
+// (preg_match/preg_match_all).
+type pregLookbehind struct {
+	negative bool
+	ch       byte
+}
+
+// pregLookbehindOK проверяет утверждение в позиции start субъекта.
+func pregLookbehindOK(lb *pregLookbehind, subject string, start int) bool {
+	if lb == nil {
+		return true
+	}
+	prev := start > 0 && subject[start-1] == lb.ch
+	if lb.negative {
+		return !prev
+	}
+	return prev
+}
+
+// splitLeadingLookbehind отделяет ведущее утверждение lookbehind и переводит
+// его в pregLookbehind. Если утверждение сложнее одного литерала — ошибка
+// (как раньше: RE2 вернул бы ошибку компиляции).
+func splitLeadingLookbehind(body string) (string, *pregLookbehind, error) {
+	if !strings.HasPrefix(body, "(?<!") && !strings.HasPrefix(body, "(?<=") {
+		return body, nil, nil
+	}
+	negative := body[3] == '!'
+	rest := body[4:]
+	end := strings.IndexByte(rest, ')')
+	if end < 0 {
+		return "", nil, fmt.Errorf("lookbehind: missing close paren")
+	}
+	ch, ok := singleLiteralByte(rest[:end])
+	if !ok {
+		return "", nil, fmt.Errorf("lookbehind is not supported")
+	}
+	return rest[end+1:], &pregLookbehind{negative: negative, ch: ch}, nil
+}
+
+// singleLiteralByte переводит тело lookbehind в один байт: литерал или
+// простой escape (\n \r \t \f \v \0 \xHH).
+func singleLiteralByte(s string) (byte, bool) {
+	if len(s) == 1 && s[0] != '\\' {
+		return s[0], true
+	}
+	if len(s) != 2 || s[0] != '\\' {
+		return 0, false
+	}
+	switch s[1] {
+	case 'n':
+		return '\n', true
+	case 'r':
+		return '\r', true
+	case 't':
+		return '\t', true
+	case 'f':
+		return '\f', true
+	case 'v':
+		return '\v', true
+	case '0':
+		return 0, true
+	case '\\':
+		return '\\', true
+	}
+	return 0, false
+}
+
+// pregCompileLB компилирует шаблон; для ведущего lookbehind возвращает
+// проверку, которую вызывающий применяет к найденным совпадениям.
+func pregCompileLB(pattern string) (*regexp.Regexp, *pregLookbehind, bool, error) {
+	body, mods, err := pregSplitPattern(pattern)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
+	}
+	src, lb, err := pregTranslateLB(body, mods)
+	if err != nil {
+		return nil, nil, false, err
 	}
 	re, err := regexp.Compile(src)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
-	return re, strings.ContainsRune(mods, 'u'), nil
+	return re, lb, strings.ContainsRune(mods, 'u'), nil
 }
 
 // pregSplitPattern отделяет тело регулярки от делимитера и модификаторов.
@@ -162,6 +245,18 @@ func pregSplitPattern(pattern string) (string, string, error) {
 
 // pregTranslate собирает итоговый RE2-паттерн из тела и модификаторов.
 func pregTranslate(body, mods string) (string, error) {
+	src, lb, err := pregTranslateLB(body, mods)
+	if err != nil {
+		return "", err
+	}
+	if lb != nil {
+		return "", fmt.Errorf("lookbehind is not supported")
+	}
+	return src, nil
+}
+
+// pregTranslateLB — pregTranslate с поддержкой ведущего lookbehind.
+func pregTranslateLB(body, mods string) (string, *pregLookbehind, error) {
 	var flags strings.Builder
 	freeSpacing := false
 	for i := 0; i < len(mods); i++ {
@@ -174,7 +269,11 @@ func pregTranslate(body, mods string) (string, error) {
 	}
 	translated, err := pregTranslateBody(body, freeSpacing)
 	if err != nil {
-		return "", err
+		return "", nil, err
+	}
+	translated, lb, err := splitLeadingLookbehind(translated)
+	if err != nil {
+		return "", nil, err
 	}
 	var b strings.Builder
 	if flags.Len() > 0 {
@@ -187,7 +286,7 @@ func pregTranslate(body, mods string) (string, error) {
 	if strings.ContainsRune(mods, 'A') {
 		src = `\A(?:` + src + `)`
 	}
-	return src, nil
+	return src, lb, nil
 }
 
 // pregTranslateBody переводит PCRE-специфичные escape-последовательности в
@@ -514,7 +613,7 @@ func pregMatchFn(ctx *vm.Context) vm.Value {
 			return *new(vm.Value)
 		}
 	}
-	re, utf8mode, err := pregCompile(arg(ctx, 0).ToString())
+	re, lb, utf8mode, err := pregCompileLB(arg(ctx, 0).ToString())
 	if err != nil {
 		pregLastError = pregErrInternal
 		return vm.Bool(false)
@@ -537,15 +636,41 @@ func pregMatchFn(ctx *vm.Context) vm.Value {
 		pregLastError = pregErrBadUTF8
 		return vm.Bool(false)
 	}
-	m := re.FindStringSubmatchIndex(subject[off:])
+	var m []int
+	if lb == nil {
+		m = re.FindStringSubmatchIndex(subject[off:])
+		if m != nil {
+			for i := range m {
+				if m[i] >= 0 {
+					m[i] += off
+				}
+			}
+		}
+	} else {
+		// Кандидаты ищем RE2-шаблоном без lookbehind, утверждение проверяем
+		// по байту перед совпадением (перекрывающиеся кандидаты — шаг 1).
+		for s := off; s <= len(subject); {
+			c := re.FindStringSubmatchIndex(subject[s:])
+			if c == nil {
+				break
+			}
+			if pregLookbehindOK(lb, subject, s+c[0]) {
+				m = make([]int, len(c))
+				for i := range c {
+					if c[i] >= 0 {
+						m[i] = c[i] + s
+					} else {
+						m[i] = -1
+					}
+				}
+				break
+			}
+			s = s + c[0] + 1
+		}
+	}
 	if m == nil {
 		pregWriteRef(ctx, 2, vm.MakeArray(vm.NewArray()))
 		return vm.Int(0)
-	}
-	for i := range m {
-		if m[i] >= 0 {
-			m[i] += off
-		}
 	}
 	pregWriteRef(ctx, 2, vm.MakeArray(pregBuildMatches(re, subject, m, flags)))
 	return vm.Int(1)
@@ -562,7 +687,7 @@ func pregMatchAllFn(ctx *vm.Context) vm.Value {
 			return *new(vm.Value)
 		}
 	}
-	re, utf8mode, err := pregCompile(arg(ctx, 0).ToString())
+	re, lb, utf8mode, err := pregCompileLB(arg(ctx, 0).ToString())
 	if err != nil {
 		pregLastError = pregErrInternal
 		return vm.Bool(false)
@@ -585,7 +710,33 @@ func pregMatchAllFn(ctx *vm.Context) vm.Value {
 		pregLastError = pregErrBadUTF8
 		return vm.Bool(false)
 	}
-	all := re.FindAllStringSubmatchIndex(subject[off:], -1)
+	var all [][]int
+	if lb == nil {
+		all = re.FindAllStringSubmatchIndex(subject[off:], -1)
+	} else {
+		for s := off; s <= len(subject); {
+			c := re.FindStringSubmatchIndex(subject[s:])
+			if c == nil {
+				break
+			}
+			if pregLookbehindOK(lb, subject, s+c[0]) {
+				mm := make([]int, len(c))
+				for i := range c {
+					if c[i] >= 0 {
+						mm[i] = c[i] + s
+					} else {
+						mm[i] = -1
+					}
+				}
+				all = append(all, mm)
+			}
+			next := s + c[1]
+			if c[1] == c[0] {
+				next++
+			}
+			s = next
+		}
+	}
 	out := vm.NewArray()
 	ngroups := re.NumSubexp() + 1
 	groupVals := make([]*vm.Array, ngroups)

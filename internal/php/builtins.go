@@ -17,6 +17,21 @@ import (
 
 // builtins — встроенные функции, доступные компилируемому коду.
 // Реестр оставлен в этом файле; тела именованных функций разнесены по builtins_<domain>.go.
+
+// phpSAPIName/phpinfoAsText — эмуляция SAPI харнессом: run-tests.php запускает
+// тесты с секциями --CGI--/--GET--/--POST--/--COOKIE--/--POST_RAW-- через
+// php-cgi (phpinfo_as_text=0, имя "cgi-fcgi"), остальные — через CLI.
+var (
+	phpSAPIName   = "cli"
+	phpinfoAsText = true
+)
+
+// SetSAPIEmulation переключает SAPI-режим для очередного .phpt.
+func SetSAPIEmulation(name string, asText bool) {
+	phpSAPIName = name
+	phpinfoAsText = asText
+}
+
 // issetThisFn — isset($this)/empty($this): в объектном контексте true, иначе
 // false (без выброса "Using $this when not in object context").
 func issetThisFn(ctx *vm.Context) vm.Value {
@@ -475,7 +490,7 @@ func builtins() []*vm.Function {
 		}),
 		vm.Register("phpversion", func(ctx *vm.Context) vm.Value { return vm.Str("8.3.0") }),
 		vm.Register("zend_version", func(ctx *vm.Context) vm.Value { return vm.Str("4.3.0") }),
-		vm.Register("php_sapi_name", func(ctx *vm.Context) vm.Value { return vm.Str("cli") }),
+		vm.Register("php_sapi_name", func(ctx *vm.Context) vm.Value { return vm.Str(phpSAPIName) }),
 		vm.Register("version_compare", versionCompareFn),
 
 		// INI / окружение / заголовки
@@ -537,6 +552,8 @@ func builtins() []*vm.Function {
 		vm.Register("stream_context_set_options", streamContextSetOptionsFn),
 		vm.Register("stream_context_get_params", streamContextGetParamsFn),
 		vm.Register("stream_context_set_params", streamContextSetParamsFn),
+		vm.Register("stream_context_set_default", streamContextSetDefaultFn),
+		vm.Register("get_headers", getHeadersFn),
 		vm.Register("stream_get_transports", streamGetTransportsFn),
 		vm.Register("set_file_buffer", setFileBufferFn),
 		vm.Register("extension_loaded", extensionLoadedFn),
@@ -627,8 +644,8 @@ func builtins() []*vm.Function {
 		vm.Register("escapeshellarg", escapeShellArgFn),
 		vm.Register("proc_open", procOpenFn),
 		vm.Register("proc_close", procCloseFn),
-		vm.Register("proc_get_status", func(ctx *vm.Context) vm.Value { return vm.Bool(false) }),
-		vm.Register("proc_terminate", func(ctx *vm.Context) vm.Value { return vm.Bool(false) }),
+		vm.Register("proc_get_status", procGetStatusFn),
+		vm.Register("proc_terminate", procTerminateFn),
 		vm.Register("popen", popenFn),
 		vm.Register("pclose", func(ctx *vm.Context) vm.Value { return vm.Int(-1) }),
 		vm.Register("getopt", func(ctx *vm.Context) vm.Value { return vm.MakeArray(vm.NewArray()) }),
@@ -783,6 +800,31 @@ func builtins() []*vm.Function {
 			return vm.Int(0)
 		}),
 		vm.Register("time", func(ctx *vm.Context) vm.Value { return vm.Int(time.Now().Unix()) }),
+		vm.Register("time_nanosleep", func(ctx *vm.Context) vm.Value {
+			sec := arg0(ctx).ToInt()
+			nsec := int64(0)
+			if len(ctx.Args()) >= 2 {
+				nsec = arg(ctx, 1).ToInt()
+			}
+			if sec < 0 {
+				ctx.Throw(vm.NewThrowable("ValueError", "time_nanosleep(): Argument #1 ($seconds) must be greater than or equal to 0"))
+				if ctx.HasThrown() {
+					return *new(vm.Value)
+				}
+				return vm.Bool(false)
+			}
+			if nsec < 0 {
+				ctx.Throw(vm.NewThrowable("ValueError", "time_nanosleep(): Argument #2 ($nanoseconds) must be greater than or equal to 0"))
+				if ctx.HasThrown() {
+					return *new(vm.Value)
+				}
+				return vm.Bool(false)
+			}
+			if d := time.Duration(sec)*time.Second + time.Duration(nsec); d > 0 {
+				time.Sleep(d)
+			}
+			return vm.Bool(true)
+		}),
 		vm.Register("microtime", func(ctx *vm.Context) vm.Value {
 			now := time.Now()
 			asFloat := len(ctx.Args()) >= 1 && arg0(ctx).ToBool()
@@ -1527,6 +1569,12 @@ func builtins() []*vm.Function {
 			f.MaxArgs = 3
 		}
 		f.HasNativeSig = true
+		// #[SensitiveParameter] у встроенных функций (php-src 8.3): параметр
+		// пароля у crypt/password_hash/password_verify скрывается в трейсах.
+		switch f.Name {
+		case "crypt", "password_hash", "password_verify":
+			f.SensitiveParams = []bool{true}
+		}
 	}
 	// assert() с одним аргументом компилируется в __php_assert1 (служебный
 	// текст проверки); в трейсах кадр должен выглядеть как assert(...).

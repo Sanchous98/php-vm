@@ -637,7 +637,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.staticRootsLen = 0
 	vm.gcPendingObjs = nil
 	vm.cyclicArrs = nil
-	vm.shutdownFuncs = nil
+	vm.releaseShutdownRefs()
 	vm.shutdownFnsDone = false
 	vm.headerCallbacks = nil
 	vm.included = nil
@@ -7492,7 +7492,39 @@ func cannotInstantiateErr(ci ClassInfo) *Throwable {
 func (vm *VM) AddShutdownFunction(cb Slot, args []Slot) {
 	cp := make([]Slot, len(args))
 	copy(cp, args)
+	// Аргументы удерживаются таблицей VM: ресурсы с OnDrop (процессы
+	// proc_open) должны оставаться живыми до вызова обработчика, даже если
+	// регистр-владелец уже потерян.
+	for _, a := range cp {
+		vm.resourceHold(a)
+	}
 	vm.shutdownFuncs = append(vm.shutdownFuncs, shutdownHandler{cb: cb, args: cp})
+}
+
+// resourceHold увеличивает число владельцев ресурса с OnDrop вне регистров.
+func (vm *VM) resourceHold(s Slot) {
+	d := deref(s)
+	if d.typ != ResourceType {
+		return
+	}
+	r := AsResource(d)
+	if r == nil || r.OnDrop == nil {
+		return
+	}
+	if r.dropped && r.Refs <= 0 {
+		r.dropped = false
+	}
+	r.Refs++
+}
+
+// releaseShutdownRefs отпускает удержания ресурсов таблицей shutdown-функций.
+func (vm *VM) releaseShutdownRefs() {
+	for i := range vm.shutdownFuncs {
+		for _, a := range vm.shutdownFuncs[i].args {
+			vm.dropResourceRef(a)
+		}
+	}
+	vm.shutdownFuncs = nil
 }
 
 // RegisterHeaderCallback добавляет callback header_register_callback.
@@ -7546,6 +7578,9 @@ func (vm *VM) runShutdownFunctions() {
 			break
 		}
 	}
+	// Удержания аргументов снимаются: ресурсы, потерявшие всех владельцев,
+	// финализируются (процессы proc_open закрываются).
+	vm.releaseShutdownRefs()
 }
 
 // releaseMainReturn освобождает значение верхнеуровневого return сразу после

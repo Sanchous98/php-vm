@@ -143,6 +143,17 @@ func (s Slot) StringVal() string {
 	return unsafe.String((*byte)(s.ptr), int(s.num&lenMask))
 }
 
+// ReadOnlyBytes возвращает представление байтов строкового слота без копии
+// (интерьерный указатель; валидно, пока жив слот). ТОЛЬКО ДЛЯ ЧТЕНИЯ: писать
+// в общий буфер строки нельзя. Для не-строк ok=false.
+func (s Slot) ReadOnlyBytes() ([]byte, bool) {
+	s = deref(s)
+	if s.typ != StringType || s.ptr == nil {
+		return nil, false
+	}
+	return unsafe.Slice((*byte)(s.ptr), int(s.num&lenMask)), true
+}
+
 // IsNumeric сообщает, что слот — int или float.
 func (s Slot) IsNumeric() bool {
 	t := deref(s).typ

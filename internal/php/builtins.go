@@ -970,15 +970,24 @@ func builtins() []*vm.Function {
 		vm.Register("rawurldecode", func(ctx *vm.Context) vm.Value { return vm.Str(phpURLDecode(arg0(ctx).ToString(), true)) }),
 		vm.Register("md5", func(ctx *vm.Context) vm.Value {
 			raw := len(ctx.Args()) >= 2 && arg(ctx, 1).ToBool()
+			if b, ok := arg0(ctx).ReadOnlyBytes(); ok {
+				return vm.Str(phpHashBytes(md5.New(), b, raw))
+			}
 			return vm.Str(phpHash(md5.New(), arg0(ctx).ToString(), raw))
 		}),
 		vm.Register("sha1", func(ctx *vm.Context) vm.Value {
 			raw := len(ctx.Args()) >= 2 && arg(ctx, 1).ToBool()
+			if b, ok := arg0(ctx).ReadOnlyBytes(); ok {
+				return vm.Str(phpHashBytes(sha1.New(), b, raw))
+			}
 			return vm.Str(phpHash(sha1.New(), arg0(ctx).ToString(), raw))
 		}),
 		vm.Register("md5_file", hashFileFn(false)),
 		vm.Register("sha1_file", hashFileFn(true)),
 		vm.Register("crc32", func(ctx *vm.Context) vm.Value {
+			if b, ok := arg0(ctx).ReadOnlyBytes(); ok {
+				return vm.Int(int64(crc32.ChecksumIEEE(b)))
+			}
 			return vm.Int(int64(crc32.ChecksumIEEE([]byte(arg0(ctx).ToString()))))
 		}),
 		vm.Register("basename", basenameFn),

@@ -4365,6 +4365,17 @@ func phpHash(h hash.Hash, s string, raw bool) string {
 	return hex.EncodeToString(sum)
 }
 
+// phpHashBytes — phpHash без конверсии строки в []byte: вызывающий отдаёт
+// zero-copy байты слота (ReadOnlyBytes).
+func phpHashBytes(h hash.Hash, b []byte, raw bool) string {
+	h.Write(b)
+	sum := h.Sum(nil)
+	if raw {
+		return string(sum)
+	}
+	return hex.EncodeToString(sum)
+}
+
 func hashFileFn(sha bool) func(ctx *vm.Context) vm.Value {
 	return func(ctx *vm.Context) vm.Value {
 		name := "md5_file"

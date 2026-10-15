@@ -102,6 +102,9 @@ type Lexer struct {
 	pos  int
 	toks []Token
 	php  bool // true — сейчас в режиме PHP-кода, false — HTML-текст
+	// braceDepth — глубина фигурных скобок (для __halt_compiler(): вне блока
+	// он усекает код, внутри — Fatal error на этапе выполнения).
+	braceDepth int
 	// pendingAttrs — тексты атрибутов, ожидающие прикрепления к следующему
 	// значащему токену.
 	pendingAttrs []AttrRaw
@@ -343,7 +346,10 @@ func (l *Lexer) runPHP() error {
 			}
 			w := l.src[start:l.pos]
 			// __halt_compiler(): всё после него — данные, не разбираем.
-			if strings.EqualFold(w, "__halt_compiler") {
+			// Внутри блока (глубина фигурных скобок > 0) Zend вместо
+			// усечения сообщает Fatal error на этапе выполнения: оставляем
+			// имя как обычный идентификатор, ошибку даёт встроенная функция.
+			if strings.EqualFold(w, "__halt_compiler") && l.braceDepth == 0 {
 				j := l.pos
 				for j < len(l.src) && isSpaceByte(l.src[j]) {
 					j++
@@ -407,6 +413,14 @@ func (l *Lexer) runPHP() error {
 			op := l.operator()
 			if op == "" {
 				return l.parseErrf("syntax error, unexpected character 0x%02X", c)
+			}
+			switch op {
+			case "{":
+				l.braceDepth++
+			case "}":
+				if l.braceDepth > 0 {
+					l.braceDepth--
+				}
 			}
 			l.emit(Token{Kind: TOp, Val: op, Pos: start})
 		}

@@ -777,6 +777,13 @@ func variadicByRef(params []Param) bool {
 	return n > 0 && params[n-1].Variadic && params[n-1].ByRef
 }
 
+// variadicParams сообщает, что последний параметр объявлен ...$rest
+// (для ReflectionParameter::isVariadic).
+func variadicParams(params []Param) bool {
+	n := len(params)
+	return n > 0 && params[n-1].Variadic
+}
+
 // namedArgCheck — результат проверки именованных аргументов вызова известной
 // функции: либо переупорядоченные аргументы, либо ошибка (компиляции или
 // рантайм-исключение Zend).
@@ -4008,7 +4015,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				Attrs:           makeAttrsInfo(fd.Attrs, attrFileOf(fd.DefFile, file), fd.Strict, nil),
 				ParamAttrs:      paramAttrsInfo(fd.Params, attrFileOf(fd.DefFile, file), fd.Strict, nil),
 				SensitiveParams: sens, SensitiveVariadic: sensVar,
-				VariadicByRef: variadicByRef(fd.Params),
+				VariadicByRef: variadicByRef(fd.Params), Variadic: variadicParams(fd.Params),
 			})
 			decls = append(decls, fd)
 		} else if linkBase == nil {
@@ -4195,6 +4202,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				ci.SetParent(classes[pi])
 			}
 		}
+		seenIfaces := map[vm.ClassInfo]bool{}
 		for _, in := range cd.Interfaces {
 			ii, ok := classIdx[in]
 			if !ok {
@@ -4242,6 +4250,22 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				}
 				return nil, base.newFatal(fmt.Sprintf("%s cannot implement %s - it is not an interface", cd.Name, in))
 			}
+			if !classes[ii].IsInterface() {
+				// Встроенный класс (Exception и т.п.) — не интерфейс.
+				return nil, base.newFatal(fmt.Sprintf("%s cannot implement %s - it is not an interface", cd.Name, in))
+			}
+			if seenIfaces[classes[ii]] {
+				// Zend отвергает повторный интерфейс в одном объявлении
+				// (наследованный дубликат допустим — objects_013/objects_014).
+				noun := "Class"
+				if cd.IsInterface {
+					noun = "Interface"
+				} else if cd.IsEnum {
+					noun = "Enum"
+				}
+				return nil, base.newFatal(fmt.Sprintf("%s %s cannot implement previously implemented interface %s", noun, cd.Name, in))
+			}
+			seenIfaces[classes[ii]] = true
 			ci.Implements(classes[ii])
 		}
 		if cd.IsEnum {
@@ -4404,7 +4428,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			NumCaptures: ncap, IsStatic: ci.static,
 			CaptureNames:    capNames,
 			SensitiveParams: sens, SensitiveVariadic: sensVar,
-			VariadicByRef: variadicByRef(ci.params), Attrs: makeAttrsInfo(ci.attrs, base.file, base.strict, base.attrThunks(ci.cls)),
+			VariadicByRef: variadicByRef(ci.params), Variadic: variadicParams(ci.params), Attrs: makeAttrsInfo(ci.attrs, base.file, base.strict, base.attrThunks(ci.cls)),
 			ParamAttrs: paramAttrsInfo(ci.params, base.file, base.strict, base.attrThunks(ci.cls))}
 		ci.idx = len(funcs)
 		funcs = append(funcs, fn)
@@ -4772,7 +4796,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						NumRequired:     numRequired(m.Params),
 						RetType:         normalizedType(m.RetType),
 						SensitiveParams: sensS, SensitiveVariadic: sensVarS,
-						VariadicByRef: variadicByRef(m.Params),
+						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
 					})
 				case "method":
 					if m.Readonly {
@@ -4814,8 +4838,8 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						NumRequired: numRequired(m.Params),
 						RetType:     normalizedType(m.RetType), Executable: cf,
 						SensitiveParams: sens, SensitiveVariadic: sensVar,
-						VariadicByRef: variadicByRef(m.Params),
-						ParamAttrs:    paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
+						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
+						ParamAttrs: paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
 					// __toString неявно возвращает string (проверка как в Zend).
 					if m.MName == "__toString" && fn.RetType == "" {
 						fn.RetType = "string"
@@ -5786,10 +5810,16 @@ compatLoop:
 						mv = "public"
 					}
 					if visRank(mv) < visRank(pv) {
-						if pv == "protected" {
-							return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be protected (as in class %s) or weaker", cd.Name, m.ConstName, pd.Name))
+						noun := "class"
+						if pd.IsInterface {
+							// Константы интерфейса: Zend пишет "as in interface I"
+							// (методы остаются "as in class I").
+							noun = "interface"
 						}
-						return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be %s (as in class %s)", cd.Name, m.ConstName, pv, pd.Name))
+						if pv == "protected" {
+							return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be protected (as in %s %s) or weaker", cd.Name, m.ConstName, noun, pd.Name))
+						}
+						return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be %s (as in %s %s)", cd.Name, m.ConstName, pv, noun, pd.Name))
 					}
 					if pm.ConstType != "" {
 						resolve := func(t string) string {
@@ -6087,16 +6117,19 @@ func (c *compiler) magicConst(x *MagicExpr) uint8 {
 			s = s[i+2:]
 		}
 		if strings.HasPrefix(s, "{closure#") {
-			s = "{closure}"
+			s = closureQualifiedName(x.NS)
 		}
 	case "__METHOD__":
 		s = c.funcName
 		if strings.HasPrefix(s, "{closure#") {
-			s = "{closure}"
+			s = closureQualifiedName(x.NS)
 		}
 	case "__CLASS__":
 		r := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: 0})
+		// B=255 — специальный селектор __CLASS__: имя области класса, а вне
+		// класса — пустая строка (в отличие от self::class, который вне класса
+		// бросает Error).
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: 255})
 		return r
 	case "__TRAIT__":
 		// __TRAIT__ — имя трейта, в теле которого встречается константа
@@ -6157,7 +6190,14 @@ func (c *compiler) classKeyword(x *ClassKeywordExpr) (uint8, error) {
 			sel = 2
 		}
 		r := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: sel})
+		// В контексте константного выражения (`const X = self::class;`)
+		// Zend сообщает "Cannot use \"self\" when no class scope is active"
+		// вместо "in the global scope" (self_class_const_in_unknown_scope).
+		var ctxFlag uint8
+		if c.constEval > 0 {
+			ctxFlag = 1
+		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: sel, C: int32(ctxFlag)})
 		return r, nil
 	default:
 		if strings.Contains(x.Class, "::") {
@@ -13956,8 +13996,13 @@ func (c *compiler) exprForWrite(e Expr) (uint8, error) {
 		if err != nil {
 			return 0, err
 		}
+		// Ключ — в отдельном регистре: OpIndexRW канонизирует его на месте
+		// (ресурс/float), чтобы повторная запись не печатала предупреждение
+		// дважды (resource_key).
+		kc := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: kc, B: k})
 		d := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: d, B: arr, C: int32(k)})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: d, B: arr, C: int32(kc)})
 		if wb != nil {
 			wb(arr)
 		}
@@ -14344,6 +14389,15 @@ func (c *compiler) evalDynArgs(args []Expr) ([]uint8, []func(), error) {
 	var wbs []func()
 	for i, a := range args {
 		if v, ok := a.(*VarExpr); ok && v.Name != "$this" && v.Name != "this" {
+			// Переменная аргумента передаётся своей Ref-ячейкой: для by-ref
+			// параметра (SEND_VAR_EX) Zend превращает CV в ссылку, и алиас
+			// сохраняется для последующего `=&` (first_class_callable_refs:
+			// $i2 =& $fn($i); $i++; $i2 должен видеть $i). Значение by-value
+			// параметра вызываемая функция разыменовывает сама.
+			if !isGlobalsVar(v) {
+				regs[i] = c.refCell(v.Name)
+				continue
+			}
 			r, wb, err := c.byRefArg(v)
 			if err != nil {
 				return nil, nil, err
@@ -16407,6 +16461,29 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 	if t.Key == nil && isGlobalsVar(t.Arr) {
 		return 0, c.newFatal("Cannot append to $GLOBALS")
 	}
+	// $GLOBALS['name'] op= v с константным ключом — доступ к глобальной
+	// переменной $name (Zend компилирует это как CV глобала: отсутствие даёт
+	// "Undefined global variable $name", а не "Undefined array key").
+	if op != "=" && t.Key != nil && isGlobalsVar(t.Arr) {
+		if lit, ok := t.Key.(*StrLit); ok && lit.V != "" {
+			bc, bok := binOp(strings.TrimSuffix(op, "="))
+			if !bok {
+				return 0, fmt.Errorf("компилятор: неизвестный оператор %q", op)
+			}
+			gname := "$" + lit.V
+			nr := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nr, C: int32(c.chunk.AddConst(vm.StrConst(gname)))})
+			cur := c.emitCall("__php_globals_get", []uint8{nr})
+			r, err := c.expr(value)
+			if err != nil {
+				return 0, err
+			}
+			d := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: d, C: int32(c.chunk.AddConst(vm.StrConst(gname)))})
+			return d, nil
+		}
+	}
 	// Запись в элемент временного выражения (`[0, 1][0] = 1`): Zend отвергает
 	// на компиляции.
 	if isTemporaryExpr(t.Arr) && !c.builtinCallBase(t.Arr) {
@@ -16543,15 +16620,20 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 	if !ok {
 		return 0, fmt.Errorf("компилятор: неизвестный оператор %q", op)
 	}
+	// Ключ — в отдельном регистре: OpIndexRW канонизирует его на месте
+	// (ресурс/float), общая с записью канонизация даёт одно предупреждение
+	// на оператор (resource_key).
+	kc := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: kc, B: k})
 	cur := c.alloc()
-	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: cur, B: arr, C: int32(k)})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: cur, B: arr, C: int32(kc)})
 	r, err := c.expr(value)
 	if err != nil {
 		return 0, err
 	}
 	d := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
-	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: k, C: int32(d)})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: kc, C: int32(d)})
 	if wb != nil {
 		wb(arr)
 	}
@@ -17999,4 +18081,14 @@ func constValue(name string) (vm.Const, bool) {
 		return vm.FloatConst(math.Nextafter(1, 2) - 1), true
 	}
 	return vm.Const{}, false
+}
+
+// closureQualifiedName возвращает имя замыкания для магических констант
+// __FUNCTION__/__METHOD__: Zend квалифицирует его пространством имён файла
+// ("Baz\{closure}"), а вне namespace — просто "{closure}".
+func closureQualifiedName(ns string) string {
+	if ns != "" {
+		return ns + `\{closure}`
+	}
+	return "{closure}"
 }

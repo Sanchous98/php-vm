@@ -1313,6 +1313,10 @@ func tokenDesc(t Token) string {
 	case TIdent:
 		return fmt.Sprintf("identifier %q", t.Val)
 	default:
+		if t.Kind == TOp && t.Val == "\\" {
+			// Zend печатает обратный слэш без удвоения: token "\".
+			return `token "\"`
+		}
 		return fmt.Sprintf("token %q", t.Val)
 	}
 }
@@ -2370,6 +2374,17 @@ modsDone:
 	classLine := p.lineAt(p.cur().Pos)
 	classAttrs := p.parseAttrs(p.takeAttrs())
 	p.next()
+
+	// Имя класса/интерфейса/трейта не может быть зарезервированным ключевым
+	// словом (кроме «мягких» enum/from/get/not): Zend сообщает Parse error
+	// "unexpected token ..., expecting identifier" (lsb_008/lsb_009).
+	if nt := p.cur(); (nt.Kind == TKeyword && !softClassName[nt.Val]) ||
+		(nt.Kind == TIdent && strings.EqualFold(nt.Val, "callable")) {
+		return nil, &parseError{
+			msg:  fmt.Sprintf("syntax error, unexpected token %q, expecting identifier", nt.Val),
+			line: p.lineAt(nt.Pos),
+		}
+	}
 
 	cd := &ClassDecl{IsInterface: kind == "interface", IsTrait: kind == "trait", IsAbstract: isAbstract, IsFinal: isFinal,
 		IsReadonly: isReadonly, ReadonlyDup: readonlyCount > 1, FinalDup: finalCount > 1, Line: classLine, Attrs: classAttrs}
@@ -4041,12 +4056,13 @@ func (p *Parser) rawQualifiedName() string {
 	var b strings.Builder
 	// Относительное имя `namespace\Foo` — префикс текущего пространства имён.
 	rel := false
-	if p.is(TKeyword, "namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "\\" {
+	if p.is(TKeyword, "namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "\\" &&
+		p.adjacentNames(p.cur(), p.peekAt(1)) && p.adjacentNames(p.peekAt(1), p.peekAt(2)) {
 		p.next() // namespace
 		p.next() // \
 		rel = true
 	}
-	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) && p.adjacentNames(p.cur(), p.peekAt(1)) {
 		p.next() // \
 		b.WriteByte('\\')
 		b.WriteString(tokName(p.next()))
@@ -4054,7 +4070,7 @@ func (p *Parser) rawQualifiedName() string {
 	if b.Len() == 0 {
 		b.WriteString(tokName(p.next()))
 	}
-	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) && p.adjacentNames(p.toks[p.pos-1], p.cur()) && p.adjacentNames(p.cur(), p.peekAt(1)) {
 		p.next() // \
 		b.WriteByte('\\')
 		b.WriteString(p.next().Val)
@@ -4067,6 +4083,13 @@ func (p *Parser) rawQualifiedName() string {
 		return "\\" + b.String()
 	}
 	return b.String()
+}
+
+// adjacentNames сообщает, что два токена записаны подряд (без пробелов):
+// PHP 8 отвергает `Foo \ Bar` — разделитель пространства имён обязан
+// примыкать к обеим частям имени (namespaced_name_whitespace).
+func (p *Parser) adjacentNames(a, b Token) bool {
+	return a.Pos+len(a.Val) == b.Pos
 }
 
 // kwAdjacentBackslash сообщает, что текущий ключевой токен сразу (без
@@ -4297,6 +4320,11 @@ func (p *Parser) qualifyDecl(name string) string {
 	}
 	return name
 }
+
+// softClassName — ключевые слова нашего лексера, которые PHP допускает как
+// имя класса (в Zend это T_STRING): enum/from/get, а также «not» (в PHP не
+// ключевое слово).
+var softClassName = map[string]bool{"enum": true, "from": true, "get": true, "not": true}
 
 // nameRefExpr разбирает имя (возможно квалифицированное) как выражение: вызов
 // функции, ссылку на класс (перед `::`) или константу.

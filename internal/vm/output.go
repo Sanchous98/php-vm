@@ -699,14 +699,35 @@ func (vm *VM) SetErrorHandler(cb Slot) Slot {
 }
 
 // SetExceptionHandler устанавливает обработчик непойманных исключений
-// (set_exception_handler) и возвращает предыдущий.
+// (set_exception_handler) и возвращает предыдущий. Прошлое значение (если
+// обработчик был установлен) кладётся в стек — restore_exception_handler
+// восстанавливает именно его (Zend: EG(user_exception_handlers)).
 func (vm *VM) SetExceptionHandler(cb Slot) Slot {
 	old := vm.exceptionHandler
-	if old.typ == 0 {
+	if old.typ == 0 || old.typ == NullType {
 		old = MakeNull()
+	} else {
+		vm.exceptionHandlers = append(vm.exceptionHandlers, old)
 	}
-	vm.exceptionHandler = deref(cb)
+	cb = deref(cb)
+	if cb.typ == 0 {
+		cb = MakeNull()
+	}
+	vm.exceptionHandler = cb
 	return old
+}
+
+// RestoreExceptionHandler восстанавливает предыдущий обработчик исключений
+// (restore_exception_handler): снимает верх стека; при пустом стеке сбрасывает
+// обработчик в NULL. Возвращает true (PHP 8.1+).
+func (vm *VM) RestoreExceptionHandler() Slot {
+	if n := len(vm.exceptionHandlers); n > 0 {
+		vm.exceptionHandler = vm.exceptionHandlers[n-1]
+		vm.exceptionHandlers = vm.exceptionHandlers[:n-1]
+	} else {
+		vm.exceptionHandler = MakeNull()
+	}
+	return MakeBool(true)
 }
 
 // ErrorReportingGet возвращает текущий уровень error_reporting.

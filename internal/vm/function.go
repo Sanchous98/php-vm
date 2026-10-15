@@ -45,6 +45,9 @@ type Function struct {
 	// VariadicByRef — последний (вариативный) параметр объявлен `&...$args`:
 	// все собранные в него аргументы Zend молча оборачивает в ссылки.
 	VariadicByRef bool
+	// Variadic — последний параметр объявлен `...$rest` (для
+	// ReflectionParameter::isVariadic; VariadicByRef не покрывает случай `...$x`).
+	Variadic bool
 	// UsesThis — тело замыкания обращается к $this (аналог ZEND_ACC_USES_THIS:
 	// запрещает отвязку $this через Closure::bindTo(null)).
 	UsesThis bool

@@ -613,18 +613,36 @@ func builtins() []*vm.Function {
 			return vm.MakeNull()
 		}),
 		vm.Register("set_exception_handler", func(ctx *vm.Context) vm.Value {
-			cb := vm.MakeNull()
-			if len(ctx.Args()) > 0 {
-				cb = ctx.Args()[0]
+			if len(ctx.Args()) == 0 || arg(ctx, 0).IsNull() {
+				return ctx.VM().SetExceptionHandler(vm.MakeNull())
 			}
-			return ctx.VM().SetExceptionHandler(cb)
+			requireCallableNamed(ctx, 0, "set_exception_handler", "callback", true)
+			if ctx.HasThrown() {
+				return vm.MakeNull()
+			}
+			return ctx.VM().SetExceptionHandler(arg(ctx, 0))
 		}),
 		vm.Register("restore_exception_handler", func(ctx *vm.Context) vm.Value {
-			ctx.VM().SetExceptionHandler(vm.MakeNull())
-			return vm.MakeNull()
+			return ctx.VM().RestoreExceptionHandler()
 		}),
 		vm.Register("trigger_error", triggerErrorFn),
 		vm.Register("user_error", triggerErrorFn),
+		// __halt_compiler() внутри блока — Fatal error (вне блока лексер
+		// усекает исходник и до этой функции дело не доходит).
+		vm.Register("__halt_compiler", func(ctx *vm.Context) vm.Value {
+			ctx.Throw(vm.NewFatal("__HALT_COMPILER() can only be used from the outermost scope"))
+			return *new(vm.Value)
+		}),
+		// Чтение глобальной переменной из $GLOBALS['name'] (константный ключ):
+		// Zend печатает "Undefined global variable $name" (а не array key).
+		vm.Register("__php_globals_get", func(ctx *vm.Context) vm.Value {
+			name := arg0(ctx).ToString()
+			if v, ok := ctx.VM().GlobalGet(name); ok {
+				return v
+			}
+			ctx.VM().Warn("Undefined global variable " + name)
+			return vm.MakeNull()
+		}),
 		vm.Register("error_log", errorLogFn),
 		vm.Register("memory_get_usage", func(ctx *vm.Context) vm.Value { return vm.Int(0) }),
 		vm.Register("memory_get_peak_usage", func(ctx *vm.Context) vm.Value { return vm.Int(0) }),

@@ -611,6 +611,22 @@ func (vm *VM) opClassOf(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 }
 
 func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	if in.B == 255 {
+		// __CLASS__: имя области класса; вне класса — пустая строка.
+		name := ""
+		if ci := vm.ctx.self; ci != nil {
+			name = ci.Name()
+		}
+		{
+			old := regs[in.A]
+			wv := MakeString(name)
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
+	}
 	ci := vm.classSel(in.B)
 	if ci != nil {
 		{
@@ -627,6 +643,8 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		// `self::class`/`static::class`/`parent::class` без области класса:
 		// Zend бросает "Cannot use \"X\" in the global scope", а не
 		// "Cannot access ..." (class_name_as_scalar_error_005/006/007).
+		// В контексте константного выражения (C=1) текст иной:
+		// "Cannot use \"X\" when no class scope is active".
 		kw := ""
 		switch in.B {
 		case 0:
@@ -636,7 +654,11 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		case 2:
 			kw = "parent"
 		}
-		err := NewThrowable("Error", `Cannot use "`+kw+`" in the global scope`)
+		msg := `Cannot use "` + kw + `" in the global scope`
+		if in.C == 1 {
+			msg = `Cannot use "` + kw + `" when no class scope is active`
+		}
+		err := NewThrowable("Error", msg)
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}

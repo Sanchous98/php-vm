@@ -1477,6 +1477,9 @@ func (vm *VM) markRoots(m *lifeVisit, chunk *Chunk, pc int) {
 	}
 	m.slot(vm.errHandler)
 	m.slot(vm.exceptionHandler)
+	for i := range vm.exceptionHandlers {
+		m.slot(vm.exceptionHandlers[i])
+	}
 	m.slotBare(vm.pendingThis)
 	for _, s := range vm.autoloaders {
 		m.slot(s)

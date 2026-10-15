@@ -49,6 +49,14 @@ type reflectionData struct {
 	// closureSlot — слот замыкания (текущая область может отличаться от fn.Scope
 	// после bindTo).
 	closureSlot Slot
+	// fakeClosure — замыкание создано из callable/FCC (ZEND_ACC_FAKE_CLOSURE):
+	// ReflectionFunction печатает "Closure [ <user> function NAME ]" с именем и
+	// сигнатурой исходной функции/метода.
+	fakeClosure bool
+	// magicClosure — трамплин-замыкание через __call/__callStatic
+	// (`$obj->missing(...)`): Zend создаёт внутреннюю closure с сигнатурой
+	// `mixed ...$arguments` (trampoline_closure_named_arguments).
+	magicClosure bool
 	// Для типов.
 	typeName       string
 	nullable       bool
@@ -1241,15 +1249,36 @@ func registerReflectionFunctionMembers(ci ClassInfo) {
 		switch a.typ {
 		case ClosureType:
 			cl := a.asClosure()
-			if cl == nil || cl.Fn == nil {
+			if cl == nil {
 				return NewThrowable("ReflectionException", "Closure is not valid")
 			}
 			d.kind = rkFunction
-			d.fn = cl.Fn
-			d.name = "{closure}"
 			d.isFunc = true
 			d.closure = true
 			d.closureSlot = a
+			switch {
+			case cl.Fn != nil:
+				d.fn = cl.Fn
+				if cl.Fake && cl.MagicName == "" {
+					// FCC / Closure::fromCallable: имя и сигнатура исходной
+					// функции (Zend: zend_create_closure копирует имя).
+					d.fakeClosure = true
+					d.name = closureDisplayName(cl.Fn)
+				} else {
+					d.name = "{closure}"
+				}
+			case cl.MagicName != "":
+				// Трамплин через __call/__callStatic.
+				d.magicClosure = true
+				d.name = cl.MagicName
+				d.fn = &Function{
+					Name: cl.MagicName, NumArgs: 1, NumRequired: 0,
+					ParamNames: []string{"arguments"}, ParamTypes: []string{"mixed"},
+					Variadic: true,
+				}
+			default:
+				return NewThrowable("ReflectionException", "Closure is not valid")
+			}
 			return nil
 		default:
 			name := strings.TrimLeft(a.ToString(), "\\")
@@ -1786,7 +1815,10 @@ func registerReflectionParameterMembers(ci ClassInfo) {
 	})
 	reflMethodReg(ci, "isDefaultValueConstant", reflBool(func(d *reflectionData) bool { return false }))
 	reflMethodReg(ci, "getDefaultValueConstantName", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) { return MakeNull(), nil })
-	reflMethodReg(ci, "isVariadic", reflBool(func(d *reflectionData) bool { return false }))
+	reflMethodReg(ci, "isVariadic", reflBool(func(d *reflectionData) bool {
+		fn := paramOwnerFn(d)
+		return fn != nil && fn.Variadic && d.index == paramCount(fn)-1
+	}))
 	reflMethodReg(ci, "isPassedByReference", reflBool(func(d *reflectionData) bool {
 		fn := paramOwnerFn(d)
 		return fn != nil && d.index < len(fn.ByRefArgs) && fn.ByRefArgs[d.index]
@@ -2844,7 +2876,7 @@ func SetInternalFnSig(name, ext string, params []string, ret string) {
 }
 
 func reflFnString(vm *VM, d *reflectionData) string {
-	if sig, ok := internalFnSigs[d.name]; ok {
+	if sig, ok := internalFnSigs[d.name]; ok && !d.magicClosure && !d.closure {
 		var b strings.Builder
 		b.WriteString("Function [ <internal:")
 		b.WriteString(sig.Ext)
@@ -2872,7 +2904,107 @@ func reflFnString(vm *VM, d *reflectionData) string {
 		b.WriteString("}\n")
 		return b.String()
 	}
-	return "Function [ <user> function " + d.name + " ] {\n}\n"
+	// Пользовательская функция, замыкание или fake-замыкание (FCC/callable):
+	// Zend печатает имя, локацию, параметры и тип возврата.
+	var b strings.Builder
+	switch {
+	case d.magicClosure:
+		b.WriteString("Closure [ <internal> public method ")
+	case d.closure:
+		b.WriteString("Closure [ <user> ")
+		if d.fakeClosure && d.fn != nil && d.fn.Scope != nil {
+			vis := Public
+			if m, _, v := d.fn.Scope.methodInfo(d.fn.Name); m != nil {
+				vis = v
+			}
+			if d.fn.IsStatic {
+				b.WriteString("static ")
+			}
+			b.WriteString(visWord(vis))
+			b.WriteString(" method ")
+		} else {
+			b.WriteString("function ")
+		}
+	default:
+		b.WriteString("Function [ <user> function ")
+	}
+	b.WriteString(d.name)
+	b.WriteString(" ] {\n")
+	if d.fn != nil {
+		if !d.magicClosure && (d.fn.DefFile != "" || d.fn.DefLine > 0) {
+			b.WriteString("  @@ ")
+			if d.fn.DefFile != "" {
+				b.WriteString(d.fn.DefFile)
+				b.WriteString(" ")
+			}
+			if d.fn.DefLine > 0 {
+				b.WriteString(itoa(d.fn.DefLine))
+				b.WriteString(" - ")
+				b.WriteString(itoa(d.fn.DefLine))
+			}
+			b.WriteString("\n")
+		}
+		n := paramCount(d.fn)
+		if n > 0 {
+			b.WriteString("\n  - Parameters [")
+			b.WriteString(itoa(n))
+			b.WriteString("] {\n")
+			for i := 0; i < n; i++ {
+				b.WriteString(reflParamLine(d.fn, i))
+			}
+			b.WriteString("  }\n")
+		}
+		if ret := TypeString(d.fn.RetType); ret != "" {
+			b.WriteString("  - Return [ ")
+			b.WriteString(ret)
+			b.WriteString(" ]\n")
+		}
+	}
+	b.WriteString("}\n")
+	return b.String()
+}
+
+// reflParamLine — строка параметра в __toString функции/метода (Zend-формат).
+func reflParamLine(fn *Function, i int) string {
+	var b strings.Builder
+	b.WriteString("    Parameter #")
+	b.WriteString(itoa(i))
+	b.WriteString(" [ ")
+	if i >= fn.NumRequired {
+		b.WriteString("<optional> ")
+	} else {
+		b.WriteString("<required> ")
+	}
+	if i < len(fn.ParamTypes) {
+		if t := TypeString(fn.ParamTypes[i]); t != "" {
+			b.WriteString(t)
+			b.WriteString(" ")
+		}
+	}
+	if i < len(fn.ByRefArgs) && fn.ByRefArgs[i] {
+		b.WriteString("&")
+	}
+	if fn.Variadic && i == paramCount(fn)-1 {
+		b.WriteString("...")
+	}
+	b.WriteString("$")
+	if i < len(fn.ParamNames) {
+		b.WriteString(fn.ParamNames[i])
+	}
+	b.WriteString(" ]\n")
+	return b.String()
+}
+
+// closureDisplayName — имя для ReflectionFunction fake-замыкания: у настоящих
+// замыканий оно «{closure#N}» и Zend показывает «{closure}».
+func closureDisplayName(fn *Function) string {
+	if fn == nil {
+		return "{closure}"
+	}
+	if strings.HasPrefix(fn.Name, "{closure#") {
+		return "{closure}"
+	}
+	return fn.Name
 }
 
 // itoa — простая конвертация int в строку без импорта strconv (быстро).

@@ -607,6 +607,9 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	}()
 	m := &sharedRunVM
 	m.Init(c.Main, c.Funcs, c.Classes)
+	// INI-значения нужны и виртуальной машине (zend.exception_ignore_args и
+	// пр.): ini_set/--INI-- должны быть видны при печати диагностик.
+	m.SetIniLookup(IniValue)
 	// disable_classes: применяем к свежему Init (INI уже разобран выше).
 	if v, ok := iniValues["disable_classes"]; ok {
 		m.SetDisabledClasses(strings.Split(v, ","))

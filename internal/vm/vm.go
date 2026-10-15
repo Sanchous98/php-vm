@@ -141,7 +141,11 @@ type VM struct {
 	// exceptionHandler — пользовательский обработчик непойманных исключений
 	// (set_exception_handler). inExcHandler защищает от рекурсии.
 	exceptionHandler Slot
-	inExcHandler     bool
+	// exceptionHandlers — стек обработчиков для restore_exception_handler
+	// (Zend: EG(user_exception_handlers)): каждый set_exception_handler
+	// кладёт сюда предыдущее значение.
+	exceptionHandlers []Slot
+	inExcHandler      bool
 	// noActiveFile — выполняется shutdown-обработчик вне какого-либо
 	// компилируемого файла: ошибки локализуются как "[no active file]:0".
 	noActiveFile bool
@@ -700,6 +704,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.errHandler = MakeNull()
 	vm.inErrHandler = false
 	vm.exceptionHandler = MakeNull()
+	vm.exceptionHandlers = vm.exceptionHandlers[:0]
 	vm.inExcHandler = false
 	vm.lastErrSet = false
 	vm.headersSent = false
@@ -798,13 +803,14 @@ func (vm *VM) Const(name string) (Slot, bool) {
 	return v, ok
 }
 
-// HasFunction сообщает, есть ли функция с таким именем.
+// HasFunction сообщает, есть ли функция с таким именем (регистронезависимо,
+// как в PHP).
 func (vm *VM) HasFunction(name string) bool {
 	for _, f := range vm.functions {
 		if f.Disabled {
 			continue
 		}
-		if f.Name == name {
+		if strings.EqualFold(f.Name, name) {
 			return true
 		}
 	}
@@ -2279,11 +2285,23 @@ func (vm *VM) traceFrameArgsSensitive(fr callFrameInfo) ([]Slot, *Array) {
 	return out, named
 }
 
+// exceptionIgnoreArgs сообщает, включён ли zend.exception_ignore_args:
+// при включении аргументы кадров в стек-трейсах исключений не печатаются
+// (Zend: Throwable::getTraceAsString и печать непойманных).
+func (vm *VM) exceptionIgnoreArgs() bool {
+	if vm.iniLookup == nil {
+		return false
+	}
+	v, ok := vm.iniLookup("zend.exception_ignore_args")
+	return ok && iniBool(v)
+}
+
 // traceString рендерит stack trace исключения в формате Zend (начиная с #0,
 // заканчивая #N {main}). defFile/defLine — локация по умолчанию для кадров без
 // неё. Аргументы кадров печатаются: корпус php-src прогоняется run-tests.php с
 // zend.exception_ignore_args=0.
 func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) string {
+	ignoreArgs := vm.exceptionIgnoreArgs()
 	var b strings.Builder
 	if len(frames) == 0 {
 		return "#0 {main}"
@@ -2294,6 +2312,9 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 		cf := fr.callerFile
 		if cf == "[internal function]" || cf == "" {
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
+			if ignoreArgs {
+				sargs, snamed = nil, nil
+			}
 			fmt.Fprintf(&b, "#%d [internal function]: %s(%s)\n", len(frames)-1-i, name, vm.traceArgsNamed(sargs, snamed))
 			continue
 		}
@@ -2308,6 +2329,9 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 			cl = defLine
 		}
 		sargs, snamed := vm.traceFrameArgsSensitive(fr)
+		if ignoreArgs {
+			sargs, snamed = nil, nil
+		}
 		fmt.Fprintf(&b, "#%d %s(%d): %s(%s)\n", len(frames)-1-i, cf, cl, name, vm.traceArgsNamed(sargs, snamed))
 	}
 	fmt.Fprintf(&b, "#%d {main}", len(frames))
@@ -2670,8 +2694,24 @@ func (vm *VM) traceArg(s Slot) string {
 		return traceFloat(s.ToFloat())
 	case StringType:
 		raw := s.StringVal()
-		if len(raw) > 15 {
-			raw = raw[:15] + "..."
+		maxLen := 15
+		if vm.iniLookup != nil {
+			if v, ok := vm.iniLookup("zend.exception_string_param_max_len"); ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+					maxLen = n
+				}
+			}
+		}
+		if maxLen == 0 {
+			// zend.exception_string_param_max_len=0: строки скрываются
+			// полностью (Zend печатает '...').
+			if raw != "" {
+				return "'...'"
+			}
+			return "''"
+		}
+		if len(raw) > maxLen {
+			raw = raw[:maxLen] + "..."
 		}
 		return "'" + escapeTraceString(raw) + "'"
 	case ArrayType:
@@ -6679,8 +6719,13 @@ func (vm *VM) resolveTypeClass(name string) ClassInfo {
 		return nil
 	}
 	// Тип мог быть записан с ведущим `\` (особенно в анонимных классах,
-	// где имя не нормализуется на этапе компиляции).
-	return vm.findClass(strings.TrimLeft(name, "\\"))
+	// где имя не нормализуется на этапе компиляции), а имена классов в PHP
+	// регистронезависимы (`\stdclass` -> stdClass).
+	trimmed := strings.TrimLeft(name, "\\")
+	if ci := vm.findClass(trimmed); ci != nil {
+		return ci
+	}
+	return vm.FindClass(trimmed)
 }
 
 // topLevelSplit возвращает индекс первого sep на верхнем уровне вложенности.

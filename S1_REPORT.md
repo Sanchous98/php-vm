@@ -63,9 +63,12 @@ Get/GetInt, Len, Values, All, pos/nextLive/prevLive, iterremap
 
 - `go test ./internal/vm/` — **ok на финальной ревизии** (0.21 c, `VM_UNITS_EXIT=0`,
   `logs/p2_vm_units.log`), т.е. включая защитные guard'ы и правку Unshare.
-- `go test ./...` — прогон на промежуточной ревизии: только **TestRegress21**
-  (известный пре-существующий). Финальный прогон запущен фоном
-  (`logs/p2_units2.log`) и в отчёт может не попасть.
+- `go test ./...` на **финальной ревизии**: единственные отказы —
+  **TestRegress21** (известный пре-существующий) и
+  `TestRegress20VsPHP/stream_socket_client_dns` — сетевой тест (dial
+  `tcp://host.invalid:80`, DNS-таймаут 6 с в песочнице; в прогоне на промежуточной
+  ревизии он был зелёным, к правкам S1 отношения не имеет и массивы не трогает).
+  `internal/vm` в том же прогоне — ok. Лог: `logs/p2_units2.log`.
 - Адресная PHPT-батарея (`ext/standard/tests/array` + Zend foreach/serialize,
   841 тест) на **финальной ревизии**: **839/841 (99.8%)**; 2 отказа —
   `array_walk_closure.phpt` и `bug25708.phpt`. **Оба отказа — пре-существующие**:

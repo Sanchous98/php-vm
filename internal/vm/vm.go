@@ -7468,7 +7468,17 @@ func (vm *VM) evalThunk(th *Thunk) (Slot, error) {
 	th.materialize()
 	th.busy = true
 	vm.thunkEvalDepth++
+	// Константа перечисления вычисляется без отдельного кадра в трейсе
+	// (Zend вычисляет их на объявлении: enum/update-class-constant-failure),
+	// а константные выражения свойств/ленивых констант кадр показывают
+	// (type_declarations/typed_properties_022, enum/offsetGet-in-const-expr).
+	hiddenFrame := th.self != nil && th.self.IsEnum()
+	savedSuppress := vm.suppressNextFrame
+	if hiddenFrame {
+		vm.suppressNextFrame = true
+	}
 	res, err := vm.invokeMethod(th.fn, Slot{}, th.self, nil)
+	vm.suppressNextFrame = savedSuppress
 	vm.thunkEvalDepth--
 	th.busy = false
 	if err != nil {

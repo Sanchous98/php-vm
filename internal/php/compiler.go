@@ -40,6 +40,11 @@ var compilerDeprecations []string
 // private method). PHP печатает их до начала выполнения.
 var compilerWarnings []string
 
+// anonClassSeq — глобальный счётчик анонимных классов текущего запроса
+// (Zend: имя `class@anonymous\x00<file>:<line>$<n>`; не сбрасывается между
+// компиляциями require/eval).
+var anonClassSeq int
+
 // fatalError — фатальная ошибка уровня declare-времени (аналог zend fatal).
 // Вместо аварийного возврата при компиляции она превращается в программу-
 // «одну инструкцию OpFatal», чтобы сообщение попало в вывод и совпало с PHP.
@@ -3871,6 +3876,10 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 // CompileFile — как Compile, но позволяет указать путь к исходному файлу:
 // он используется магическими константами __FILE__ и __DIR__.
 func CompileFile(src, file string) (*Compiled, error) {
+	// Новый «запрос»: счётчик анонимных классов Zend начинает с нуля (внутри
+	// запроса require/eval продолжают нумерацию — compileFileModeLink не
+	// сбрасывает его).
+	anonClassSeq = 0
 	return compileFileMode(src, file, false)
 }
 
@@ -3999,7 +4008,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 
 	// Анонимные классы: присваиваем имена и регистрируем как обычные
 	// объявления классов.
-	anonInfos, anonMap, nestedClassDecls, compileAliases := collectAnonClasses(prog)
+	anonInfos, anonMap, nestedClassDecls, compileAliases := collectAnonClasses(prog, file)
 	// Псевдонимы class_alias(), созданные к моменту рантайм-компиляции
 	// (eval/include): нужны проверкам совместимости сигнатур, чтобы типы вида
 	// `AliasA $x` резолвились (bug54624).
@@ -4527,6 +4536,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				// PHP 8.3: анонимные классы запрещены к (де)сериализации.
 				ci.SetNotSerializable()
 			}
+			if cd.AnonSite != "" {
+				vm.SetAnonSite(ci, cd.AnonSite)
+			}
 			if cd.ReadonlyDup {
 				return nil, base.newFatal("Multiple readonly modifiers are not allowed")
 			}
@@ -4928,6 +4940,20 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		}
 	}
 
+	// Классы, объявляемые в рантайме (в теле функции/под условием), Zend
+	// резолвит трейты в момент объявления: отсутствующий трейт — фатал только
+	// если объявление выполнится (bug69174). Возвращает true, если ошибку
+	// нужно отложить.
+	deferMissingTrait := func(cd *ClassDecl, tn string) bool {
+		if !nestedSet[cd] {
+			return false
+		}
+		if declByName0(classDecls, tn) == nil && cd.RuntimeFatal == "" {
+			cd.RuntimeFatal = fmt.Sprintf("Trait %q not found", tn)
+		}
+		return true
+	}
+
 	// 2b. Примешиваем трейты (после компиляции всех тел) с учётом адаптаций.
 classLoop:
 	for i, cd := range classDecls {
@@ -4961,6 +4987,9 @@ classLoop:
 			if ta.Trait != "" {
 				td := declByName0(classDecls, ta.Trait)
 				if td == nil {
+					if deferMissingTrait(cd, ta.Trait) {
+						continue classLoop
+					}
 					return nil, base.newFatal(fmt.Sprintf("Could not find trait %s", ta.Trait))
 				}
 				if !td.IsTrait {
@@ -5013,6 +5042,9 @@ classLoop:
 			}
 			td := declByName0(classDecls, ta.Trait)
 			if td == nil {
+				if deferMissingTrait(cd, ta.Trait) {
+					continue classLoop
+				}
 				return nil, base.newFatal(fmt.Sprintf("Could not find trait %s", ta.Trait))
 			}
 			if !td.IsTrait {
@@ -5181,6 +5213,9 @@ classLoop:
 				}
 			}
 			if !ok {
+				if td == nil && deferMissingTrait(cd, tn) {
+					continue classLoop
+				}
 				return nil, base.newFatal(fmt.Sprintf("Trait %q not found", tn))
 			}
 			// Конфликты свойств и констант между классом/трейтом и трейтом.
@@ -5315,7 +5350,7 @@ classLoop:
 				srcName := ta.Trait
 				if srcName == "" {
 					for _, tn := range cd.Uses {
-						if td := declByName0(classDecls, tn); td != nil && declHasMethod(td, ta.Method) {
+						if td := declByName0(classDecls, tn); td != nil && (declHasMethod(td, ta.Method) || declHasSignature(td, ta.Method)) {
 							srcName = tn
 							break
 						}
@@ -5351,8 +5386,25 @@ classLoop:
 						}
 					}
 				}
+				// Источник — абстрактная сигнатура трейта: псевдоним тоже
+				// сигнатура (требование к классу), а не реализация (bug69084:
+				// «Class Bar contains 1 abstract method ... (Bar::doOtherStuff)»).
+				srcDecl := declByName0(classDecls, srcName)
+				if srcDecl == nil || !declHasSignature(srcDecl, ta.Method) || declHasMethod(srcDecl, ta.Method) {
+					// Псевдоним без явного трейта: ищем сигнатуру в use-трейтах.
+					for _, tn := range cd.Uses {
+						if td := declByName0(classDecls, tn); td != nil && declHasSignature(td, ta.Method) && !declHasMethod(td, ta.Method) {
+							srcDecl = td
+							break
+						}
+					}
+				}
+				srcIsAbstractSig := srcDecl != nil && declHasSignature(srcDecl, ta.Method) && !declHasMethod(srcDecl, ta.Method)
+				if srcIsAbstractSig && !classDeclaresMethod(cd, ta.AliasName) {
+					ci.AddSignature(ta.AliasName, visOf(ta.Vis))
+				}
 				// Псевдоним не перекрывает метод, объявленный в самом классе.
-				if fn != nil && !classDeclaresMethod(cd, ta.AliasName) {
+				if fn != nil && !srcIsAbstractSig && !classDeclaresMethod(cd, ta.AliasName) {
 					// Коллизия псевдонима с методом другого трейта.
 					if srcName != "" {
 						if other := traitProvidingMethod(classDecls, cd, ta.AliasName, srcName); other != "" {
@@ -5480,7 +5532,16 @@ compatLoop:
 				sgm := *sg.mem
 				sgm.Vis = childMember.Vis
 				resolveSelfTypes(&sgm, cd.Name, cd.Parent)
-				if err := base.checkOverrideCompatible(childDecl, childMember, sg.decl, &sgm); err != nil {
+				// self трейтового метода резолвится в контексте класса-композиции
+				// (bug80055: AbstractTrait::selfReturner(): self выполняется
+				// ConcreteTrait::selfReturner(): self).
+				cm := childMember
+				if childDecl != cd && childDecl.IsTrait {
+					cp := *childMember
+					resolveSelfTypes(&cp, cd.Name, cd.Parent)
+					cm = &cp
+				}
+				if err := base.checkOverrideCompatible(childDecl, cm, sg.decl, &sgm); err != nil {
 					if deferClassFatal(cd, err) {
 						continue compatLoop
 					}
@@ -7748,6 +7809,20 @@ func classDeclaresMethod(cd *ClassDecl, name string) bool {
 
 // declOrTraitHasMethod рекурсивно ищет метод в объявлении класса/трейта и во
 // всех примешиваемых им трейтах (nested traits). seen защищает от циклов.
+// declHasSignature сообщает, что в классе/трейте объявлена абстрактная
+// сигнатура метода (Kind "signature").
+func declHasSignature(cd *ClassDecl, name string) bool {
+	if cd == nil {
+		return false
+	}
+	for _, m := range cd.Members {
+		if m.Kind == "signature" && strings.EqualFold(m.MName, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func declOrTraitHasMethod(decls []*ClassDecl, cd *ClassDecl, name string, seen map[string]bool) bool {
 	if cd == nil {
 		return false
@@ -7757,7 +7832,7 @@ func declOrTraitHasMethod(decls []*ClassDecl, cd *ClassDecl, name string, seen m
 		return false
 	}
 	seen[key] = true
-	if declHasMethod(cd, name) {
+	if declHasMethod(cd, name) || declHasSignature(cd, name) {
 		return true
 	}
 	for _, tn := range cd.Uses {
@@ -9492,7 +9567,7 @@ type anonClassInfo struct {
 
 // collectAnonClasses обходит AST и присваивает каждому анонимному классу
 // внутреннее имя, чтобы зарегистрировать его в таблице классов как обычный.
-func collectAnonClasses(prog *Program) ([]anonClassInfo, map[Expr]string, []*ClassDecl, map[string]string) {
+func collectAnonClasses(prog *Program, file string) ([]anonClassInfo, map[Expr]string, []*ClassDecl, map[string]string) {
 	var infos []anonClassInfo
 	m := map[Expr]string{}
 	// aliases — class_alias('Target', 'Alias') с литеральными аргументами:
@@ -9514,8 +9589,18 @@ func collectAnonClasses(prog *Program) ([]anonClassInfo, map[Expr]string, []*Cla
 		if _, ok := m[x]; ok {
 			return
 		}
-		name := fmt.Sprintf("\x00anon#%d", len(infos))
+		// Zend: имя анонимного класса — глобальный счётчик компиляции
+		// (`class@anonymous\x00<file>:<line>$<n>`); счётчик не сбрасывается
+		// между компиляциями одного запроса (require/eval того же файла
+		// получают разные классы, bug72594/bug73816).
+		name := fmt.Sprintf("\x00anon#%d", anonClassSeq)
+		anonClassSeq++
+		dfile := x.Decl.DefFile
+		if dfile == "" {
+			dfile = file
+		}
 		x.Decl.Name = name
+		x.Decl.AnonSite = fmt.Sprintf("%s:%d", dfile, x.Decl.Line)
 		infos = append(infos, anonClassInfo{decl: x.Decl, name: name})
 		m[x] = name
 	}

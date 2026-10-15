@@ -375,6 +375,9 @@ type runtimeClass struct {
 	isTrait bool
 	// declTrait — дескриптор объявлен ключевым словом `trait`.
 	declTrait bool
+	// anonSite — сайт (file:line) объявления анонимного класса: get_class()
+	// печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+	anonSite string
 
 	// hidden — дескриптор построен компилятором для объявления, находящегося
 	// вне верхнего уровня (в теле функции/замыкания, под условием и т.п.).
@@ -1766,7 +1769,9 @@ func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 			if hasPd && pd.vis == Private {
 				key := mangledPropKey(c, name)
 				seen[key] = true
-				suffix := `:"` + c.name + `":private`
+				// Анонимные классы в var_dump печатаются как class@anonymous
+				// (или Parent@anonymous).
+				suffix := `:"` + classDisplayName(c) + `":private`
 				if v, ok := o.propValueRaw(key); ok {
 					out = append(out, DumpEntry{Key: name, Val: v, Suffix: suffix, Decl: c.name})
 					continue

@@ -651,6 +651,14 @@ func (c *runtimeClass) MethodFunction(name string) (*Function, bool) {
 }
 
 // AliasMethod регистрирует псевдоним метода (копия с новым именем).
+// anonSiteOf возвращает сайт (file:line) объявления анонимного класса.
+func (c *runtimeClass) anonSiteOf() string {
+	if c == nil {
+		return ""
+	}
+	return c.anonSite
+}
+
 func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) ClassInfo {
 	nf := *fn
 	nf.Name = alias

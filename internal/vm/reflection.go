@@ -592,7 +592,7 @@ func registerReflectionClassMembers(ci ClassInfo) {
 	})
 
 	reflMethodReg(ci, "getName", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
-		return MakeString(d.class.Name()), nil
+		return MakeString(GetClassNameOf(d.class)), nil
 	})
 	reflMethodReg(ci, "getShortName", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
 		n := d.class.Name()

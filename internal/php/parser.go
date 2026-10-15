@@ -174,6 +174,9 @@ type ClassDecl struct {
 	Strict bool
 	// DefFile — исходный файл объявления (для inlined include).
 	DefFile string
+	// AnonSite — сайт (file:line) объявления анонимного класса; get_class()
+	// печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+	AnonSite string
 	Members []*ClassMember
 	// TraitAdapt — адаптации use Trait { ... } (insteadof / as).
 	TraitAdapt []*TraitAdapt

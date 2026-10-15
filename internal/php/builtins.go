@@ -85,7 +85,7 @@ func builtins() []*vm.Function {
 				// вне класса — Error (без deprecation).
 				if ci := ctx.Self(); ci != nil {
 					ctx.VM().Deprecated("Calling get_class() without arguments is deprecated")
-					return vm.Str(ci.Name())
+					return vm.Str(vm.GetClassNameOf(ci))
 				}
 				ctx.Throw(vm.NewThrowable("Error", "get_class() without arguments must be called from within a class"))
 				if ctx.HasThrown() {
@@ -109,7 +109,7 @@ func builtins() []*vm.Function {
 			if o == nil {
 				return vm.Bool(false)
 			}
-			return vm.Str(o.ClassName())
+			return vm.Str(vm.GetClassNameOf(o.Class()))
 		}),
 		vm.Register("get_class_methods", getClassMethodsFn),
 		vm.Register("get_object_vars", getObjectVarsFn),

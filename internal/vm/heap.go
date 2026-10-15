@@ -732,6 +732,35 @@ func (vm *VM) objectTypeName(s Slot) string {
 	return "object"
 }
 
+// anonSiteHolder — дескриптор с сайтом объявления анонимного класса.
+type anonSiteHolder interface{ anonSiteOf() string }
+
+// SetAnonSite запоминает сайт (file:line) объявления анонимного класса:
+// get_class() печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+func SetAnonSite(ci ClassInfo, site string) {
+	if rc, ok := ci.(*runtimeClass); ok && rc != nil {
+		rc.anonSite = site
+	}
+}
+
+// GetClassNameOf — имя класса для get_class()/ReflectionClass::getName().
+// Для анонимных классов Zend печатает `Parent@anonymous\x00<file>:<line>$<n>`.
+func GetClassNameOf(ci ClassInfo) string {
+	if ci == nil {
+		return ""
+	}
+	name := ci.Name()
+	if strings.HasPrefix(name, "\x00anon#") {
+		num := strings.TrimPrefix(name, "\x00anon#")
+		site := ""
+		if h, ok := ci.(anonSiteHolder); ok {
+			site = h.anonSiteOf()
+		}
+		return classDisplayName(ci) + "\x00" + site + "$" + num
+	}
+	return name
+}
+
 // ClassDisplayName преобразует внутреннее имя анонимного класса в
 // `class@anonymous` для диагностик и var_dump.
 func ClassDisplayName(name string) string {

@@ -64,6 +64,12 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 		return execResult{next: true}
 	}
 	if src.typ == StringType {
+		if err := vm.stringOffsetBadKeyErr(deref(regs[in.C])); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
 			vm.Warn("String offset cast occurred")
 		}
@@ -202,6 +208,12 @@ func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		return execResult{next: true}
 	}
 	if src.typ == StringType {
+		if err := vm.stringOffsetBadKeyErr(deref(regs[in.C])); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
 			vm.Warn("String offset cast occurred")
 		}
@@ -380,6 +392,12 @@ func (vm *VM) listFetchRefWrite(regs []Slot, chunk *Chunk, in Instruction, r *Re
 	case StringType:
 		// Ссылку на байт строки создать нельзя (Zend: FETCH_DIM_W на строке).
 		// Диагностика ключа печатается до Error (Illegal string offset).
+		if err := vm.stringOffsetBadKeyErr(deref(regs[in.C])); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
 			vm.Warn("String offset cast occurred")
 		}
@@ -560,6 +578,12 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 	if src.typ == StringType {
 		// FETCH_DIM_W на строке: сначала диагностика ключа, затем Error
 		// (Cannot create references to/from string offsets).
+		if err := vm.stringOffsetBadKeyErr(deref(regs[in.C])); err != nil {
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
 			vm.Warn("String offset cast occurred")
 		}
@@ -674,6 +698,9 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 // это односимвольная строка фактически записанного байта; для отрицательного
 // offset вне диапазона — null). error — исключение.
 func (vm *VM) stringOffsetSet(arr Slot, keyReg Slot, valReg Slot) (Slot, Slot, error) {
+	if err := vm.stringOffsetBadKeyErr(deref(keyReg)); err != nil {
+		return Slot{}, Slot{}, err
+	}
 	if k := deref(keyReg); k.typ != IntType && k.typ != StringType {
 		vm.Warn("String offset cast occurred")
 	}

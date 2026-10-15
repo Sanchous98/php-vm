@@ -7761,6 +7761,18 @@ func arrayKeyRepr(k ArrayKey) string {
 
 // arrayOffsetTypeName — имя типа значения для сообщения «Trying to access array
 // offset on value of type ...» (bool печатается как true/false).
+// stringOffsetBadKeyErr — Error для недопустимого ключа строкового offset'а:
+// массив/объект/ресурс дают «Cannot access offset of type X on string» без
+// Warning «String offset cast occurred» (bug81159). nil — ключ допустим.
+func (vm *VM) stringOffsetBadKeyErr(k Slot) error {
+	switch k.typ {
+	case ObjectType, ArrayType, ResourceType, ClosureType:
+		return NewThrowable("TypeError",
+			"Cannot access offset of type "+vm.arrayOffsetTypeName(k)+" on string")
+	}
+	return nil
+}
+
 func (vm *VM) arrayOffsetTypeName(s Slot) string {
 	switch s.typ {
 	case BoolType:

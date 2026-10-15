@@ -1751,7 +1751,11 @@ func (vm *VM) setCurFile(name string) {
 }
 
 // info раскрывает компактную запись в callFrameInfo, вычисляя строку.
-func (vm *VM) info(e *callEntry) callFrameInfo {
+func (vm *VM) info(e *callEntry) callFrameInfo { return vm.infoAt(e, -1) }
+
+// infoAt — info с индексом кадра userland-функции: параметры читаются из его
+// живых регистров (Zend debug_backtrace показывает текущие значения CV).
+func (vm *VM) infoAt(e *callEntry, frame int) callFrameInfo {
 	line := int(e.fallback)
 	if e.callerChunk != 0 {
 		c := (*Chunk)(unsafe.Pointer(e.callerChunk))
@@ -1763,12 +1767,39 @@ func (vm *VM) info(e *callEntry) callFrameInfo {
 	if int(e.fileID) < len(vm.fileNames) {
 		file = vm.fileNames[e.fileID]
 	}
+	args := e.args
+	// Живой кадр: подменяем позиционные аргументы текущими значениями
+	// параметров (unset($arg) виден в debug_backtrace — bug70547). Кадры с
+	// #[SensitiveParameter] оставляем снимком (маскирование делается при
+	// вызове).
+	if frame >= 0 && frame <= vm.fp && frame < len(vm.frames) && e.callee != nil &&
+		e.callee.SensitiveParams == nil && !e.callee.SensitiveVariadic {
+		regs := vm.frames[frame].regs
+		n := e.callee.NumArgs
+		if n < 0 {
+			n = len(e.callee.ParamNames)
+		}
+		if n > len(args) {
+			n = len(args)
+		}
+		if n > len(regs) {
+			n = len(regs)
+		}
+		if n > 0 {
+			live := make([]Slot, len(args))
+			copy(live, args)
+			for i := 0; i < n; i++ {
+				live[i] = deref(regs[i])
+			}
+			args = live
+		}
+	}
 	return callFrameInfo{
 		callee:     e.callee,
 		callerFile: file,
 		callerLine: line,
 		objMethod:  e.callerPC&objMethodBit != 0,
-		args:       e.args,
+		args:       args,
 		named:      e.named,
 		this:       e.this,
 	}

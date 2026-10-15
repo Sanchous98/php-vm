@@ -295,12 +295,32 @@ func (vm *VM) resolveStack() []callFrameInfo {
 		return nil
 	}
 	out := make([]callFrameInfo, 0, n)
+	// Кадры userland-вызовов идут в том же порядке, что и записи стека
+	// вызовов: frames[vm.fp] — самый внутренний. Сопоставляем их, чтобы
+	// debug_backtrace читал ТЕКУЩИЕ значения параметров (bug70547).
+	// Индексы кадров: frames[vm.fp] принадлежит САМОЙ внутренней записи стека,
+	// поэтому идём от конца (см. порядок pushCall/pushFrame).
+	frameOf := make([]int32, len(vm.callStack))
+	for i := range frameOf {
+		frameOf[i] = -1
+	}
+	fi := vm.fp
+	for i := len(vm.callStack) - 1; i >= 0; i-- {
+		e := &vm.callStack[i]
+		if e.callee == nil {
+			continue
+		}
+		if _, ok := e.callee.Executable.(*CompiledFunction); ok && fi >= 0 {
+			frameOf[i] = int32(fi)
+			fi--
+		}
+	}
 	for i := range vm.callStack {
 		e := &vm.callStack[i]
 		if e.callerChunk != 0 && len((*Chunk)(unsafe.Pointer(e.callerChunk)).inlineRegions) > 0 {
 			out = vm.appendInlineFrames(out, e)
 		}
-		out = append(out, vm.info(e))
+		out = append(out, vm.infoAt(e, int(frameOf[i])))
 	}
 	return out
 }

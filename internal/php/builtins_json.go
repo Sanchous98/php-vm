@@ -113,7 +113,19 @@ func jsonEncodeFn(ctx *vm.Context) vm.Value {
 		depth = int(arg(ctx, 2).ToInt())
 	}
 	e := &jsonEncoder{vm: ctx.VM(), ctx: ctx, flags: flags, maxDepth: depth, pretty: flags&jsonPrettyPrint != 0}
-	if !e.encode(arg0(ctx)) {
+	// Грубая оценка выходного размера: без Grow Builder растёт аллокацией на
+	// каждое удвоение (на 100-ключевом массиве таких ~8).
+	root := arg0(ctx)
+	if root.Type() == vm.ArrayType {
+		if n := root.AsArray().Len(); n > 0 {
+			if n > 1<<18 {
+				e.buf.Grow(1 << 20)
+			} else {
+				e.buf.Grow(2 + 16*n)
+			}
+		}
+	}
+	if !e.encode(root) {
 		jsonLastError = e.err
 		if flags&jsonThrowOnError != 0 {
 			ctx.Throw(vm.NewThrowable("JsonException", jsonLastErrorMsg(e.err)))
@@ -260,7 +272,7 @@ func (e *jsonEncoder) encodeArray(a *vm.Array, depth int) bool {
 	if list {
 		e.buf.WriteByte('[')
 		first := true
-		for _, v := range a.Values() {
+		for _, v := range a.All() {
 			if !first {
 				e.buf.WriteByte(',')
 			}
@@ -497,15 +509,26 @@ type jsonTextParser struct {
 }
 
 // jsonClassifyError переводит ошибку jsontext в код json_last_error PHP.
+// jsontext оборачивает грамматические ошибки в *SyntacticError и дописывает к
+// тексту JSON-указатель (имена ключей!) и офсет, поэтому классифицируем только
+// по вложенной ошибке: иначе ключ с именем "surrogate" или "invalid UTF-8"
+// менял бы код ошибки (3/4/5/10).
 func jsonClassifyError(err error) int {
 	switch {
 	case err == nil, errors.Is(err, io.EOF):
 		return jsonErrorSyntax
-	case strings.Contains(err.Error(), "invalid UTF-8"):
+	}
+	var serr *jsontext.SyntacticError
+	if errors.As(err, &serr) && serr.Err != nil {
+		err = serr.Err
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "invalid UTF-8"):
 		return jsonErrorUTF8
-	case strings.Contains(err.Error(), "surrogate"):
+	case strings.Contains(msg, "surrogate"):
 		return jsonErrorUTF16
-	case strings.Contains(err.Error(), "control character"):
+	case strings.Contains(msg, "control character"):
 		return jsonErrorCtrlChar
 	}
 	return jsonErrorSyntax

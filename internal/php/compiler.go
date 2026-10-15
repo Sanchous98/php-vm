@@ -16670,7 +16670,7 @@ func (c *compiler) assignDynStatic(t *StaticPropExpr, op string, value Expr) (ui
 		return 0, err
 	}
 	d := c.alloc()
-	c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+	c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: d, B: cur, C: int32(r)})
 	return c.emitCall("__php_dyn_static_set", []uint8{cls, name, d}), nil
 }
 
@@ -17463,7 +17463,7 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			cur := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGetDyn, A: cur, C: int32(ne)})
 			d := c.alloc()
-			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: d, B: cur, C: int32(r)})
 			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSetDyn, A: d, C: int32(ne)})
 			return d, nil
 		}
@@ -17608,7 +17608,7 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			return 0, err
 		}
 		d := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+		c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: d, B: cur, C: int32(r)})
 		setProp(d)
 		return d, nil
 	case *StaticPropExpr:
@@ -17661,7 +17661,7 @@ func (c *compiler) assign(target Expr, op string, value Expr, byref bool) (uint8
 			return 0, err
 		}
 		d := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+		c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: d, B: cur, C: int32(r)})
 		setStatic(d)
 		return d, nil
 	case *ListExpr:
@@ -18776,7 +18776,7 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 				return 0, err
 			}
 			d := c.alloc()
-			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: d, B: cur, C: int32(r)})
 			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: d, C: int32(c.chunk.AddConst(vm.StrConst(gname)))})
 			return d, nil
 		}
@@ -18947,7 +18947,7 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 		return 0, err
 	}
 	d := c.alloc()
-	c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+	c.chunk.Emit(vm.Instruction{Op: specOp(compoundOp(bc)), A: d, B: cur, C: int32(r)})
 	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: kc, C: int32(d)})
 	if wb != nil {
 		wb(arr)

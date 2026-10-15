@@ -14354,6 +14354,24 @@ func (c *compiler) dynCallByNameRef(name string, args []Expr, nbi *namedByRefInf
 		}
 		return c.emitCall("__php_call_named", []uint8{nameReg, arr}), nil
 	}
+	// Распаковка аргументов `f(...$args)` для функции, неизвестной на этапе
+	// компиляции: собираем массив аргументов (buildArgArray разворачивает
+	// `...`) и диспетчеризуем по имени в рантайме (argOrderError уже покрыт
+	// веткой именованных аргументов выше).
+	if hasArgSpread(args) {
+		if msg := argOrderError(args); msg != "" {
+			return 0, &fatalError{msg: msg, line: c.exprLine(args[len(args)-1])}
+		}
+		nameReg, err := c.expr(&StrLit{V: name})
+		if err != nil {
+			return 0, err
+		}
+		arr, err := c.buildArgArray(args, true, nbi)
+		if err != nil {
+			return 0, err
+		}
+		return c.emitCall("__php_call_named", []uint8{nameReg, arr}), nil
+	}
 	// Целевая функция неизвестна на этапе компиляции (обычно объявлена во
 	// включаемом файле). Передаём переменные-аргументы Ref-ячейками: для
 	// by-ref параметров это обеспечивает writeback, для by-value вызываемая
@@ -16171,6 +16189,17 @@ func (c *compiler) anonNew(x *NewAnonClassExpr) (uint8, error) {
 	name, ok := c.anonNames[x]
 	if !ok {
 		return 0, fmt.Errorf("компилятор: анонимный класс не зарегистрирован")
+	}
+	// Родитель/интерфейсы анонимного класса, неизвестные на этапе компиляции,
+	// разрешаются в точке выполнения `new class` (Zend DECLARE_CLASS_DELAYED):
+	// дескриптор скрыт до OpDeclareClass (anon/011: `new class extends AnonBase`
+	// по class_alias, объявленному непосредственно перед выражением).
+	if x.Decl != nil {
+		if idx, ok := c.declIdx[x.Decl]; ok {
+			c.curLine = x.Decl.Line
+			c.chunk.SetLine(x.Decl.Line)
+			c.chunk.Emit(vm.Instruction{Op: vm.OpDeclareClass, C: int32(idx)})
+		}
 	}
 	// Фатальные ошибки линковки анонимного класса (напр. #[\Override] без
 	// предка) PHP поднимает в точке выполнения выражения `new class`.
@@ -19539,21 +19568,41 @@ func (c *compiler) mainStaticStmt(s *StaticVarStmt) error {
 			return nil
 		}
 		c.mainStaticSeen[n] = true
+		keyc := int32(c.chunk.AddConst(vm.StrConst(key)))
+		// Метка «объявление уже инициализировано» хранится в отдельной
+		// скрытой ячейке глобалов (ключ без ведущего `$`, поэтому он не
+		// попадает в $GLOBALS/GlobalsSnapshot). Проверять наличие самой
+		// переменной нельзя: к моменту `static $e = ...` одноимённая
+		// глобальная могла уже существовать (constexpr/new: `$e` из
+		// catch-блока), а Zend в этом случае всё равно инициализирует
+		// статическую переменную заново.
+		initKey := "\x00static\x00" + n
+		initc := int32(c.chunk.AddConst(vm.StrConst(initKey)))
 		iss := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss, C: initc})
 		jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss})
+		// Инициализатор может рекурсивно выполнить это же объявление и уже
+		// заполнить ячейку — тогда повторно не пишем.
 		if def != nil {
 			r, err := c.expr(def)
 			if err != nil {
 				return err
 			}
-			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: r, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+			iss2 := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss2, C: initc})
+			js := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss2})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: r, C: keyc})
+			c.setJump(js, c.chunk.Len())
 		} else {
 			nn := c.alloc()
 			c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: nn})
-			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: nn, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: nn, C: keyc})
 		}
-		c.setJump(jf, c.chunk.Len())
+		one := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpTrue, A: one})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: one, C: initc})
+		end := c.chunk.Len()
+		c.setJump(jf, end)
 	}
 	return nil
 }

@@ -1,0 +1,27 @@
+--- FAIL: TestRegress21 (0.18s)
+    agent_regress_round21_test.go:108: const_spread_nonarray: run error: Only arrays can be unpacked in constant expression
+=== compiler bytecode (main) ===
+0000  LOADK              r0 = const#0 (0)
+0001  LOADK              r1 = const#1 (0)
+0002  JUMP_IF_LESS_INT_IMM r0
+0003  ADD_INT            r0, r0, c1
+0004  INC_DEC            r1, r1, c0
+0005  JUMP               -> 0002
+0006  ECHO               r0
+0007  HALT               r0
+compiler            687.2 ms  out=49999995000000
+=== hand-optimized bytecode ===
+0000  LOADK              r0 = const#0 (0)
+0001  LOADK              r1 = const#1 (0)
+0002  LESS_INT_K         r2
+0003  JUMP_IF_FALSE      r2 -> 0007
+0004  ADD_INT            r0, r0, c1
+0005  ADD_INT_K          r1
+0006  JUMP               -> 0002
+0007  ECHO               r0
+0008  HALT               r0
+hand-opt           1165.2 ms  out=49999995000000
+FAIL
+FAIL	phpvm/internal/php	155.532s
+ok  	phpvm/internal/vm	1.198s
+FAIL

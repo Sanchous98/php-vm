@@ -1,0 +1,182 @@
+=== RUN   TestPHPTree
+unexpected fault address 0xffffffffffffffff
+fatal error: fault
+[signal SIGSEGV: segmentation violation code=0x1 addr=0xffffffffffffffff pc=0x49468d]
+
+goroutine 8 gp=0x207255ff45a0 m=7 mp=0x207256000808 [running]:
+runtime.throw({0xb34470?, 0x48ab36?})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/panic.go:1243 +0x48 fp=0x207256748210 sp=0x2072567481e0 pc=0x48d028
+runtime.sigpanic()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/signal_unix.go:945 +0x285 fp=0x207256748270 sp=0x207256748210 pc=0x48ed45
+runtime.memmove()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/memmove_amd64.s:189 +0x14d fp=0x207256748278 sp=0x207256748270 pc=0x49468d
+phpvm/internal/vm.(*ssaGraph).computeLiveness(0x207256135208)
+	/home/dev/wavebench/rtsub_work/internal/vm/ssa.go:1197 +0xf26 fp=0x207256748738 sp=0x207256748278 pc=0x6ff466
+phpvm/internal/vm.(*regAlloc).run(0x207256748860)
+	/home/dev/wavebench/rtsub_work/internal/vm/regalloc.go:132 +0x78 fp=0x207256748760 sp=0x207256748738 pc=0x6d4bd8
+phpvm/internal/vm.(*Chunk).AllocateRegisters(0x2072567d1088, 0x10, 0x2072564df5e0)
+	/home/dev/wavebench/rtsub_work/internal/vm/regalloc.go:71 +0x1ec fp=0x207256748918 sp=0x207256748760 pc=0x6d442c
+phpvm/internal/php.(*compiler).compileBody(0x207256467508, {0x207255f946f1, 0xa}, {0x2072563c5030, 0x1, 0x0?}, {0x0, 0x0, 0x2072562323c0?}, {0x207256350260, ...}, ...)
+	/home/dev/wavebench/rtsub_work/internal/php/compiler.go:10091 +0x3aa6 fp=0x207256749098 sp=0x207256748918 pc=0x9761a6
+phpvm/internal/php.(*compiler).compileFuncBody(0x207256467508, {0x207255f946f1, 0xa}, {0x2072563c5030, 0x1, 0x1}, {0x207256350260, 0x1, 0x1}, 0x0, ...)
+	/home/dev/wavebench/rtsub_work/internal/php/compiler.go:9744 +0x247 fp=0x207256749130 sp=0x207256749098 pc=0x972687
+phpvm/internal/php.compileProgramLink({0x207255f946c0?, 0x1?}, {0x2072562323c0, 0x59}, 0x7a?, 0x0)
+	/home/dev/wavebench/rtsub_work/internal/php/compiler.go:6760 +0xdc07 fp=0x20725674d210 sp=0x207256749130 pc=0x953127
+phpvm/internal/php.compileFileModeLink({0x207255f946c0?, 0x40a498?}, {0x2072562323c0, 0x59}, 0x0?, 0x0)
+	/home/dev/wavebench/rtsub_work/internal/php/compiler.go:4356 +0x54 fp=0x20725674d268 sp=0x20725674d210 pc=0x945074
+phpvm/internal/php.compileFileMode(...)
+	/home/dev/wavebench/rtsub_work/internal/php/compiler.go:4344
+phpvm/internal/php.CompileFile({0x207255f946c0?, 0x207255ffa8bc?}, {0x2072562323c0?, 0xbb2880?})
+	/home/dev/wavebench/rtsub_work/internal/php/compiler.go:4338 +0x2d fp=0x20725674d2a8 sp=0x20725674d268 pc=0x944fcd
+phpvm/internal/php.runPhptAt({{0x207255ffa849, 0x69}, {0x207255ffa8bc, 0xba}, {0x0, 0x0}, {0x207255ffa982, 0xf}, {0x0, 0x0}, ...}, ...)
+	/home/dev/wavebench/rtsub_work/internal/php/superglobals_agent_test.go:610 +0x4e5 fp=0x20725674d708 sp=0x20725674d2a8 pc=0xaa5f45
+phpvm/internal/php.TestPHPTree(0x207256134488)
+	/home/dev/wavebench/rtsub_work/internal/php/phpt_dir_test.go:206 +0x114f fp=0x20725674df70 sp=0x20725674d708 pc=0xa7f08f
+testing.tRunner(0x207256134488, 0x11b18e8)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2193 +0xea fp=0x20725674dfc0 sp=0x20725674df70 pc=0x52fe4a
+testing.(*T).Run.gowrap1()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2258 +0x1b fp=0x20725674dfe0 sp=0x20725674dfc0 pc=0x535d5b
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x20725674dfe8 sp=0x20725674dfe0 pc=0x493da1
+created by testing.(*T).Run in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2258 +0x4d4
+
+goroutine 1 gp=0x207255f721e0 m=nil [chan receive]:
+runtime.gopark(0x11ae008?, 0x7494583104c0?, 0xe5?, 0xe2?, 0x115ea78?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x20725618f908 sp=0x20725618f8e8 pc=0x48d14a
+runtime.chanrecv(0x207255fdaa00, 0x207255f9b9ef, 0x1)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/chan.go:667 +0x4ae fp=0x20725618f980 sp=0x20725618f908 pc=0x41a0ce
+runtime.chanrecv1(0x18?, 0x1181420?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/chan.go:509 +0x12 fp=0x20725618f9a8 sp=0x20725618f980 pc=0x419c12
+testing.(*T).Run(0x207256134248, {0xb3bd17?, 0x207255f9baa0?}, 0x11b18e8)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2266 +0x4f2 fp=0x20725618fa80 sp=0x20725618f9a8 pc=0x5303b2
+testing.runTests.func1(0x207256134248)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2742 +0x37 fp=0x20725618fac0 sp=0x20725618fa80 pc=0x535fd7
+testing.tRunner(0x207256134248, 0x207255f9bbc8)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2193 +0xea fp=0x20725618fb10 sp=0x20725618fac0 pc=0x52fe4a
+testing.runTests({0xb332f5, 0x5}, {0xb448a1, 0x12}, 0x207255f80138, {0x11e6ad0, 0x201, 0x201}, {0xc2ac6419453d8fd1, 0x8bb2e3dbe4, ...})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2740 +0x510 fp=0x20725618fbf8 sp=0x20725618fb10 pc=0x532410
+testing.(*M).Run(0x207255ff6780)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/testing/testing.go:2600 +0x6af fp=0x20725618fe38 sp=0x20725618fbf8 pc=0x530fcf
+main.main()
+	_testmain.go:1232 +0x9b fp=0x20725618feb8 sp=0x20725618fe38 pc=0xb1f2db
+runtime.main()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:302 +0x427 fp=0x20725618ffe0 sp=0x20725618feb8 pc=0x453947
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x20725618ffe8 sp=0x20725618ffe0 pc=0x493da1
+
+goroutine 2 gp=0x207255f72d20 m=nil [force gc (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fb0fa8 sp=0x207255fb0f88 pc=0x48d14a
+runtime.goparkunlock(...)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:480
+runtime.forcegchelper()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:387 +0xb3 fp=0x207255fb0fe0 sp=0x207255fb0fa8 pc=0x453c13
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fb0fe8 sp=0x207255fb0fe0 pc=0x493da1
+created by runtime.init.7 in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:375 +0x1a
+
+goroutine 3 gp=0x207255f732c0 m=nil [GC sweep wait]:
+runtime.gopark(0x1?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fb1788 sp=0x207255fb1768 pc=0x48d14a
+runtime.goparkunlock(...)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:480
+runtime.bgsweep(0x207255fda000)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgcsweep.go:324 +0x151 fp=0x207255fb17c8 sp=0x207255fb1788 pc=0x43c6d1
+runtime.gcenable.gowrap1()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:214 +0x17 fp=0x207255fb17e0 sp=0x207255fb17c8 pc=0x482c37
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fb17e8 sp=0x207255fb17e0 pc=0x493da1
+created by runtime.gcenable in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:214 +0x66
+
+goroutine 4 gp=0x207255f734a0 m=nil [runnable]:
+runtime.gopark(0x16bf5e5?, 0x3b9aca00?, 0x0?, 0x0?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fb1f78 sp=0x207255fb1f58 pc=0x48d14a
+runtime.goparkunlock(...)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:480
+runtime.(*scavengerState).park(0x11eb540)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgcscavenge.go:425 +0x49 fp=0x207255fb1fa8 sp=0x207255fb1f78 pc=0x43a1c9
+runtime.bgscavenge(0x207255fda000)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgcscavenge.go:658 +0x59 fp=0x207255fb1fc8 sp=0x207255fb1fa8 pc=0x43a739
+runtime.gcenable.gowrap2()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:215 +0x17 fp=0x207255fb1fe0 sp=0x207255fb1fc8 pc=0x482bf7
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fb1fe8 sp=0x207255fb1fe0 pc=0x493da1
+created by runtime.gcenable in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:215 +0xa5
+
+goroutine 5 gp=0x207255f73a40 m=nil [GOMAXPROCS updater (idle)]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fb0788 sp=0x207255fb0768 pc=0x48d14a
+runtime.goparkunlock(...)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:480
+runtime.updateMaxProcsGoroutine()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:7146 +0xe7 fp=0x207255fb07e0 sp=0x207255fb0788 pc=0x461127
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fb07e8 sp=0x207255fb07e0 pc=0x493da1
+created by runtime.defaultGOMAXPROCSUpdateEnable in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:7134 +0x37
+
+goroutine 6 gp=0x207255ff41e0 m=nil [finalizer wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fb2620 sp=0x207255fb2600 pc=0x48d14a
+runtime.runFinalizers()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mfinal.go:210 +0x107 fp=0x207255fb27e0 sp=0x207255fb2620 pc=0x42d727
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fb27e8 sp=0x207255fb27e0 pc=0x493da1
+created by runtime.createfing in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mfinal.go:172 +0x3d
+
+goroutine 7 gp=0x207255ff43c0 m=nil [cleanup wait]:
+runtime.gopark(0x0?, 0x0?, 0x0?, 0x0?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fb2f68 sp=0x207255fb2f48 pc=0x48d14a
+runtime.goparkunlock(...)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:480
+runtime.(*cleanupQueue).dequeue(0x11eb820)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mcleanup.go:522 +0xd3 fp=0x207255fb2fa0 sp=0x207255fb2f68 pc=0x42a453
+runtime.runCleanups()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mcleanup.go:718 +0x45 fp=0x207255fb2fe0 sp=0x207255fb2fa0 pc=0x42aac5
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fb2fe8 sp=0x207255fb2fe0 pc=0x493da1
+created by runtime.(*cleanupQueue).createGs in goroutine 1
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mcleanup.go:672 +0xa5
+
+goroutine 18 gp=0x2072560043c0 m=nil [GC worker (idle)]:
+runtime.gopark(0x12227e0?, 0x2?, 0x1b?, 0xd5?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fac740 sp=0x207255fac720 pc=0x48d14a
+runtime.gcBgMarkWorker(0x20725603a700)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1807 +0xeb fp=0x207255fac7c8 sp=0x207255fac740 pc=0x430b6b
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1711 +0x17 fp=0x207255fac7e0 sp=0x207255fac7c8 pc=0x483137
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fac7e8 sp=0x207255fac7e0 pc=0x493da1
+created by runtime.gcBgMarkStartWorkers in goroutine 8
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1711 +0xfc
+
+goroutine 19 gp=0x2072560045a0 m=nil [GC worker (idle)]:
+runtime.gopark(0x297b0a2945fa0?, 0x2?, 0xab?, 0x5?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255facf40 sp=0x207255facf20 pc=0x48d14a
+runtime.gcBgMarkWorker(0x20725603a700)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1807 +0xeb fp=0x207255facfc8 sp=0x207255facf40 pc=0x430b6b
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1711 +0x17 fp=0x207255facfe0 sp=0x207255facfc8 pc=0x483137
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255facfe8 sp=0x207255facfe0 pc=0x493da1
+created by runtime.gcBgMarkStartWorkers in goroutine 8
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1711 +0xfc
+
+goroutine 20 gp=0x207256004780 m=nil [GC worker (idle)]:
+runtime.gopark(0x297b099d9036e?, 0x2072563c6400?, 0x1c?, 0xa?, 0x0?)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/proc.go:474 +0xca fp=0x207255fad740 sp=0x207255fad720 pc=0x48d14a
+runtime.gcBgMarkWorker(0x20725603a700)
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1807 +0xeb fp=0x207255fad7c8 sp=0x207255fad740 pc=0x430b6b
+runtime.gcBgMarkStartWorkers.gowrap1()
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1711 +0x17 fp=0x207255fad7e0 sp=0x207255fad7c8 pc=0x483137
+runtime.goexit({})
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/asm_amd64.s:1264 +0x1 fp=0x207255fad7e8 sp=0x207255fad7e0 pc=0x493da1
+created by runtime.gcBgMarkStartWorkers in goroutine 8
+	/home/dev/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.27.1.linux-amd64/src/runtime/mgc.go:1711 +0xfc
+FAIL	phpvm/internal/php	1.200s
+FAIL

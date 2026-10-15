@@ -2034,7 +2034,12 @@ func (p *Parser) statementInner() (Stmt, error) {
 		return p.classDecl()
 	case p.kw("namespace"):
 		// namespace внутри блока недопустим; разбираем как no-op-обёртку,
-		// чтобы не падать на нестандартном входе.
+		// чтобы не падать на нестандартном входе. `namespace\Foo` — не
+		// объявление, а namespace-относительное имя (T_NAME_RELATIVE):
+		// уходим в разбор выражения.
+		if p.nsRelativeStmtAhead() {
+			break
+		}
 		if _, err := p.namespaceDecl(); err != nil {
 			return nil, err
 		}

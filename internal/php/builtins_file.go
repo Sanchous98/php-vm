@@ -1418,7 +1418,13 @@ func readFilterURL(path string, ctxs ...*vm.Context) ([]byte, bool) {
 			ctx.VM().Warning(fnName + "(): Unable to create filter (" + name + ")")
 			return nil, false
 		}
-		if out, code := f.applyUserCode(data, true); code == 0 {
+		if out, code := f.applyUserCode(data, true); f.fatal {
+			// filter() без обработки (или PSFS_ERR_FATAL): чтение проваливается,
+			// include печатает "Failed opening ... for inclusion" (без
+			// "Failed to open stream": поток открылся успешно).
+			lastFilterReadFailed = true
+			return nil, false
+		} else if code == 0 {
 			// PSFS_FEED_ME: выходная бригада не передаётся (oss_fuzz_385993744).
 			data = nil
 		} else {
@@ -1428,9 +1434,22 @@ func readFilterURL(path string, ctxs ...*vm.Context) ([]byte, bool) {
 	return data, true
 }
 
+// lastFilterReadFailed — последнее чтение провалилось из-за сбоя
+// пользовательского фильтра (include не печатает "Failed to open stream").
+var lastFilterReadFailed bool
+
+// readCallerName — имя конструкции, выполняющей чтение (для диагностик
+// фильтров: "include(): Unprocessed filter buckets...").
+var readCallerName string
+
+// FilterReadCaller возвращает имя для диагностик фильтров: нативный
+// вызывающий, иначе конструкция include/require.
+func FilterReadCaller() string { return readCallerName }
+
 // readStreamBytes читает содержимое пути, поддерживая пользовательские
 // обёртки (иначе — обычный файл или data://).
 func readStreamBytes(ctx *vm.Context, path string) ([]byte, bool) {
+	lastFilterReadFailed = false
 	if h, ok := openUserStream(ctx, path, "r"); ok {
 		d, _ := io.ReadAll(h)
 		h.Close()
@@ -1460,6 +1479,9 @@ func splitIncludePath(s string) []string {
 
 // userPathExists проверяет существование пути пользовательской обёртки через
 // url_stat (для поиска по include_path).
+// userPathExists ищет путь у пользовательской обёртки при разборе include_path.
+// Zend вызывает url_stat с флагом STREAM_URL_STAT_QUIET (2): обёртка не должна
+// печатать диагностики отсутствующего файла (include_stat_is_quiet).
 func userPathExists(ctx *vm.Context, path string) bool {
 	scheme, ok := userScheme(path)
 	if !ok {
@@ -1468,7 +1490,7 @@ func userPathExists(ctx *vm.Context, path string) bool {
 	if _, reg := streamWrappers[strings.ToLower(scheme)]; !reg {
 		return false
 	}
-	res, handled := callUserWrapper(ctx, path, "url_stat", vm.MakeString(path), vm.MakeInt(0))
+	res, handled := callUserWrapper(ctx, path, "url_stat", vm.MakeString(path), vm.MakeInt(2))
 	if ctx.HasThrown() {
 		return *new(bool)
 	}

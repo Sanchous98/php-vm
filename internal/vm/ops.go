@@ -48,6 +48,24 @@ func arithOperand(s Slot) Slot {
 // строка -> число с Warning "A non-numeric value encountered".
 func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 	a, b = deref(a), deref(b)
+	// Ведуще-числовая (но не вполне числовая) строка СЛЕВА: PHP приводит её
+	// к числу (Warning "A non-numeric value encountered") до проверки
+	// совместимости операндов — в т.ч. если правый операнд недопустим
+	// (`"123foo" + []` → Warning, затем Unsupported operand types).
+	warned := false
+	// Предупреждение о ведуще-числовой строке слева: Zend приводит её к числу
+	// перед проверкой совместимости для +, -, /, %, **, <<, >>; для * и
+	// битовых & | ^ проверка типа идёт раньше (без предупреждения).
+	switch op {
+	case "*", "&", "|", "^":
+	default:
+		if a.typ == StringType && !IsNumericString(a.StringVal()) {
+			if _, _, ok := numericPrefix(a.StringVal()); ok {
+				vm.Warn("A non-numeric value encountered")
+				warned = true
+			}
+		}
+	}
 	// Массивы: `+` — объединение массивов (union), для остальных операций —
 	// TypeError. Объекты и ресурсы в арифметике недопустимы (PHP 8):
 	// "Unsupported operand types".
@@ -57,6 +75,12 @@ func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 	if a.typ == ResourceType || b.typ == ResourceType ||
 		a.typ == ArrayType || b.typ == ArrayType ||
 		a.typ == ObjectType || b.typ == ObjectType {
+		// Оператор требует int (%): float-левый операнд успевает
+		// предупредить о потере точности даже при несовместимом правом
+		// (3.5 % []), затем Unsupported operand types.
+		if op == "%" {
+			vm.floatToIntWarn(a)
+		}
 		return Slot{}, Slot{}, bitwiseTypeError(a, b, op)
 	}
 	aBad := a.typ == StringType && !IsNumericString(a.StringVal())
@@ -75,7 +99,9 @@ func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 		if aNo || bNo {
 			return Slot{}, Slot{}, bitwiseTypeError(a, b, op)
 		}
-		vm.Warn("A non-numeric value encountered")
+		if !warned {
+			vm.Warn("A non-numeric value encountered")
+		}
 	}
 	return arithOperand(a), arithOperand(b), nil
 }
@@ -349,6 +375,10 @@ func nanOperand(s Slot) bool {
 
 func looseEqual(vm *VM, a, b Slot) bool {
 	a, b = deref(a), deref(b)
+	// NaN не равен ничему (в т.ч. самому себе): Zend проверяет NaN первым.
+	if nanOperand(a) || nanOperand(b) {
+		return false
+	}
 	if a.typ == BoolType || b.typ == BoolType {
 		return a.ToBool() == b.ToBool()
 	}
@@ -479,6 +509,11 @@ func arraysIdentical(x, y *Array) bool {
 // compareSlots возвращает -1/0/1 по правилам упорядочивания PHP.
 func compareSlots(vm *VM, a, b Slot) int {
 	a, b = deref(a), deref(b)
+	// NAN в PHP «больше» любого значения: NAN <=> x == 1 при любом порядке,
+	// NAN == NAN — false, NAN < x — false.
+	if (a.typ == FloatType && math.IsNaN(a.ToFloat())) || (b.typ == FloatType && math.IsNaN(b.ToFloat())) {
+		return 1
+	}
 	if a.typ == BoolType || b.typ == BoolType {
 		ab, bb := a.ToBool(), b.ToBool()
 		switch {

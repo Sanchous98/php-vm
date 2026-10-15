@@ -43,6 +43,15 @@ func (vm *VM) closureMethodCall(cl *Closure, mname string, args []Slot) (Slot, b
 }
 
 func (vm *VM) opMethodCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	// Имя метода обязано быть строкой: Zend бросает Error даже при наличии
+	// __call (objects_025: $a->$b() с $b = NULL).
+	if n := deref(regs[in.C&0xFF]); n.typ != StringType {
+		err := NewThrowable("Error", "Method name must be a string")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	recv := deref(regs[in.B])
 	// Вызов метода на замыкании (Closure::call/bindTo/...).
 	if recv.typ == ClosureType {
@@ -616,6 +625,22 @@ func (vm *VM) opClassOf(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 }
 
 func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	if in.B == 255 {
+		// __CLASS__: имя области класса; вне класса — пустая строка.
+		name := ""
+		if ci := vm.ctx.self; ci != nil {
+			name = ci.Name()
+		}
+		{
+			old := regs[in.A]
+			wv := MakeString(name)
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
+	}
 	ci := vm.classSel(in.B)
 	if ci != nil {
 		{
@@ -632,6 +657,8 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		// `self::class`/`static::class`/`parent::class` без области класса:
 		// Zend бросает "Cannot use \"X\" in the global scope", а не
 		// "Cannot access ..." (class_name_as_scalar_error_005/006/007).
+		// В контексте константного выражения (C=1) текст иной:
+		// "Cannot use \"X\" when no class scope is active".
 		kw := ""
 		switch in.B {
 		case 0:
@@ -641,7 +668,15 @@ func (vm *VM) opClassName(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		case 2:
 			kw = "parent"
 		}
-		err := NewThrowable("Error", `Cannot use "`+kw+`" in the global scope`)
+		msg := `Cannot use "` + kw + `" in the global scope`
+		if in.B == 2 && vm.ctx.self != nil {
+			// parent::class в классе без родителя (ошибка отложена из
+			// трейта): Zend сообщает про отсутствие родителя.
+			msg = `Cannot use "parent" when current class scope has no parent`
+		} else if in.C == 1 {
+			msg = `Cannot use "` + kw + `" when no class scope is active`
+		}
+		err := NewThrowable("Error", msg)
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}
@@ -1041,6 +1076,16 @@ func (vm *VM) staticGetDynCommon(regs []Slot, consts []Slot, chunk *Chunk, in In
 			}
 		}
 	} else {
+		if !rw {
+			// Динамическое имя: чтение несуществующего статического свойства —
+			// Error (Foo::${42}; int_static_prop_name).
+			err := NewThrowable("Error", "Access to undeclared static property "+
+				cls.Name()+"::$"+deref(regs[in.C]).ToString())
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
 		{
 			old := regs[in.A]
 			wv := MakeNull()

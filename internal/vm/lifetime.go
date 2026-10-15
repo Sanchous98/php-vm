@@ -188,13 +188,16 @@ func (vm *VM) isLifetimeSpecial(o *Object) bool {
 // ArmHandles включает точный сбор PHP-хендлов: дальнейшие потери ссылок
 // приводят к немедленному проходу сборщика, чтобы нумерация #N совпадала с
 // Zend. Вызывается функциями, печатающими хендлы (var_dump и т.п.).
-func (vm *VM) ArmHandles() {
+// Возвращает ошибку деструктора, сработавшего в этом проходе (её поднимает
+// вызывающая функция: fe_fetch_dtor_exception).
+func (vm *VM) ArmHandles() error {
 	if !vm.handlesArmed {
 		vm.handlesArmed = true
 		if vm.lifeCandidate || vm.zeroObjs > 0 {
-			vm.FlushLifetime()
+			return vm.FlushLifetime()
 		}
 	}
+	return nil
 }
 
 // --- Writeback учёта ссылок ---
@@ -620,12 +623,13 @@ func (vm *VM) dropFrame(f *Frame) {
 	}
 }
 
-// FlushLifetime немедленно выполняет проход сборщика, если есть кандидаты.
-func (vm *VM) FlushLifetime() {
+// FlushLifetime немедленно выполняет проход сборщика, если есть кандидаты;
+// возвращает ошибку деструктора (Zend поднимает её в текущем операторе).
+func (vm *VM) FlushLifetime() error {
 	if (!vm.lifeCandidate && vm.zeroObjs <= 0) || vm.sweepBusy {
-		return
+		return nil
 	}
-	_ = vm.sweepLifetime(false, vm.chunk, vm.ip-1)
+	return vm.sweepLifetime(false, vm.chunk, vm.ip-1).err
 }
 
 // noteDroppedValue — как noteDropped для Value-границы (значения свойств).
@@ -2104,6 +2108,9 @@ func (vm *VM) CollectCycles() (int, error) {
 	if vm.sweepBusy {
 		return 0, nil
 	}
+	// hadRoots — «буфер непуст»: только тогда Zend увеличивает runs
+	// (gc_037: второй gc_collect_cycles с пустым буфером runs не меняет).
+	hadRoots := vm.gcRoots > 0 || vm.lifeCandidate || vm.lifeUrgent
 	vm.lifeCandidate = false
 	vm.lifeUrgent = false
 	// Деструкторы, вызванные сборщиком циклов, в трейсе не имеют позиции в
@@ -2112,8 +2119,11 @@ func (vm *VM) CollectCycles() (int, error) {
 	vm.dtorInternal = true
 	out := vm.sweepLifetime(true, vm.chunk, vm.ip-1)
 	vm.dtorInternal = savedInternal
-	vm.gcRuns++
-	vm.gcCollected += int64(out.count)
+	if hadRoots || out.count > 0 {
+		vm.gcRuns++
+		vm.gcCollected += int64(out.count)
+	}
+	vm.gcRoots = 0
 	return out.count, out.err
 }
 
@@ -2124,7 +2134,7 @@ func (vm *VM) GCRuns() int64 { return vm.gcRuns }
 func (vm *VM) GCCollected() int64 { return vm.gcCollected }
 
 // GCRootCount возвращает размер буфера возможных корней (gc_status()["roots"]).
-func (vm *VM) GCRootCount() int64 { return 0 }
+func (vm *VM) GCRootCount() int64 { return vm.gcRoots }
 
 // NoteRefCycle — экспорт noteRefArrayCycle для встроенных функций
 // (unserialize строит само-ссылочные массивы через R:-ссылки: gc_022).
@@ -2140,6 +2150,10 @@ func (vm *VM) noteSelfRefArray(a *Array, v Slot) {
 	if deref(v).AsArray() == a {
 		if vm.cyclicArrs == nil {
 			vm.cyclicArrs = map[*Array]bool{}
+		}
+		if !vm.cyclicArrs[a] {
+			// Новый возможный корень в буфере (gc_status()["roots"]).
+			vm.gcRoots++
 		}
 		vm.cyclicArrs[a] = true
 	}
@@ -2232,6 +2246,10 @@ func (vm *VM) noteRefArrayCycle(val Slot, r *Ref) {
 	if vm.arrayContainsRef(a, r, 0, nil) {
 		if vm.cyclicArrs == nil {
 			vm.cyclicArrs = map[*Array]bool{}
+		}
+		if !vm.cyclicArrs[a] {
+			// Новый возможный корень в буфере (gc_status()["roots"]).
+			vm.gcRoots++
 		}
 		vm.cyclicArrs[a] = true
 	}

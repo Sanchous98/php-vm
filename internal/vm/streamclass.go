@@ -11,3 +11,10 @@ func NewStreamClasses() []ClassInfo {
 	uf.DeclareDefault("stream", MakeNull())
 	return []ClassInfo{uf}
 }
+
+// HasConcreteMethod сообщает, что у класса есть настоящий метод name (в
+// отличие от HasMethod не считает __call/__callStatic и не смотрит записи-
+// подписи внутренних интерфейсов).
+func (vm *VM) HasConcreteMethod(ci ClassInfo, name string) bool {
+	return ci != nil && ci.lookupMethod(name) != nil
+}

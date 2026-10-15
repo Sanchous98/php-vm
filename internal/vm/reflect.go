@@ -610,8 +610,9 @@ func (c *runtimeClass) DirectInterfaces() []ClassInfo {
 }
 
 // InterfaceNames возвращает все реализуемые интерфейсы транзитивно в порядке
-// PHP: интерфейсы родительских классов (в порядке иерархии), затем собственные,
-// каждый — до своих родителей.
+// PHP: прямые интерфейсы (по иерархии классов — родительские раньше), затем
+// неявный Stringable (если объявлен __toString), затем транзитивные
+// интерфейсы прямых.
 func (c *runtimeClass) InterfaceNames() []string {
 	var chain []*runtimeClass
 	for k := c; k != nil; k = k.parent {
@@ -630,9 +631,38 @@ func (c *runtimeClass) InterfaceNames() []string {
 			add(p)
 		}
 	}
+	// 1. Прямые интерфейсы (как в Zend: у класса — свои после родительских),
+	// без обхода их родителей.
+	var direct []ClassInfo
 	for i := len(chain) - 1; i >= 0; i-- {
-		for _, iface := range chain[i].ifaces {
-			add(iface)
+		direct = append(direct, chain[i].ifaces...)
+	}
+	for _, iface := range direct {
+		if iface == nil || seen[iface] {
+			continue
+		}
+		seen[iface] = true
+		out = append(out, iface.Name())
+	}
+	// 2. Неявный Stringable вставляется сразу после прямых интерфейсов
+	// (до транзитивных) — так Zend строит список при наличии __toString.
+	// У интерфейсов абстрактный __toString лежит в подписях (sigs), а не в
+	// methods, поэтому проверяем оба источника (findMethodOrSig).
+	// Трейты Stringable не получают: трейт не может реализовать интерфейс,
+	// даже если объявляет __toString (stringable_trait).
+	if !c.IsTrait() {
+		if _, _, _, ok := findMethodOrSig(c, "__toString"); ok {
+			stringable := NewInterface("Stringable")
+			if !seen[stringable] {
+				seen[stringable] = true
+				out = append(out, "Stringable")
+			}
+		}
+	}
+	// 3. Транзитивные интерфейсы прямых.
+	for _, iface := range direct {
+		for _, p := range iface.Interfaces() {
+			add(p)
 		}
 	}
 	return out

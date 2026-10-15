@@ -1691,6 +1691,10 @@ func (vm *VM) IsDumpPlainObject(o *Object) bool {
 	switch rc.Name() {
 	case "ArrayObject", "ArrayIterator", "SplObjectStorage":
 		return true
+	case "ReflectionParameter":
+		// У ReflectionParameter Zend показывает единственное свойство name
+		// (ObjectDumpEntries).
+		return true
 	}
 	return false
 }
@@ -1754,6 +1758,20 @@ func (vm *VM) DebugInfoProps(o *Object) (entries []DumpEntry, magic bool, err er
 func (vm *VM) ObjectDumpEntries(o *Object) []DumpEntry {
 	rc, ok := asRuntimeClass(o.Class())
 	if !ok || rc == nil {
+		return nil
+	}
+	// ReflectionParameter: Zend показывает собственный debug-info — имя
+	// параметра (trampoline_closure_named_arguments: var_dump(getParameters())).
+	if ci := o.Class(); ci != nil && ci.Name() == "ReflectionParameter" {
+		if rd := (*reflectionData)(unsafe.Pointer(o)); rd != nil {
+			fn := rd.fn
+			if fn == nil {
+				fn = paramOwnerFn(rd)
+			}
+			if fn != nil && rd.index < len(fn.ParamNames) {
+				return []DumpEntry{{Key: "name", Val: MakeString(fn.ParamNames[rd.index])}}
+			}
+		}
 		return nil
 	}
 	var chain []*runtimeClass

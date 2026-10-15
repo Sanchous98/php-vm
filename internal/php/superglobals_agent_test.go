@@ -202,6 +202,10 @@ func buildServer(m *vm.VM, server *vm.Array, p PhpT, file string, cfg *inputConf
 			argv = append([]string{file}, strings.Fields(p.Args)...)
 		case p.HasGet && p.Get != "" && !strings.Contains(p.Get, "="):
 			argv = strings.Split(p.Get, "+")
+		default:
+			// CLI: даже без --ARGS-- $argv = [имя скрипта], $argc = 1
+			// (get_defined_vars проверяет argc на глобальном уровне).
+			argv = []string{file}
 		}
 		if argv != nil {
 			arr := vm.NewArray()
@@ -607,6 +611,9 @@ func runPhptAt(p PhpT, file string) (out string, err error) {
 	}()
 	m := &sharedRunVM
 	m.Init(c.Main, c.Funcs, c.Classes)
+	// INI-значения нужны и виртуальной машине (zend.exception_ignore_args и
+	// пр.): ini_set/--INI-- должны быть видны при печати диагностик.
+	m.SetIniLookup(IniValue)
 	// disable_classes: применяем к свежему Init (INI уже разобран выше).
 	if v, ok := iniValues["disable_classes"]; ok {
 		m.SetDisabledClasses(strings.Split(v, ","))

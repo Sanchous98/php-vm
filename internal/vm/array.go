@@ -1082,3 +1082,18 @@ func (k ArrayKey) IsStr() bool       { return k.str }
 func (k ArrayKey) StrVal() string    { return k.s }
 func (k ArrayKey) IntVal() int64     { return k.i }
 func (k ArrayKey) PHPString() string { return k.phpString() }
+
+// stringOffsetWarnKey — подготовка ключа строкового offset в R/RW-режиме:
+// ресурс/объект/массив (и замыкание) дают TypeError "Cannot access offset of
+// type X on string" (Zend не печатает предупреждение о приведении), bool/null/
+// float сопровождаются Warning "String offset cast occurred".
+func (vm *VM) stringOffsetWarnKey(k Slot) *Throwable {
+	switch deref(k).typ {
+	case ResourceType, ObjectType, ArrayType, ClosureType:
+		return NewThrowable("TypeError", "Cannot access offset of type "+valueTypeName(vm, k)+" on string")
+	case IntType, StringType:
+		return nil
+	}
+	vm.Warn("String offset cast occurred")
+	return nil
+}

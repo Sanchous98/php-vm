@@ -64,8 +64,11 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 		return execResult{next: true}
 	}
 	if src.typ == StringType {
-		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
-			vm.Warn("String offset cast occurred")
+		if terr := vm.stringOffsetWarnKey(regs[in.C]); terr != nil {
+			if !vm.handleThrow(chunk, terr) {
+				return execResult{err: terr}
+			}
+			return execResult{next: true}
 		}
 		i, ok, illegal := vm.stringOffsetKey(regs[in.C])
 		if !ok {
@@ -219,8 +222,11 @@ func (vm *VM) opIndexRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		return execResult{next: true}
 	}
 	if src.typ == StringType {
-		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
-			vm.Warn("String offset cast occurred")
+		if terr := vm.stringOffsetWarnKey(regs[in.C]); terr != nil {
+			if !vm.handleThrow(chunk, terr) {
+				return execResult{err: terr}
+			}
+			return execResult{next: true}
 		}
 		i, ok, illegal := vm.stringOffsetKey(regs[in.C])
 		if !ok {
@@ -397,8 +403,11 @@ func (vm *VM) listFetchRefWrite(regs []Slot, chunk *Chunk, in Instruction, r *Re
 	case StringType:
 		// Ссылку на байт строки создать нельзя (Zend: FETCH_DIM_W на строке).
 		// Диагностика ключа печатается до Error (Illegal string offset).
-		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
-			vm.Warn("String offset cast occurred")
+		if terr := vm.stringOffsetWarnKey(regs[in.C]); terr != nil {
+			if !vm.handleThrow(chunk, terr) {
+				return execResult{err: terr}
+			}
+			return execResult{next: true}
 		}
 		if _, _, illegal := vm.stringOffsetKey(regs[in.C]); illegal {
 			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
@@ -577,8 +586,11 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 	if src.typ == StringType {
 		// FETCH_DIM_W на строке: сначала диагностика ключа, затем Error
 		// (Cannot create references to/from string offsets).
-		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
-			vm.Warn("String offset cast occurred")
+		if terr := vm.stringOffsetWarnKey(regs[in.C]); terr != nil {
+			if !vm.handleThrow(chunk, terr) {
+				return execResult{err: terr}
+			}
+			return execResult{next: true}
 		}
 		if _, _, illegal := vm.stringOffsetKey(regs[in.C]); illegal {
 			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
@@ -691,8 +703,8 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 // это односимвольная строка фактически записанного байта; для отрицательного
 // offset вне диапазона — null). error — исключение.
 func (vm *VM) stringOffsetSet(arr Slot, keyReg Slot, valReg Slot) (Slot, Slot, error) {
-	if k := deref(keyReg); k.typ != IntType && k.typ != StringType {
-		vm.Warn("String offset cast occurred")
+	if terr := vm.stringOffsetWarnKey(keyReg); terr != nil {
+		return Slot{}, Slot{}, terr
 	}
 	i, ok, illegal := vm.stringOffsetKey(keyReg)
 	if !ok {
@@ -710,7 +722,12 @@ func (vm *VM) stringOffsetSet(arr Slot, keyReg Slot, valReg Slot) (Slot, Slot, e
 		vm.Warn("Illegal string offset " + intToString(orig))
 		return arr, MakeNull(), nil
 	}
-	ch := valReg.ToString()
+	// Значение приводится через __toString: исключение из него всплывает
+	// наружу (exception_from_toString: $str[0] = $badStr).
+	ch, cerr := vm.ToStringValue(valReg)
+	if cerr != nil {
+		return Slot{}, Slot{}, cerr
+	}
 	if ch == "" {
 		return Slot{}, Slot{}, NewThrowable("Error", "Cannot assign an empty string to a string offset")
 	}
@@ -830,7 +847,7 @@ func (vm *VM) indexSafe(regs []Slot, chunk *Chunk, in Instruction, warnIllegal b
 			}
 			return execResult{}
 		}
-		k, ok := keyFromSlot(deref(regs[in.C]))
+		k, ok := vm.KeyOfWarn(regs[in.C])
 		if !ok {
 			// Zend: "Cannot access offset of type X in isset or empty".
 			err := NewThrowable("TypeError", "Cannot access offset of type "+
@@ -928,6 +945,15 @@ func (vm *VM) indexSafe(regs []Slot, chunk *Chunk, in Instruction, warnIllegal b
 // null/false автовивифицируются в массив (с обычной диагностикой «Undefined
 // array key»), строка и скаляры дают Error как Zend FETCH_DIM_RW.
 func (vm *VM) opIndexRW(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	// Ключ канонизируется здесь и остаётся в том же (временном) регистре:
+	// последующая запись использует уже int-ключ и не дублирует
+	// предупреждение (resource_key: $a[$r] += 1 / $a[$r]++ печатают одно).
+	switch deref(regs[in.C]).typ {
+	case ResourceType, FloatType:
+		if k, ok := vm.KeyOfWarn(regs[in.C]); ok {
+			regs[in.C] = MakeInt(k.IntVal())
+		}
+	}
 	src := deref(regs[in.B])
 	switch src.typ {
 	case ArrayType, ObjectType:
@@ -1013,6 +1039,10 @@ func (vm *VM) opIndexSetRaw(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 // записываемого значения разделённым, ret — записью результата присваивания
 // в регистр значения).
 func (vm *VM) indexSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, share, ret bool) execResult {
+	return vm.indexSetInner(regs, consts, chunk, in, share, ret)
+}
+
+func (vm *VM) indexSetInner(regs []Slot, consts []Slot, chunk *Chunk, in Instruction, share, ret bool) execResult {
 	arr := deref(regs[in.A])
 	if arr.typ == ObjectType {
 		// ArrayAccess: $obj[$k] = $v -> offsetSet($k, $v).
@@ -1508,11 +1538,10 @@ func (vm *VM) opIndexIsset(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			}
 			break
 		}
-		if ks := deref(regs[in.C]); ks.typ == FloatType {
-			// Zend конвертирует ключ с Deprecated и в isset-контексте.
-			vm.floatToIntWarn(ks)
-		}
-		k, ok := keyFromSlot(deref(regs[in.C]))
+		// Ключ конвертируется с диагностиками Zend и в isset-контексте:
+		// float — Deprecated о потере точности, resource — Warning и int
+		// (KeyOfWarn).
+		k, ok := vm.KeyOfWarn(regs[in.C])
 		if !ok {
 			err := NewThrowable("TypeError", "Cannot access offset of type "+
 				operandTypeName(deref(regs[in.C]))+" in isset or empty")
@@ -1534,6 +1563,9 @@ func (vm *VM) opIndexIsset(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 		// Строковый offset: Zend принимает числовые строки (в т.ч. с ведущими
 		// нулями и пробелами); нечисловые/дробные — false. Float-ключ даёт
 		// Deprecated о потере точности.
+		if ks := deref(regs[in.C]); ks.typ == FloatType {
+			vm.floatToIntWarn(ks)
+		}
 		i, ok, illegal := vm.stringOffsetKey(regs[in.C])
 		if !ok || illegal {
 			{

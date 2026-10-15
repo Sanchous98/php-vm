@@ -108,19 +108,21 @@ func (c *Context) Throw(v *Throwable) {
 	if v.Trace == nil && c.vm != nil {
 		v.Trace = c.vm.captureExceptionTrace()
 		if v.LocLine == 0 && !v.LocOverridden {
-			// Локация — место вызова (самый внутренний кадр трейса). Кадры,
-			// вызванные из внутренних функций (напр. обработчик ошибок,
-			// вызванный из нативного report-механизма), пропускаем: Zend
-			// берёт место в userland-коде.
+			// Локация — текущая инструкция (Zend: EX(opline)): ошибка в теле
+			// __destruct/функции получает строку в её теле (temporary_cleaning_017);
+			// для константных выражений — файл/строка объявления (gh7771).
 			if c.vm.chunk != nil && c.vm.chunk.IsConstExpr() {
-				// Ошибка внутри константного выражения: Zend указывает
-				// файл/строку объявления (gh7771 — .inc-файл, не место
-				// обращения к константе).
 				v.LocFile = c.vm.curFile
 				if l := c.vm.line(); l > 0 {
 					v.LocLine = l
 				}
+			} else if f, l, ok := c.vm.currentLoc(); ok && l > 0 {
+				v.LocFile, v.LocLine = f, l
 			} else {
+				// Фолбэк — место вызова (самый внутренний кадр трейса).
+				// Кадры, вызванные из внутренних функций (напр. обработчик
+				// ошибок, вызванный из нативного report-механизма),
+				// пропускаем: Zend берёт место в userland-коде.
 				for i := len(v.Trace) - 1; i >= 0; i-- {
 					f := v.Trace[i]
 					if f.callerFile != "" && f.callerFile != "[internal function]" {
@@ -129,14 +131,23 @@ func (c *Context) Throw(v *Throwable) {
 						break
 					}
 				}
-			}
-			if v.LocLine == 0 {
-				v.LocFile = c.vm.curFile
-				v.LocLine = c.vm.line()
+				if v.LocLine == 0 {
+					v.LocFile = c.vm.curFile
+					v.LocLine = c.vm.line()
+				}
 			}
 		}
 	}
 	c.thrown = v
+}
+
+// currentLoc — файл/строка текущей инструкции исполняемого чанка. ok == false
+// вне активного чанка (shutdown, сборка мусора без позиции кода).
+func (vm *VM) currentLoc() (string, int, bool) {
+	if vm.chunk == nil || vm.ip <= 0 || vm.noActiveFile {
+		return "", 0, false
+	}
+	return vm.curFileAt(), vm.line(), true
 }
 
 // takeThrown извлекает отложенное исключение (и обнуляет его).

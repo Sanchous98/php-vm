@@ -102,6 +102,9 @@ type Lexer struct {
 	pos  int
 	toks []Token
 	php  bool // true — сейчас в режиме PHP-кода, false — HTML-текст
+	// braceDepth — глубина фигурных скобок (для __halt_compiler(): вне блока
+	// он усекает код, внутри — Fatal error на этапе выполнения).
+	braceDepth int
 	// pendingAttrs — тексты атрибутов, ожидающие прикрепления к следующему
 	// значащему токену.
 	pendingAttrs []AttrRaw
@@ -343,7 +346,10 @@ func (l *Lexer) runPHP() error {
 			}
 			w := l.src[start:l.pos]
 			// __halt_compiler(): всё после него — данные, не разбираем.
-			if strings.EqualFold(w, "__halt_compiler") {
+			// Внутри блока (глубина фигурных скобок > 0) Zend вместо
+			// усечения сообщает Fatal error на этапе выполнения: оставляем
+			// имя как обычный идентификатор, ошибку даёт встроенная функция.
+			if strings.EqualFold(w, "__halt_compiler") && l.braceDepth == 0 {
 				j := l.pos
 				for j < len(l.src) && isSpaceByte(l.src[j]) {
 					j++
@@ -408,6 +414,14 @@ func (l *Lexer) runPHP() error {
 			if op == "" {
 				return l.parseErrf("syntax error, unexpected character 0x%02X", c)
 			}
+			switch op {
+			case "{":
+				l.braceDepth++
+			case "}":
+				if l.braceDepth > 0 {
+					l.braceDepth--
+				}
+			}
 			l.emit(Token{Kind: TOp, Val: op, Pos: start})
 		}
 	}
@@ -457,6 +471,10 @@ func (l *Lexer) number() error {
 			}
 			l.pos = j
 			txt := strings.ReplaceAll(l.src[start:l.pos], "_", "")
+			if strings.ContainsAny(txt, "89") {
+				// PHP 8: 078/09 — Invalid numeric literal (не восьмеричное).
+				return &parseError{msg: "Invalid numeric literal", line: lineOf(l.src, start)}
+			}
 			l.emitBased(txt, 8, start)
 			return nil
 		}
@@ -1064,7 +1082,7 @@ func (l *Lexer) heredoc() error {
 		l.pos++
 	}
 	if l.pos >= len(l.src) {
-		return fmt.Errorf("lexer: незакрытый heredoc на позиции %d", start)
+		return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 	}
 	nowdoc := false
 	var label string
@@ -1076,7 +1094,7 @@ func (l *Lexer) heredoc() error {
 			l.pos++
 		}
 		if l.pos >= len(l.src) {
-			return fmt.Errorf("lexer: незакрытый heredoc на позиции %d", start)
+			return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 		}
 		label = l.src[s:l.pos]
 		l.pos++
@@ -1088,7 +1106,7 @@ func (l *Lexer) heredoc() error {
 			l.pos++
 		}
 		if l.pos >= len(l.src) {
-			return fmt.Errorf("lexer: незакрытый heredoc на позиции %d", start)
+			return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 		}
 		label = l.src[s:l.pos]
 		l.pos++
@@ -1100,7 +1118,7 @@ func (l *Lexer) heredoc() error {
 		label = l.src[s:l.pos]
 	}
 	if label == "" {
-		return fmt.Errorf("lexer: пустая метка heredoc на позиции %d", start)
+		return &parseError{msg: `syntax error, unexpected token "<<"`, line: lineOf(l.src, start)}
 	}
 	for l.pos < len(l.src) && (l.src[l.pos] == ' ' || l.src[l.pos] == '\t' || l.src[l.pos] == '\r') {
 		l.pos++

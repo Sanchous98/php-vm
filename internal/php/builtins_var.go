@@ -1581,7 +1581,13 @@ func prettyLeave() { prettyDepth-- }
 
 func varDumpFn(ctx *vm.Context) vm.Value {
 	if v := ctx.VM(); v != nil {
-		v.ArmHandles()
+		// Проход сборщика при включении хендлов может вызвать деструктор,
+		// бросивший исключение (fe_fetch_dtor_exception): оно поднимается
+		// до печати значения.
+		if ferr := v.ArmHandles(); ferr != nil {
+			throwCallable(ctx, ferr)
+			return *new(vm.Value)
+		}
 	}
 	var b strings.Builder
 	args := ctx.Args()
@@ -2278,7 +2284,10 @@ func exportString(s string) string {
 
 func printRFn(ctx *vm.Context) vm.Value {
 	if v := ctx.VM(); v != nil {
-		v.ArmHandles()
+		if ferr := v.ArmHandles(); ferr != nil {
+			throwCallable(ctx, ferr)
+			return *new(vm.Value)
+		}
 	}
 	a := ctx.Args()
 	var b strings.Builder
@@ -2407,7 +2416,10 @@ func printRValue(b *strings.Builder, v vm.Slot, lvl int, st *printState) {
 // splObjectIdFn — spl_object_id(): PHP-хендл объекта.
 func splObjectIdFn(ctx *vm.Context) vm.Value {
 	if v := ctx.VM(); v != nil {
-		v.ArmHandles()
+		if ferr := v.ArmHandles(); ferr != nil {
+			throwCallable(ctx, ferr)
+			return *new(vm.Value)
+		}
 	}
 	s := arg0(ctx)
 	if s.Type() != vm.ObjectType {

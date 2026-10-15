@@ -148,6 +148,8 @@ type VM struct {
 	// защищает от рекурсии.
 	excHandlers  []Slot
 	inExcHandler bool
+	// gcRoots — число корней, зарегистрированных сборщиком (gc_status.roots).
+	gcRoots int64
 	// noActiveFile — выполняется shutdown-обработчик вне какого-либо
 	// компилируемого файла: ошибки локализуются как "[no active file]:0".
 	noActiveFile bool
@@ -646,6 +648,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.requestEndDone = false
 	vm.gcRuns = 0
 	vm.gcCollected = 0
+	vm.gcRoots = 0
 	vm.gcDtorCount = 0
 	vm.freeObjIDs = nil
 	vm.lifeCandidate = false
@@ -710,6 +713,7 @@ func (vm *VM) Init(chunk *Chunk, funcs []*Function, classes []ClassInfo) {
 	vm.errHandlerBusy = 0
 	vm.inErrHandler = false
 	vm.excHandlers = nil
+	vm.gcRoots = 0
 	vm.inExcHandler = false
 	vm.lastErrSet = false
 	vm.headersSent = false
@@ -819,13 +823,14 @@ func (vm *VM) Const(name string) (Slot, bool) {
 	return v, ok
 }
 
-// HasFunction сообщает, есть ли функция с таким именем.
+// HasFunction сообщает, есть ли функция с таким именем (регистронезависимо,
+// как в PHP).
 func (vm *VM) HasFunction(name string) bool {
 	for _, f := range vm.functions {
 		if f.Disabled {
 			continue
 		}
-		if f.Name == name {
+		if strings.EqualFold(f.Name, name) {
 			return true
 		}
 	}
@@ -2313,11 +2318,23 @@ func (vm *VM) traceFrameArgsSensitive(fr callFrameInfo) ([]Slot, *Array) {
 	return out, named
 }
 
+// exceptionIgnoreArgs сообщает, включён ли zend.exception_ignore_args:
+// при включении аргументы кадров в стек-трейсах исключений не печатаются
+// (Zend: Throwable::getTraceAsString и печать непойманных).
+func (vm *VM) exceptionIgnoreArgs() bool {
+	if vm.iniLookup == nil {
+		return false
+	}
+	v, ok := vm.iniLookup("zend.exception_ignore_args")
+	return ok && iniBool(v)
+}
+
 // traceString рендерит stack trace исключения в формате Zend (начиная с #0,
 // заканчивая #N {main}). defFile/defLine — локация по умолчанию для кадров без
 // неё. Аргументы кадров печатаются: корпус php-src прогоняется run-tests.php с
 // zend.exception_ignore_args=0.
 func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) string {
+	ignoreArgs := vm.exceptionIgnoreArgs()
 	var b strings.Builder
 	if len(frames) == 0 {
 		return "#0 {main}"
@@ -2328,6 +2345,9 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 		cf := fr.callerFile
 		if cf == "[internal function]" || cf == "" {
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
+			if ignoreArgs {
+				sargs, snamed = nil, nil
+			}
 			fmt.Fprintf(&b, "#%d [internal function]: %s(%s)\n", len(frames)-1-i, name, vm.traceArgsNamed(sargs, snamed))
 			continue
 		}
@@ -2342,6 +2362,9 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 			cl = defLine
 		}
 		sargs, snamed := vm.traceFrameArgsSensitive(fr)
+		if ignoreArgs {
+			sargs, snamed = nil, nil
+		}
 		fmt.Fprintf(&b, "#%d %s(%d): %s(%s)\n", len(frames)-1-i, cf, cl, name, vm.traceArgsNamed(sargs, snamed))
 	}
 	fmt.Fprintf(&b, "#%d {main}", len(frames))
@@ -2746,8 +2769,24 @@ func (vm *VM) traceArg(s Slot) string {
 		return traceFloat(s.ToFloat())
 	case StringType:
 		raw := s.StringVal()
-		if len(raw) > 15 {
-			raw = raw[:15] + "..."
+		maxLen := 15
+		if vm.iniLookup != nil {
+			if v, ok := vm.iniLookup("zend.exception_string_param_max_len"); ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+					maxLen = n
+				}
+			}
+		}
+		if maxLen == 0 {
+			// zend.exception_string_param_max_len=0: строки скрываются
+			// полностью (Zend печатает '...').
+			if raw != "" {
+				return "'...'"
+			}
+			return "''"
+		}
+		if len(raw) > maxLen {
+			raw = raw[:maxLen] + "..."
 		}
 		return "'" + escapeTraceString(raw) + "'"
 	case ArrayType:
@@ -5032,7 +5071,9 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 
 		case OpThrow:
-			err := vm.makeThrowable(regs[in.A])
+			// Значение-ссылка (свойство-ссылка/foreach-алиас) разыменовывается:
+			// throw $ref-на-объект должен бросать объект (temporary_cleaning_009).
+			err := vm.makeThrowable(deref(regs[in.A]))
 			if l := vm.line(); l > 0 {
 				vm.curLine = l
 			}
@@ -7042,8 +7083,13 @@ func (vm *VM) resolveTypeClass(name string) ClassInfo {
 		return nil
 	}
 	// Тип мог быть записан с ведущим `\` (особенно в анонимных классах,
-	// где имя не нормализуется на этапе компиляции).
-	return vm.findClass(strings.TrimLeft(name, "\\"))
+	// где имя не нормализуется на этапе компиляции), а имена классов в PHP
+	// регистронезависимы (`\stdclass` -> stdClass).
+	trimmed := strings.TrimLeft(name, "\\")
+	if ci := vm.findClass(trimmed); ci != nil {
+		return ci
+	}
+	return vm.FindClass(trimmed)
 }
 
 // topLevelSplit возвращает индекс первого sep на верхнем уровне вложенности.
@@ -8213,6 +8259,46 @@ func (vm *VM) RequestHalt() {
 	if vm != nil {
 		vm.haltRequested = true
 	}
+}
+
+// CurrentThis возвращает текущий $this кадра (для встроенных функций,
+// привязывающих получателя, — register_shutdown_function).
+func (vm *VM) CurrentThis() Slot { return vm.ctx.this }
+
+// BindThisToMethodCallable привязывает текущий $this к callable-строке
+// "Class::method" (нестатический метод): Zend сохраняет объект регистрации
+// для register_shutdown_function/set_error_handler
+// (register_shutdown_function_refcount). Если метод статический, класса нет
+// или объект не совместим — возвращает callable как есть.
+func (vm *VM) BindThisToMethodCallable(c Slot, this Slot) Slot {
+	d := deref(c)
+	if d.typ != StringType {
+		return c
+	}
+	raw := d.StringVal()
+	i := strings.Index(raw, "::")
+	if i < 0 {
+		return c
+	}
+	clsName := strings.TrimLeft(raw[:i], "\\")
+	mname := raw[i+2:]
+	ci := vm.FindClass(clsName)
+	if ci == nil {
+		return c
+	}
+	m, decl, _ := ci.methodInfo(mname)
+	if m == nil || m.IsStatic || decl == nil {
+		return c
+	}
+	recv := deref(this)
+	if recv.typ != ObjectType {
+		return c
+	}
+	oc := vm.classInfo(recv)
+	if oc == nil || !oc.IsA(decl) {
+		return c
+	}
+	return MakeClosure(&Closure{Fn: m, BoundThis: this, Scope: decl, Called: ci, Fake: true})
 }
 
 // runShutdownFunctions вызывает зарегистрированные shutdown-обработчики в

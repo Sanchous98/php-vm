@@ -317,21 +317,30 @@ type tryScope struct {
 }
 
 type compiler struct {
-	chunk      *vm.Chunk
-	vars       map[string]uint8
-	nvars      uint8
-	nvars0     uint8 // число регистров параметров+захватов (pinned для аллокатора)
-	tmp        uint8
-	max        uint8
-	funcs      []*vm.Function
-	idx        map[string]int
-	loops      []*loopCtx
-	internal   int
-	isMain     bool
-	funcName   string
-	file       string // путь к компилируемому файлу (для __FILE__/__DIR__)
-	globals    map[string]bool
-	staticKeys map[string]string
+	chunk    *vm.Chunk
+	vars     map[string]uint8
+	nvars    uint8
+	nvars0   uint8 // число регистров параметров+захватов (pinned для аллокатора)
+	tmp      uint8
+	max      uint8
+	funcs    []*vm.Function
+	idx      map[string]int
+	loops    []*loopCtx
+	internal int
+	isMain   bool
+	funcName string
+	// funcArgDepth > 0 — компилируется аргумент вызова (FUNC_ARG): append-база
+	// `$x[]` там допустима на компиляции, ошибка "Cannot use [] for reading"
+	// откладывается до рантайма (func_arg_fetch_optimization).
+	funcArgDepth int
+	file         string // путь к компилируемому файлу (для __FILE__/__DIR__)
+	globals      map[string]bool
+	staticKeys   map[string]string
+	// rebound — переменные, для которых оператор `global $x` (в функции с
+	// одноимённой static $x) перепривязал CV к глобальной таблице: обращения
+	// после него идут по имени, а не по ключу статического слота. Оператор
+	// `static $x` сбрасывает перепривязку (Zend: BIND_STATIC).
+	rebound map[string]bool
 	// detached — static/global-переменные, для которых текущий вызов сделал
 	// `=&`: после этого CV живёт в локальном ref-регистре, а глобальная/
 	// статическая таблица не меняется (Zend ASSIGN_REF заменяет CV, а не
@@ -789,6 +798,13 @@ func variadicByRef(params []Param) bool {
 	return n > 0 && params[n-1].Variadic && params[n-1].ByRef
 }
 
+// variadicParams сообщает, что последний параметр объявлен ...$rest
+// (для ReflectionParameter::isVariadic).
+func variadicParams(params []Param) bool {
+	n := len(params)
+	return n > 0 && params[n-1].Variadic
+}
+
 // namedArgCheck — результат проверки именованных аргументов вызова известной
 // функции: либо переупорядоченные аргументы, либо ошибка (компиляции или
 // рантайм-исключение Zend).
@@ -1096,6 +1112,9 @@ func markByRef(args []Expr, mask []bool, addRef func(string)) {
 
 // globalKey возвращает ключ глобальной таблицы для имени переменной.
 func (c *compiler) globalKey(name string) string {
+	if c.rebound[name] {
+		return name
+	}
 	if k, ok := c.staticKeys[name]; ok {
 		return k
 	}
@@ -2563,6 +2582,13 @@ func inlineInclude(x *IncludeExpr, file string, inc map[string]bool) (Expr, []St
 	if err != nil {
 		return x, nil, nil
 	}
+	// `return` в теле подключаемого файла (на верхнем уровне области, в т.ч.
+	// внутри if/циклов) завершает только include. Инлайн компилирует его как
+	// return главного скрипта — поэтому такой файл раскрываем в рантайме
+	// (no_early_binding_if_already_declared).
+	if hasTopLevelReturn(sub.Stmts) {
+		return x, nil, nil
+	}
 	stmts, err := inlineStmts(sub.Stmts, abs, inc)
 	if err != nil {
 		return nil, nil, err
@@ -3721,7 +3747,14 @@ func runSubCode(ctx *vm.Context, src, file string, phpMode bool) (vm.Slot, bool)
 	}
 	compilerWarnings = compilerWarnings[:warnMark]
 	if err != nil {
-		ctx.Throw(vm.NewThrowable("ParseError", err.Error()))
+		th := vm.NewThrowable("ParseError", err.Error())
+		if pe, ok := err.(*parseError); ok {
+			// Локация — строка в подключаемом файле (getLine()).
+			th.LocFile = file
+			th.LocLine = pe.line
+			th.LocOverridden = pe.line > 0
+		}
+		ctx.Throw(th)
 		if ctx.HasThrown() {
 			return *new(vm.Slot), *new(bool)
 		}
@@ -3803,7 +3836,21 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	var p, file string
 	var flags int64
 	if len(args) > 0 {
-		p = args[0].ToString()
+		// Путь-объект приводится через __toString; исключение из него
+		// всплывает наружу (exception_from_toString: include $badStr).
+		if args[0].Type() == vm.ObjectType {
+			sp, serr := ctx.VM().ToStringValue(args[0])
+			if serr != nil {
+				throwCallable(ctx, serr)
+				if ctx.HasThrown() {
+					return *new(vm.Slot)
+				}
+				return vm.MakeBool(false)
+			}
+			p = sp
+		} else {
+			p = args[0].ToString()
+		}
 	}
 	if len(args) > 1 {
 		file = args[1].ToString()
@@ -3813,6 +3860,15 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 	}
 	require := flags&2 != 0
 	once := flags&1 != 0
+	// Имя конструкции для диагностик пользовательских фильтров
+	// ("include(): Unprocessed filter buckets remaining...").
+	readCallerName = "include"
+	if require {
+		readCallerName = "require"
+	}
+	if once {
+		readCallerName += "_once"
+	}
 	path := resolveIncludePath(p, file)
 	// Поиск по include_path (в т.ч. записи-пользовательские обёртки): для
 	// относительного имени пробуем include_path/скрипт/cwd по «сырому» пути,
@@ -3892,17 +3948,28 @@ func includeBuiltin(ctx *vm.Context) vm.Slot {
 		return *new(vm.Slot)
 	}
 	if !ok {
+		// Имя конструкции в диагностиках: require/include (+_once), как в
+		// Zend (require_once_warning_to_exception).
+		kw := "include"
+		if require {
+			kw = "require"
+		}
+		if once {
+			kw += "_once"
+		}
 		if require {
 			// Zend: сначала Warning о потоке, затем Error (include_path в
 			// тексте исключения).
-			ctx.VM().Warning(fmt.Sprintf("require(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
+			ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
 			ctx.Throw(vm.NewThrowable("Error", fmt.Sprintf("Failed opening required '%s' (include_path='%s')", p, fsIncludePath)))
 			if ctx.HasThrown() {
 				return *new(vm.Slot)
 			}
 		} else {
-			ctx.VM().Warning(fmt.Sprintf("include(%s): Failed to open stream: %s", p, fileOpenReason(path, "")))
-			ctx.VM().Warning(fmt.Sprintf("include(): Failed opening '%s' for inclusion (include_path='%s')", p, fsIncludePath))
+			if !lastFilterReadFailed {
+				ctx.VM().Warning(fmt.Sprintf("%s(%s): Failed to open stream: %s", kw, p, fileOpenReason(path, "")))
+			}
+			ctx.VM().Warning(fmt.Sprintf("%s(): Failed opening '%s' for inclusion (include_path='%s')", kw, p, fsIncludePath))
 		}
 		return vm.MakeBool(false)
 	}
@@ -3946,6 +4013,12 @@ func compileFileModeLink(src, file string, phpMode bool, linkBase *Compiled) (*C
 			return fatalCompiled(fe, file), nil
 		}
 		if pe, ok := err.(*parseError); ok {
+			// Рантайм-include/eval (linkBase != nil): синтаксическая ошибка —
+			// перехватываемое исключение ParseError (require_parse_exception);
+			// главный скрипт печатает фатал через чанк-заглушку.
+			if linkBase != nil {
+				return nil, err
+			}
 			return parseFatalCompiled(pe, file), nil
 		}
 		return nil, err
@@ -4115,6 +4188,16 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		}
 	}
 	var decls []*FuncDecl
+	// Верхнеуровневые объявления текущего файла: повторное безусловное
+	// объявление в одном скрипте — фатал (function_redecl). Условные
+	// объявления (внутри if/циклов) сюда не попадают.
+	topFuncDecls := map[*FuncDecl]bool{}
+	for _, st := range prog.Stmts {
+		if fd, ok := st.(*FuncDecl); ok {
+			topFuncDecls[fd] = true
+		}
+	}
+	seenTopFunc := map[string]*FuncDecl{}
 	for _, fd := range collectFuncDecls(prog.Stmts) {
 		if _, exists := idx[fd.Name]; !exists {
 			idx[fd.Name] = len(funcs)
@@ -4129,10 +4212,25 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				Attrs:           makeAttrsInfo(fd.Attrs, attrFileOf(fd.DefFile, file), fd.Strict, nil),
 				ParamAttrs:      paramAttrsInfo(fd.Params, attrFileOf(fd.DefFile, file), fd.Strict, nil),
 				SensitiveParams: sens, SensitiveVariadic: sensVar,
-				VariadicByRef: variadicByRef(fd.Params),
+				VariadicByRef: variadicByRef(fd.Params), Variadic: variadicParams(fd.Params),
 			})
 			decls = append(decls, fd)
+			if topFuncDecls[fd] {
+				seenTopFunc[strings.ToLower(fd.Name)] = fd
+			}
 		} else if linkBase == nil {
+			if prev := seenTopFunc[strings.ToLower(fd.Name)]; prev != nil {
+				line := prog.Lines[fd]
+				if line <= 0 {
+					line = fd.DefLine
+				}
+				prevLine := prog.Lines[prev]
+				if prevLine <= 0 {
+					prevLine = prev.DefLine
+				}
+				return nil, &fatalError{msg: fmt.Sprintf("Cannot redeclare %s() (previously declared in %s:%d)",
+					fd.Name, file, prevLine), line: line}
+			}
 			// В одном файле повторное объявление перезаписывает
 			// предыдущее (историческое поведение).
 			decls = append(decls, fd)
@@ -4325,6 +4423,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				ci.SetParent(classes[pi])
 			}
 		}
+		seenIfaces := map[vm.ClassInfo]bool{}
 		for _, in := range cd.Interfaces {
 			// Повторная реализация того же интерфейса (в т.ч. с другим
 			// регистром) — фатал компиляции, как в Zend.
@@ -4386,6 +4485,26 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				}
 				return nil, base.newFatal(fmt.Sprintf("%s cannot implement %s - it is not an interface", cd.Name, in))
 			}
+			if !classes[ii].IsInterface() {
+				// Встроенный класс (Exception и т.п.) — не интерфейс. Zend
+				// разрешает `interface I extends Throwable` (у нас Throwable
+				// смоделирован классом-основанием Error/Exception).
+				if !(cd.IsInterface && strings.EqualFold(classes[ii].Name(), "Throwable")) {
+					return nil, base.newFatal(fmt.Sprintf("%s cannot implement %s - it is not an interface", cd.Name, in))
+				}
+			}
+			if seenIfaces[classes[ii]] {
+				// Zend отвергает повторный интерфейс в одном объявлении
+				// (наследованный дубликат допустим — objects_013/objects_014).
+				noun := "Class"
+				if cd.IsInterface {
+					noun = "Interface"
+				} else if cd.IsEnum {
+					noun = "Enum"
+				}
+				return nil, base.newFatal(fmt.Sprintf("%s %s cannot implement previously implemented interface %s", noun, cd.Name, in))
+			}
+			seenIfaces[classes[ii]] = true
 			ci.Implements(classes[ii])
 		}
 		if cd.IsEnum {
@@ -4554,7 +4673,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 			NumCaptures: ncap, IsStatic: ci.static,
 			CaptureNames:    capNames,
 			SensitiveParams: sens, SensitiveVariadic: sensVar,
-			VariadicByRef: variadicByRef(ci.params), Attrs: makeAttrsInfo(ci.attrs, base.file, base.strict, base.attrThunks(ci.cls)),
+			VariadicByRef: variadicByRef(ci.params), Variadic: variadicParams(ci.params), Attrs: makeAttrsInfo(ci.attrs, base.file, base.strict, base.attrThunks(ci.cls)),
 			ParamAttrs: paramAttrsInfo(ci.params, base.file, base.strict, base.attrThunks(ci.cls))}
 		ci.idx = len(funcs)
 		funcs = append(funcs, fn)
@@ -4924,7 +5043,7 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						NumRequired:     numRequired(m.Params),
 						RetType:         normalizedType(m.RetType),
 						SensitiveParams: sensS, SensitiveVariadic: sensVarS,
-						VariadicByRef: variadicByRef(m.Params),
+						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
 					})
 				case "method":
 					if m.Readonly {
@@ -4966,8 +5085,8 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 						NumRequired: numRequired(m.Params),
 						RetType:     normalizedType(m.RetType), Executable: cf,
 						SensitiveParams: sens, SensitiveVariadic: sensVar,
-						VariadicByRef: variadicByRef(m.Params),
-						ParamAttrs:    paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
+						VariadicByRef: variadicByRef(m.Params), Variadic: variadicParams(m.Params),
+						ParamAttrs: paramAttrsInfo(m.Params, attrFileOf(cd.DefFile, base.file), cd.Strict, base.attrThunks(ci))}
 					// __toString неявно возвращает string (проверка как в Zend).
 					if m.MName == "__toString" && fn.RetType == "" {
 						fn.RetType = "string"
@@ -5941,10 +6060,16 @@ compatLoop:
 						mv = "public"
 					}
 					if visRank(mv) < visRank(pv) {
-						if pv == "protected" {
-							return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be protected (as in class %s) or weaker", cd.Name, m.ConstName, pd.Name))
+						noun := "class"
+						if pd.IsInterface {
+							// Константы интерфейса: Zend пишет "as in interface I"
+							// (методы остаются "as in class I").
+							noun = "interface"
 						}
-						return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be %s (as in class %s)", cd.Name, m.ConstName, pv, pd.Name))
+						if pv == "protected" {
+							return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be protected (as in %s %s) or weaker", cd.Name, m.ConstName, noun, pd.Name))
+						}
+						return nil, base.newFatal(fmt.Sprintf("Access level to %s::%s must be %s (as in %s %s)", cd.Name, m.ConstName, pv, noun, pd.Name))
 					}
 					if pm.ConstType != "" {
 						resolve := func(t string) string {
@@ -6281,16 +6406,19 @@ func (c *compiler) magicConst(x *MagicExpr) uint8 {
 			s = s[i+2:]
 		}
 		if strings.HasPrefix(s, "{closure#") {
-			s = "{closure}"
+			s = closureQualifiedName(x.NS)
 		}
 	case "__METHOD__":
 		s = c.funcName
 		if strings.HasPrefix(s, "{closure#") {
-			s = "{closure}"
+			s = closureQualifiedName(x.NS)
 		}
 	case "__CLASS__":
 		r := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: 0})
+		// B=255 — специальный селектор __CLASS__: имя области класса, а вне
+		// класса — пустая строка (в отличие от self::class, который вне класса
+		// бросает Error).
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: 255})
 		return r
 	case "__TRAIT__":
 		// __TRAIT__ — имя трейта, в теле которого встречается константа
@@ -6337,8 +6465,10 @@ func (c *compiler) classKeyword(x *ClassKeywordExpr) (uint8, error) {
 	case "parent":
 		// Zend проверяет наличие родителя на этапе компиляции:
 		// `parent::class` в классе без extends — фатал
-		// (class_name_as_scalar_error_002).
-		if c.curClass != nil && c.curClass.Parent() == nil {
+		// (class_name_as_scalar_error_002). В теле трейта класс-носитель
+		// неизвестен — ошибка откладывается до рантайма, когда трейт
+		// примешан к классу без родителя (parent_class_name_without_parent).
+		if c.curClass != nil && c.curClass.Parent() == nil && !c.curClass.IsTrait() {
 			return 0, &fatalError{msg: `Cannot use "parent" when current class scope has no parent`, line: c.exprLine(x)}
 		}
 		fallthrough
@@ -6351,7 +6481,14 @@ func (c *compiler) classKeyword(x *ClassKeywordExpr) (uint8, error) {
 			sel = 2
 		}
 		r := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: sel})
+		// В контексте константного выражения (`const X = self::class;`)
+		// Zend сообщает "Cannot use \"self\" when no class scope is active"
+		// вместо "in the global scope" (self_class_const_in_unknown_scope).
+		var ctxFlag uint8
+		if c.constEval > 0 {
+			ctxFlag = 1
+		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpClassName, A: r, B: sel, C: int32(ctxFlag)})
 		return r, nil
 	default:
 		if strings.Contains(x.Class, "::") {
@@ -7672,7 +7809,14 @@ func (c *compiler) checkOverrideCompatible(cd *ClassDecl, m *ClassMember, pd *Cl
 		return c.newFatal(msg)
 	default:
 		msg := "Declaration of " + methodSigStringSub(cd.Name, m, cd.Name, cd.Parent) + " must be compatible with " + methodSigStringSub(pd.Name, pm, pd.Name, pd.Parent)
-		return c.newFatal(msg)
+		fe := &fatalError{msg: msg, line: c.curLine, file: c.errFile}
+		if magicMustBePublic[strings.ToLower(m.MName)] {
+			// Сначала Warning о публичности магического метода, затем фатал
+			// (magic_methods_008).
+			fe.warnMsg = fmt.Sprintf("The magic method %s::%s() must have public visibility", cd.Name, m.MName)
+			fe.warnLine = m.Line
+		}
+		return fe
 	}
 }
 
@@ -7706,15 +7850,22 @@ func (c *compiler) overrideCompat(cd *ClassDecl, m *ClassMember, pd *ClassDecl, 
 			mv = "public"
 		}
 		if visRank(mv) < visRank(pv) {
-			// Магические методы, обязанные быть public, понижение видимости
-			// не фаталит: Zend печатает только Warning (см. ветку компиляции
-			// метода). Остальные методы — фатал.
-			if !magicMustBePublic[strings.ToLower(m.MName)] {
-				if pv == "protected" {
-					return subNo, "", c.newFatal(fmt.Sprintf("Access level to %s::%s() must be protected (as in class %s) or weaker", cd.Name, m.MName, pd.Name))
+			// Понижение видимости переопределяемого метода — фатал; для
+			// магических методов предварительно печатается Warning о
+			// публичности (в ветке компиляции метода), но фатал тоже есть
+			// (magic_methods_008).
+			mkFatal := func(msg string) *fatalError {
+				fe := &fatalError{msg: msg, line: c.curLine, file: c.errFile}
+				if magicMustBePublic[strings.ToLower(m.MName)] {
+					fe.warnMsg = fmt.Sprintf("The magic method %s::%s() must have public visibility", cd.Name, m.MName)
+					fe.warnLine = m.Line
 				}
-				return subNo, "", c.newFatal(fmt.Sprintf("Access level to %s::%s() must be %s (as in class %s)", cd.Name, m.MName, pv, pd.Name))
+				return fe
 			}
+			if pv == "protected" {
+				return subNo, "", mkFatal(fmt.Sprintf("Access level to %s::%s() must be protected (as in class %s) or weaker", cd.Name, m.MName, pd.Name))
+			}
+			return subNo, "", mkFatal(fmt.Sprintf("Access level to %s::%s() must be %s (as in class %s)", cd.Name, m.MName, pv, pd.Name))
 		}
 	}
 	// Конструкторы (и деструкторы) не проверяются на совместимость подписи
@@ -9103,10 +9254,21 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 		var sNames, sKeys []string
 		var sDefaults []vm.Slot
 		seen := map[string]bool{}
+		// Захваченные use(...) переменные конфликтуют со static (Zend:
+		// "Duplicate declaration of static variable $a", static_variables_closure_bind).
+		for _, u := range captures {
+			seen[u.Name] = true
+			_ = u
+		}
 		for _, sv := range statics {
 			if seen[sv.Name] {
-				cc.chunk.Emit(vm.Instruction{Op: vm.OpFatal,
-					C: int32(cc.chunk.AddConst(vm.StrConst("Duplicate declaration of static variable " + sv.Name)))})
+				// Компайл-фатал (Zend сообщает его даже для невызываемой
+				// функции/замыкания, static_variables_closure_bind).
+				ln := staticDeclLine(cc, body, sv.Name)
+				if ln <= 0 {
+					ln = cc.curLine
+				}
+				return nil, &fatalError{msg: "Duplicate declaration of static variable " + sv.Name, line: ln}
 			}
 			seen[sv.Name] = true
 			if sv.Conditional {
@@ -11166,6 +11328,11 @@ func (c *compiler) stmt(st Stmt) error {
 		if c.isMain {
 			return c.mainStaticStmt(s)
 		}
+		// `static $x` после `global $x` возвращает CV к статическому слоту
+		// (static_variables_global_2).
+		for _, n := range s.Names {
+			delete(c.rebound, n)
+		}
 		// Статические переменные инициализируются в точке объявления (как
 		// ZEND_BIND_STATIC): значение по умолчанию вычисляется при первом
 		// выполнении оператора, поэтому оно видит уже вычисленные локальные
@@ -11199,6 +11366,20 @@ func (c *compiler) stmt(st Stmt) error {
 		}
 	case *GlobalStmt:
 		// статические имена: привязка учтена пресканом (c.globals/no-op).
+		// Если в функции есть одноимённая static-переменная, оператор
+		// перепривязывает CV к глобальной таблице до следующего `static`
+		// (static_variables_global: каждый вызов снова читает статический
+		// слот 42, а не глобальное 41).
+		if !c.isMain {
+			for _, n := range s.Names {
+				if _, isStatic := c.staticKeys[n]; isStatic {
+					if c.rebound == nil {
+						c.rebound = map[string]bool{}
+					}
+					c.rebound[n] = true
+				}
+			}
+		}
 		// Динамические (`global $$x` / `global ${expr}`) — вычисляем имя в
 		// точке оператора и привязываем в рантайме.
 		for _, e := range s.Dyn {
@@ -11543,6 +11724,13 @@ func (c *compiler) gotoStmt(label string) error {
 		if err := c.unwindToRegions(keep); err != nil {
 			return err
 		}
+		// Вход в try-регионы, которых нет у места перехода: активируем
+		// обработчики (как forward-goto через трамплин).
+		if missing := missingTryRegions(c.regions, c.labelRegions[label]); len(missing) > 0 {
+			for _, r := range missing {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPushTry, C: int32(r.try.tiIdx)})
+			}
+		}
 		at := c.chunk.Emit(vm.Instruction{Op: vm.OpJump, C: -1})
 		c.setJump(at, pc)
 		return nil
@@ -11595,10 +11783,11 @@ func (c *compiler) defineLabel(name string, line int) error {
 	if _, ok := c.labels[name]; ok {
 		return &fatalError{msg: "Label '" + name + "' already defined", line: line}
 	}
-	pc := c.chunk.Len()
-	c.labels[name] = pc
 	c.labelDepth[name] = c.loopDepth
 	c.labelRegions[name] = append([]regionRef(nil), c.regions...)
+	type gotoRetarget struct{ at, tramp int }
+	var skips, ends []int
+	var retargets []gotoRetarget
 	for _, g := range c.pendingGotos[name] {
 		if c.loopDepth > g.depth {
 			return &fatalError{msg: "'goto' into loop or switch statement is disallowed", line: g.line}
@@ -11614,10 +11803,57 @@ func (c *compiler) defineLabel(name string, line int) error {
 				}
 			}
 		}
-		c.setJump(g.at, pc)
+		// Goto ВНУТРЬ try-блока (jump16): обработчики активируются на входе
+		// (Zend регистрирует их по диапазону опкодов), поэтому на пути
+		// перехода эмитим PUSH_TRY отсутствующих регионов — трамплином перед
+		// меткой (обычный поток перепрыгивает трамплин).
+		if missing := missingTryRegions(g.regions, c.labelRegions[name]); len(missing) > 0 {
+			skips = append(skips, c.chunk.Emit(vm.Instruction{Op: vm.OpJump}))
+			tramp := c.chunk.Len()
+			for _, r := range missing {
+				c.chunk.Emit(vm.Instruction{Op: vm.OpPushTry, C: int32(r.try.tiIdx)})
+			}
+			ends = append(ends, c.chunk.Emit(vm.Instruction{Op: vm.OpJump}))
+			retargets = append(retargets, gotoRetarget{at: g.at, tramp: tramp})
+			continue
+		}
+		c.setJump(g.at, c.chunk.Len())
 	}
+	pc := c.chunk.Len()
+	for _, rt := range retargets {
+		c.setJump(rt.at, rt.tramp)
+	}
+	for _, s := range skips {
+		c.setJump(s, pc)
+	}
+	for _, e := range ends {
+		c.setJump(e, pc)
+	}
+	c.labels[name] = pc
 	delete(c.pendingGotos, name)
 	return nil
+}
+
+// missingTryRegions возвращает try-регионы из to (внешние раньше вложенных),
+// которых нет во from — их обработчики должен активировать goto на входе.
+func missingTryRegions(from, to []regionRef) []regionRef {
+	var out []regionRef
+	for i, r := range to {
+		if r.try == nil {
+			continue
+		}
+		found := false
+		for j := 0; j < i && j < len(from); j++ {
+			if from[j].try == r.try {
+				found = true
+				break
+			}
+		}
+		if !found {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // finalizeGotos проверяет, что все goto нашли метку.
@@ -13288,13 +13524,26 @@ func (c *compiler) evalArgs(mask []bool, args []Expr, info byRefInfo) ([]uint8, 
 				continue
 			}
 		}
-		r, err := c.expr(a)
+		r, err := c.exprArg(a, false)
 		if err != nil {
 			return nil, nil, err
 		}
 		regs[i] = r
 	}
 	return regs, wbs, nil
+}
+
+// exprArg компилирует аргумент вызова по значению: append-выражение в корне
+// (`f($a[])`) — компайл-фатал, как в Zend; вложенный append (`f($x[][$k])`)
+// откладывает ошибку до рантайма (FETCH_DIM_FUNC_ARG).
+func (c *compiler) exprArg(a Expr, byRefPos bool) (uint8, error) {
+	if ie, ok := a.(*IndexExpr); ok && ie.Key == nil && !byRefPos {
+		return 0, &fatalError{msg: "Cannot use [] for reading", line: c.exprLine(a)}
+	}
+	c.funcArgDepth++
+	r, err := c.expr(a)
+	c.funcArgDepth--
+	return r, err
 }
 
 // methodArgInfo описывает передачу аргументов метода: при неизвестной
@@ -13725,6 +13974,14 @@ func (c *compiler) expr(e Expr) (uint8, error) {
 			return 0, err
 		}
 		if x.Key == nil {
+			if c.funcArgDepth > 0 {
+				// FUNC_ARG: append допустим на компиляции, ошибка — Error в
+				// рантайме (FETCH_DIM_FUNC_ARG, func_arg_fetch_optimization).
+				if _, err := c.expr(x.Arr); err != nil {
+					return 0, err
+				}
+				return c.emitCall("__php_append_read_error", nil), nil
+			}
 			return 0, &fatalError{msg: "Cannot use [] for reading", line: c.exprLine(x)}
 		}
 		k, err := c.expr(x.Key)
@@ -14297,8 +14554,13 @@ func (c *compiler) exprForWrite(e Expr) (uint8, error) {
 		if err != nil {
 			return 0, err
 		}
+		// Ключ — в отдельном регистре: OpIndexRW канонизирует его на месте
+		// (ресурс/float), чтобы повторная запись не печатала предупреждение
+		// дважды (resource_key).
+		kc := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: kc, B: k})
 		d := c.alloc()
-		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: d, B: arr, C: int32(k)})
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: d, B: arr, C: int32(kc)})
 		if wb != nil {
 			wb(arr)
 		}
@@ -14693,6 +14955,15 @@ func (c *compiler) evalDynArgs(args []Expr) ([]uint8, []func(), error) {
 	var wbs []func()
 	for i, a := range args {
 		if v, ok := a.(*VarExpr); ok && v.Name != "$this" && v.Name != "this" {
+			// Переменная аргумента передаётся своей Ref-ячейкой: для by-ref
+			// параметра (SEND_VAR_EX) Zend превращает CV в ссылку, и алиас
+			// сохраняется для последующего `=&` (first_class_callable_refs:
+			// $i2 =& $fn($i); $i++; $i2 должен видеть $i). Значение by-value
+			// параметра вызываемая функция разыменовывает сама.
+			if !isGlobalsVar(v) {
+				regs[i] = c.refCell(v.Name)
+				continue
+			}
 			r, wb, err := c.byRefArg(v)
 			if err != nil {
 				return nil, nil, err
@@ -14719,7 +14990,7 @@ func (c *compiler) evalDynArgs(args []Expr) ([]uint8, []func(), error) {
 			}
 			continue
 		}
-		r, err := c.expr(a)
+		r, err := c.exprArg(a, false)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -16894,6 +17165,29 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 	if t.Key == nil && isGlobalsVar(t.Arr) {
 		return 0, c.newFatal("Cannot append to $GLOBALS")
 	}
+	// $GLOBALS['name'] op= v с константным ключом — доступ к глобальной
+	// переменной $name (Zend компилирует это как CV глобала: отсутствие даёт
+	// "Undefined global variable $name", а не "Undefined array key").
+	if op != "=" && t.Key != nil && isGlobalsVar(t.Arr) {
+		if lit, ok := t.Key.(*StrLit); ok && lit.V != "" {
+			bc, bok := binOp(strings.TrimSuffix(op, "="))
+			if !bok {
+				return 0, fmt.Errorf("компилятор: неизвестный оператор %q", op)
+			}
+			gname := "$" + lit.V
+			nr := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: vm.OpLoadK, A: nr, C: int32(c.chunk.AddConst(vm.StrConst(gname)))})
+			cur := c.emitCall("__php_globals_get", []uint8{nr})
+			r, err := c.expr(value)
+			if err != nil {
+				return 0, err
+			}
+			d := c.alloc()
+			c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
+			c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: d, C: int32(c.chunk.AddConst(vm.StrConst(gname)))})
+			return d, nil
+		}
+	}
 	// Запись в элемент временного выражения (`[0, 1][0] = 1`): Zend отвергает
 	// на компиляции.
 	if isTemporaryExpr(t.Arr) && !c.builtinCallBase(t.Arr) {
@@ -17030,15 +17324,20 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 	if !ok {
 		return 0, fmt.Errorf("компилятор: неизвестный оператор %q", op)
 	}
+	// Ключ — в отдельном регистре: OpIndexRW канонизирует его на месте
+	// (ресурс/float), общая с записью канонизация даёт одно предупреждение
+	// на оператор (resource_key).
+	kc := c.alloc()
+	c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: kc, B: k})
 	cur := c.alloc()
-	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: cur, B: arr, C: int32(k)})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRW, A: cur, B: arr, C: int32(kc)})
 	r, err := c.expr(value)
 	if err != nil {
 		return 0, err
 	}
 	d := c.alloc()
 	c.chunk.Emit(vm.Instruction{Op: compoundOp(bc), A: d, B: cur, C: int32(r)})
-	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: k, C: int32(d)})
+	c.chunk.Emit(vm.Instruction{Op: vm.OpIndexSet, A: arr, B: kc, C: int32(d)})
 	if wb != nil {
 		wb(arr)
 	}
@@ -18515,4 +18814,129 @@ func constValue(name string) (vm.Const, bool) {
 		return vm.FloatConst(math.Nextafter(1, 2) - 1), true
 	}
 	return vm.Const{}, false
+}
+
+// closureQualifiedName возвращает имя замыкания для магических констант
+// __FUNCTION__/__METHOD__: Zend квалифицирует его пространством имён файла
+// ("Baz\{closure}"), а вне namespace — просто "{closure}".
+func closureQualifiedName(ns string) string {
+	if ns != "" {
+		return ns + `\{closure}`
+	}
+	return "{closure}"
+}
+
+// staticDeclLine ищет строку объявления static-переменной с данным именем в
+// теле функции (для точной локации фатала "Duplicate declaration").
+func staticDeclLine(c *compiler, body []Stmt, name string) int {
+	var found int
+	var walk func([]Stmt)
+	walk = func(list []Stmt) {
+		for _, st := range list {
+			if found > 0 {
+				return
+			}
+			switch s := st.(type) {
+			case *StaticVarStmt:
+				for _, n := range s.Names {
+					if n == name {
+						found = c.stmtLines[s]
+						return
+					}
+				}
+			case *BlockStmt:
+				walk(s.Body)
+			case *IfStmt:
+				walk(s.Then)
+				walk(s.Else)
+			case *WhileStmt:
+				walk(s.Body)
+			case *DoWhileStmt:
+				walk(s.Body)
+			case *ForStmt:
+				walk(s.Body)
+			case *ForeachStmt:
+				walk(s.Body)
+			case *TryStmt:
+				walk(s.Body)
+				for _, cc := range s.Catches {
+					walk(cc.Body)
+				}
+				walk(s.Finally)
+			case *SwitchStmt:
+				for _, cs := range s.Cases {
+					walk(cs.Body)
+				}
+			}
+		}
+	}
+	walk(body)
+	return found
+}
+
+// hasTopLevelReturn сообщает, что среди операторов есть `return` на верхнем
+// уровне области включения, который splitTopReturn не умеет вынести (вложен в
+// if/цикл/try/блок, но не в тело функции/метода/замыкания). Возврат последним
+// оператором обрабатывается splitTopReturn, поэтому его не считаем.
+func hasTopLevelReturn(stmts []Stmt) bool {
+	// Последний top-level return отделяется splitTopReturn — он безопасен.
+	if n := len(stmts); n > 0 {
+		if _, ok := stmts[n-1].(*ReturnStmt); ok {
+			stmts = stmts[:n-1]
+		}
+	}
+	return hasNestedReturn(stmts)
+}
+
+func hasNestedReturn(stmts []Stmt) bool {
+	for _, st := range stmts {
+		switch s := st.(type) {
+		case *ReturnStmt:
+			return true
+		case *FuncDecl:
+			continue
+		case *ClassDecl:
+			continue
+		case *BlockStmt:
+			if hasNestedReturn(s.Body) {
+				return true
+			}
+		case *IfStmt:
+			if hasNestedReturn(s.Then) || hasNestedReturn(s.Else) {
+				return true
+			}
+		case *WhileStmt:
+			if hasNestedReturn(s.Body) {
+				return true
+			}
+		case *DoWhileStmt:
+			if hasNestedReturn(s.Body) {
+				return true
+			}
+		case *ForStmt:
+			if hasNestedReturn(s.Body) {
+				return true
+			}
+		case *ForeachStmt:
+			if hasNestedReturn(s.Body) {
+				return true
+			}
+		case *TryStmt:
+			if hasNestedReturn(s.Body) || hasNestedReturn(s.Finally) {
+				return true
+			}
+			for _, cc := range s.Catches {
+				if hasNestedReturn(cc.Body) {
+					return true
+				}
+			}
+		case *SwitchStmt:
+			for _, cs := range s.Cases {
+				if hasNestedReturn(cs.Body) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }

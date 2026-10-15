@@ -1335,17 +1335,32 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 }
 
 func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
+	// Имя свойства-объект приводится через __toString; исключение из него
+	// всплывает наружу (exception_from_toString: $obj->{$badStr} = $v).
 	// \0-имя проверяется ПОСЛЕ магии: Zend вызывает __set для такого имени
 	// и падает уже внутри него (bug52484_2).
+	nameSlot := deref(regs[in.C])
+	pname := ""
+	if nameSlot.typ == ObjectType || nameSlot.typ == ClosureType {
+		sp, serr := vm.ToStringValue(nameSlot)
+		if serr != nil {
+			if !vm.handleThrow(chunk, serr) {
+				return execResult{err: serr}
+			}
+			return execResult{next: true}
+		}
+		pname = sp
+	} else {
+		pname = nameSlot.ToString()
+	}
 	ci := vm.classInfo(regs[in.A])
 	if ci == nil {
-		err := vm.propWriteNonObjectErr(regs[in.A], deref(regs[in.C]).ToString())
+		err := vm.propWriteNonObjectErr(regs[in.A], pname)
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}
 		}
 		return execResult{next: true}
 	}
-	pname := deref(regs[in.C]).ToString()
 	o := regs[in.A]
 	declKey := propKeyForScope(vm.ctx.self, ci, pname)
 	if d := deref(o); d.typ == ObjectType && (*Object)(d.ptr).incomplete {

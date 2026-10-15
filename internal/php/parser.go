@@ -1402,6 +1402,10 @@ func tokenDesc(t Token) string {
 	case TIdent:
 		return fmt.Sprintf("identifier %q", t.Val)
 	default:
+		if t.Kind == TOp && t.Val == "\\" {
+			// Zend печатает обратный слэш без удвоения: token "\".
+			return `token "\"`
+		}
 		return fmt.Sprintf("token %q", t.Val)
 	}
 }
@@ -2461,6 +2465,17 @@ modsDone:
 	classAttrs := p.parseAttrs(p.takeAttrs())
 	p.next()
 
+	// Имя класса/интерфейса/трейта не может быть зарезервированным ключевым
+	// словом (кроме «мягких» enum/from/get/not): Zend сообщает Parse error
+	// "unexpected token ..., expecting identifier" (lsb_008/lsb_009).
+	if nt := p.cur(); (nt.Kind == TKeyword && !softClassName[nt.Val]) ||
+		(nt.Kind == TIdent && strings.EqualFold(nt.Val, "callable")) {
+		return nil, &parseError{
+			msg:  fmt.Sprintf("syntax error, unexpected token %q, expecting identifier", nt.Val),
+			line: p.lineAt(nt.Pos),
+		}
+	}
+
 	cd := &ClassDecl{IsInterface: kind == "interface", IsTrait: kind == "trait", IsAbstract: isAbstract, IsFinal: isFinal,
 		IsReadonly: isReadonly, ReadonlyDup: readonlyCount > 1, FinalDup: finalCount > 1, Line: classLine, Attrs: classAttrs,
 		Doc: p.docCommentBefore(classPos)}
@@ -2553,6 +2568,11 @@ modsDone:
 					if p.accept(TOp, ";") {
 						continue
 					}
+					if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+						// `<?=` в позиции имени метода адаптации (Zend:
+						// "Cannot use "<?=" as an identifier").
+						return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
+					}
 					ta := &TraitAdapt{}
 					first := p.className()
 					if p.accept(TOp, "::") {
@@ -2589,6 +2609,12 @@ modsDone:
 							// Zend: readonly-модификатор к методу неприменим
 							// (в т.ч. в позиции имени псевдонима).
 							return nil, &fatalError{msg: "Cannot use the readonly modifier on a method", line: p.lineAt(p.cur().Pos)}
+						}
+						if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+							// `<?=` в позиции имени псевдонима: Zend сообщает
+							// Parse error "Cannot use "<?=" as an identifier"
+							// (short_echo_as_identifier).
+							return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
 						}
 						if p.is(TIdent, "") || p.is(TKeyword, "") {
 							ta.AliasName = tokName(p.next())
@@ -3315,7 +3341,8 @@ func (p *Parser) funcDecl() (Stmt, error) {
 	attrs := p.parseAttrs(p.takeAttrs())
 	p.next() // function
 	byref := p.accept(TOp, "&")
-	name := p.qualifyDecl(tokName(p.next()))
+	rawName := tokName(p.next())
+	name := p.qualifyDecl(rawName)
 	params, err := p.paramList()
 	if err != nil {
 		return nil, err
@@ -3350,8 +3377,8 @@ func (p *Parser) funcDecl() (Stmt, error) {
 		// Объявление функции с именем, уже занятым импортом `use function`:
 		// Zend выдаёт компайл-фатал (define_imported). Псевдоним импорта
 		// хранится без пространства имён, диагностика — с полным именем.
-		if _, ok := p.funcUses[strings.ToLower(name)]; ok {
-			return nil, &fatalError{msg: "Cannot declare function " + p.qualifyDecl(name) + " because the name is already in use", line: declLine}
+		if _, ok := p.funcUses[strings.ToLower(rawName)]; ok {
+			return nil, &fatalError{msg: "Cannot declare function " + p.qualifyDecl(rawName) + " because the name is already in use", line: declLine}
 		}
 	}
 	p.seenFuncs[strings.ToLower(p.qualifyDecl(name))] = true
@@ -4132,12 +4159,13 @@ func (p *Parser) rawQualifiedName() string {
 	var b strings.Builder
 	// Относительное имя `namespace\Foo` — префикс текущего пространства имён.
 	rel := false
-	if p.is(TKeyword, "namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "\\" {
+	if p.is(TKeyword, "namespace") && p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "\\" &&
+		p.adjacentNames(p.cur(), p.peekAt(1)) && p.adjacentNames(p.peekAt(1), p.peekAt(2)) {
 		p.next() // namespace
 		p.next() // \
 		rel = true
 	}
-	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) && p.adjacentNames(p.cur(), p.peekAt(1)) {
 		p.next() // \
 		b.WriteByte('\\')
 		b.WriteString(tokName(p.next()))
@@ -4145,7 +4173,7 @@ func (p *Parser) rawQualifiedName() string {
 	if b.Len() == 0 {
 		b.WriteString(tokName(p.next()))
 	}
-	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) {
+	for p.is(TOp, "\\") && isNameTok(p.peekAt(1)) && p.adjacentNames(p.toks[p.pos-1], p.cur()) && p.adjacentNames(p.cur(), p.peekAt(1)) {
 		p.next() // \
 		b.WriteByte('\\')
 		b.WriteString(p.next().Val)
@@ -4158,6 +4186,13 @@ func (p *Parser) rawQualifiedName() string {
 		return "\\" + b.String()
 	}
 	return b.String()
+}
+
+// adjacentNames сообщает, что два токена записаны подряд (без пробелов):
+// PHP 8 отвергает `Foo \ Bar` — разделитель пространства имён обязан
+// примыкать к обеим частям имени (namespaced_name_whitespace).
+func (p *Parser) adjacentNames(a, b Token) bool {
+	return a.Pos+len(a.Val) == b.Pos
 }
 
 // kwAdjacentBackslash сообщает, что текущий ключевой токен сразу (без
@@ -4440,6 +4475,11 @@ func (p *Parser) qualifyDecl(name string) string {
 	}
 	return name
 }
+
+// softClassName — ключевые слова нашего лексера, которые PHP допускает как
+// имя класса (в Zend это T_STRING): enum/from/get, а также «not» (в PHP не
+// ключевое слово).
+var softClassName = map[string]bool{"enum": true, "from": true, "get": true, "not": true}
 
 // nameRefExpr разбирает имя (возможно квалифицированное) как выражение: вызов
 // функции, ссылку на класс (перед `::`) или константу.
@@ -5346,6 +5386,11 @@ mods:
 					if p.accept(TOp, ";") {
 						continue
 					}
+					if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+						// `<?=` в позиции имени метода адаптации (Zend:
+						// "Cannot use "<?=" as an identifier").
+						return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
+					}
 					ta := &TraitAdapt{}
 					first := p.className()
 					if p.accept(TOp, "::") {
@@ -5382,6 +5427,12 @@ mods:
 							// Zend: readonly-модификатор к методу неприменим
 							// (в т.ч. в позиции имени псевдонима).
 							return nil, &fatalError{msg: "Cannot use the readonly modifier on a method", line: p.lineAt(p.cur().Pos)}
+						}
+						if p.is(TKeyword, "echo") && strings.HasPrefix(p.src[p.cur().Pos:], "<?=") {
+							// `<?=` в позиции имени псевдонима: Zend сообщает
+							// Parse error "Cannot use "<?=" as an identifier"
+							// (short_echo_as_identifier).
+							return nil, &parseError{msg: `Cannot use "<?=" as an identifier`, line: p.lineAt(p.cur().Pos)}
 						}
 						if p.is(TIdent, "") || p.is(TKeyword, "") {
 							ta.AliasName = tokName(p.next())

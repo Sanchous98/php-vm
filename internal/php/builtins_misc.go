@@ -1034,6 +1034,10 @@ func registerShutdownFunctionFn(ctx *vm.Context) vm.Value {
 		return *new(vm.Value)
 	}
 	cb := ctx.VMInstance().NormalizeCallableSlot(derefSlot(args[0]))
+	// Нестатический метод в строковой форме ('Test::method'), зарегистрированный
+	// из метода объекта: Zend сохраняет текущий $this и вызывает обработчик с
+	// ним (register_shutdown_function_refcount).
+	cb = ctx.VMInstance().BindThisToMethodCallable(cb, ctx.VMInstance().CurrentThis())
 	var extra []vm.Slot
 	if len(args) > 1 {
 		extra = append(extra, args[1:]...)
@@ -2580,57 +2584,59 @@ var (
 // defaultIniValues возвращает значения по умолчанию (как в CLI).
 func defaultIniValues() map[string]string {
 	return map[string]string{
-		"precision":                   "14",
-		"serialize_precision":         "-1",
-		"variables_order":             "EGPCS",
-		"request_order":               "",
-		"sys_temp_dir":                "",
-		"error_reporting":             "E_ALL",
-		"display_errors":              "1",
-		"display_startup_errors":      "0",
-		"log_errors":                  "1",
-		"error_log":                   "",
-		"html_errors":                 "0",
-		"docref_root":                 "",
-		"user_agent":                  "",
-		"disable_functions":           "",
-		"enable_post_data_reading":    "1",
-		"post_max_size":               "8M",
-		"upload_max_filesize":         "2M",
-		"file_uploads":                "1",
-		"max_file_uploads":            "20",
-		"memory_limit":                "128M",
-		"include_path":                ".:/usr/share/php",
-		"open_basedir":                "",
-		"default_charset":             "UTF-8",
-		"extension_dir":               "./",
-		"date.timezone":               "UTC",
-		"max_execution_time":          "0",
-		"sendmail_path":               "/usr/sbin/sendmail -t -i",
-		"mail.add_x_header":           "0",
-		"mail.log":                    "",
-		"mail.force_extra_parameters": "",
-		"mail.mixed_lf_and_crlf":      "0",
-		"pcre.jit":                    "1",
-		"pcre.backtrack_limit":        "1000000",
-		"pcre.recursion_limit":        "100000",
-		"short_open_tag":              "1",
-		"internal_encoding":           "",
-		"input_encoding":              "",
-		"output_encoding":             "",
-		"zend.enable_gc":              "1",
-		"zend.assertions":             "1",
-		"arg_separator.output":        "&",
-		"auto_detect_line_endings":    "0",
-		"allow_url_fopen":             "1",
-		"allow_url_include":           "0",
-		"unserialize_callback_func":   "",
-		"unserialize_max_depth":       "4096",
-		"highlight.string":            "#DD0000",
-		"highlight.comment":           "#FF8000",
-		"highlight.default":           "#0000BB",
-		"highlight.keyword":           "#007700",
-		"highlight.html":              "#000000",
+		"precision":                           "14",
+		"serialize_precision":                 "-1",
+		"zend.exception_ignore_args":          "0",
+		"zend.exception_string_param_max_len": "15",
+		"variables_order":                     "EGPCS",
+		"request_order":                       "",
+		"sys_temp_dir":                        "",
+		"error_reporting":                     "E_ALL",
+		"display_errors":                      "1",
+		"display_startup_errors":              "0",
+		"log_errors":                          "1",
+		"error_log":                           "",
+		"html_errors":                         "0",
+		"docref_root":                         "",
+		"user_agent":                          "",
+		"disable_functions":                   "",
+		"enable_post_data_reading":            "1",
+		"post_max_size":                       "8M",
+		"upload_max_filesize":                 "2M",
+		"file_uploads":                        "1",
+		"max_file_uploads":                    "20",
+		"memory_limit":                        "128M",
+		"include_path":                        ".:/usr/share/php",
+		"open_basedir":                        "",
+		"default_charset":                     "UTF-8",
+		"extension_dir":                       "./",
+		"date.timezone":                       "UTC",
+		"max_execution_time":                  "0",
+		"sendmail_path":                       "/usr/sbin/sendmail -t -i",
+		"mail.add_x_header":                   "0",
+		"mail.log":                            "",
+		"mail.force_extra_parameters":         "",
+		"mail.mixed_lf_and_crlf":              "0",
+		"pcre.jit":                            "1",
+		"pcre.backtrack_limit":                "1000000",
+		"pcre.recursion_limit":                "100000",
+		"short_open_tag":                      "1",
+		"internal_encoding":                   "",
+		"input_encoding":                      "",
+		"output_encoding":                     "",
+		"zend.enable_gc":                      "1",
+		"zend.assertions":                     "1",
+		"arg_separator.output":                "&",
+		"auto_detect_line_endings":            "0",
+		"allow_url_fopen":                     "1",
+		"allow_url_include":                   "0",
+		"unserialize_callback_func":           "",
+		"unserialize_max_depth":               "4096",
+		"highlight.string":                    "#DD0000",
+		"highlight.comment":                   "#FF8000",
+		"highlight.default":                   "#0000BB",
+		"highlight.keyword":                   "#007700",
+		"highlight.html":                      "#000000",
 	}
 }
 
@@ -4578,7 +4584,7 @@ func escapeshellcmd(s string) string {
 // debug_zval_dump() в PHP.
 func debugZvalDumpFn(ctx *vm.Context) vm.Value {
 	if v := ctx.VM(); v != nil {
-		v.ArmHandles()
+		_ = v.ArmHandles()
 	}
 	var b strings.Builder
 	st := &dumpState{vm: ctx.VM(), objIDs: map[*vm.Object]int{}, arrs: map[*vm.Array]bool{}, objs: map[*vm.Object]bool{}, refCount: map[*vm.Ref]int{}}

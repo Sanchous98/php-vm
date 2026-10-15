@@ -155,6 +155,20 @@ func (vm *VM) opGlobalUnset(regs []Slot, consts []Slot, chunk *Chunk, in Instruc
 
 func (vm *VM) opGlobalGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	name := "$" + deref(regs[in.C]).ToString()
+	// `$$x` с $x == "this" внутри метода — сам объект (indirect_reference_this).
+	if name == "$this" && vm.ctx.this.typ == ObjectType {
+		r := vm.ctx.this
+		{
+			old := regs[in.A]
+			wv := r
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		shareSlot(r)
+		return execResult{}
+	}
 	if v, ok := vm.globals[name]; ok {
 		r := deref(v)
 		{

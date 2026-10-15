@@ -803,19 +803,22 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 			return Slot{}, NewThrowable("Error", "Value is not callable")
 		}
 		if cl.Fn == nil {
-			// Трамплин магического метода (Fn == nil, MagicName задан):
-			// вызов уходит в __call/__callStatic (gh16515).
+			// Трамплин-замыкание через __call/__callStatic.
 			if cl.MagicName != "" {
 				if ci := vm.classInfo(cl.BoundThis); ci != nil {
-					if res, ok, err := vm.callMagicMethod(ci, cl.BoundThis, "__call",
+					if res, ok, merr := vm.callMagicMethod(ci, cl.BoundThis, "__call",
 						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
-						return res, err
+						return res, merr
 					}
 				}
 				if cl.Scope != nil {
-					if res, ok, err := vm.callMagicMethodCalled(cl.Scope, cl.Called, Slot{}, "__callStatic",
+					called := cl.Called
+					if called == nil {
+						called = cl.Scope
+					}
+					if res, ok, merr := vm.callMagicMethodCalled(cl.Scope, called, Slot{}, "__callStatic",
 						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
-						return res, err
+						return res, merr
 					}
 				}
 			}
@@ -1985,8 +1988,8 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 	switch c.typ {
 	case ClosureType:
 		cl := c.asClosure()
-		// Трамплин магического метода (__call/__callStatic, Fn == nil, но
-		// задан MagicName) тоже вызываем (gh16515).
+		// Трамплин-замыкания (MagicName, `$obj->missing(...)`) Zend считает
+		// вызываемыми: вызов уходит в __call/__callStatic.
 		return cl != nil && (cl.Fn != nil || cl.MagicName != ""), "Closure::__invoke"
 	case ObjectType:
 		ci := vm.classInfo(c)

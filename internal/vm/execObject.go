@@ -809,6 +809,13 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 	} else {
 		pname = consts[in.C].StringVal()
 	}
+	if cls, ok := incompleteObjName(vm.objectOf(recv)); ok {
+		err := incompleteModifyErr(cls)
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	ci := vm.classInfo(recv)
 	if ci == nil {
 		// Чтение-для-записи в не-объект: Zend бросает Error (не Warning).

@@ -400,9 +400,17 @@ func (vm *VM) listFetchRefWrite(regs []Slot, chunk *Chunk, in Instruction, r *Re
 		}
 		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
 			vm.Warn("String offset cast occurred")
+			if vm.ctx.HasThrown() {
+				return execResult{next: true}
+			}
 		}
 		if _, _, illegal := vm.stringOffsetKey(regs[in.C]); illegal {
 			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
+			// Обработчик ошибок мог бросить исключение (bug76534): оно имеет
+			// приоритет над «Cannot create references…».
+			if vm.ctx.HasThrown() {
+				return execResult{next: true}
+			}
 		}
 		err := NewThrowable("Error", "Cannot create references to/from string offsets")
 		if !vm.handleThrow(chunk, err) {
@@ -586,9 +594,17 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 		}
 		if k := deref(regs[in.C]); k.typ != IntType && k.typ != StringType {
 			vm.Warn("String offset cast occurred")
+			if vm.ctx.HasThrown() {
+				return execResult{next: true}
+			}
 		}
 		if _, _, illegal := vm.stringOffsetKey(regs[in.C]); illegal {
 			vm.Warn(`Illegal string offset "` + deref(regs[in.C]).ToString() + `"`)
+			// Обработчик ошибок мог бросить исключение (bug76534): оно имеет
+			// приоритет над «Cannot create references…».
+			if vm.ctx.HasThrown() {
+				return execResult{next: true}
+			}
 		}
 		err := NewThrowable("Error", "Cannot create references to/from string offsets")
 		if !vm.handleThrow(chunk, err) {

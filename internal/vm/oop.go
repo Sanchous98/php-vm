@@ -1764,6 +1764,11 @@ func (vm *VM) magicGetInaccessible(ci ClassInfo, recv Slot, pname string) (Slot,
 // Error «Attempt to increment/decrement property "x" on <type>» (Zend бросает
 // его до чтения значения, без Warning о чтении). Возвращает приёмник.
 func (vm *VM) IncDecPropCheck(o Slot, name string, dec bool) (Slot, error) {
+	// incomplete-объект: Zend сообщает «The script tried to modify a property…»
+	// как Error (bug71841), а не Warning о чтении.
+	if cls, ok := incompleteObjName(vm.objectOf(o)); ok {
+		return Slot{}, incompleteModifyErr(cls)
+	}
 	if vm.classInfo(o) != nil {
 		return o, nil
 	}

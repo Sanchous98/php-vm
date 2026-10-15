@@ -106,6 +106,7 @@ func (c *runtimeClass) Use(t ClassInfo) ClassInfo {
 		// указывают на класс, в который примешан трейт.
 		nf := *m
 		nf.Scope = c
+		nf.RebindStaticKeys()
 		c.methods[name] = &nf
 		appendUnique(&c.methodOrder, name)
 		if tr.methVis != nil {
@@ -119,6 +120,7 @@ func (c *runtimeClass) Use(t ClassInfo) ClassInfo {
 	if tr.ctor != nil && c.ctor == nil {
 		nf := *tr.ctor
 		nf.Scope = c
+		nf.RebindStaticKeys()
 		c.ctor = &nf
 	}
 	mixinTraitMembers(c, tr)
@@ -452,6 +454,7 @@ func (c *runtimeClass) UseExcept(t ClassInfo, skip map[string]bool) ClassInfo {
 		// указывают на класс, в который примешан трейт.
 		nf := *m
 		nf.Scope = c
+		nf.RebindStaticKeys()
 		c.methods[name] = &nf
 		appendUnique(&c.methodOrder, name)
 		if tr.methVis != nil {
@@ -463,6 +466,7 @@ func (c *runtimeClass) UseExcept(t ClassInfo, skip map[string]bool) ClassInfo {
 	if tr.ctor != nil && c.ctor == nil {
 		nf := *tr.ctor
 		nf.Scope = c
+		nf.RebindStaticKeys()
 		c.ctor = &nf
 	}
 	mixinTraitMembers(c, tr)
@@ -664,9 +668,14 @@ func (c *runtimeClass) MethodFunction(name string) (*Function, bool) {
 
 // AliasMethod регистрирует псевдоним метода (копия с новым именем).
 func (c *runtimeClass) AliasMethod(alias string, fn *Function, vis Visibility) ClassInfo {
+	if fn == nil {
+		return c
+	}
 	nf := *fn
 	nf.Name = alias
 	nf.Scope = c
+	// Псевдоним — отдельная копия метода: своя ячейка статических переменных.
+	nf.RebindStaticKeys()
 	c.methods[alias] = &nf
 	appendUnique(&c.methodOrder, alias)
 	c.setMethodVis(alias, vis)

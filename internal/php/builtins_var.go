@@ -1799,8 +1799,13 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			capVals = cl.Captures
 			if cl.Fn != nil && len(cl.Fn.StaticNames) > 0 {
 				staticNames = cl.Fn.StaticNames
-				staticKeys = cl.Fn.StaticKeys
 				staticDefaults = cl.Fn.StaticDefaults
+				// Ключи копии метода могут отличаться от исходных
+				// (trait-миксин/alias, см. Function.RebindStaticKeys).
+				staticKeys = make([]string, len(staticNames))
+				for i := range staticNames {
+					staticKeys[i] = cl.Fn.StaticKeyAt(i)
+				}
 			}
 			hasThis = derefSlot(cl.BoundThis).Type() == vm.ObjectType
 		}

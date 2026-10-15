@@ -1003,6 +1003,7 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			return execResult{next: true}
 		}
 	}
+	warned := false
 	// Необъявленное свойство как база записи: для классов без динамических
 	// свойств создание запрещено (WeakMap: "Cannot create dynamic property").
 	if !declared {
@@ -1033,16 +1034,25 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			}
 		} else {
 			// FETCH_OBJ_RW: свойство создаётся (null) сразу, поэтому
-			// последующая запись не повторяет Deprecated.
+			// последующая запись не повторяет Deprecated. Warning — только
+			// когда свойства не было (dynamic_prop_deprecation: второй `+=`
+			// уже «Ok»).
+			exists := false
 			if ob != nil {
-				if _, exists := ob.props[pname]; !exists {
+				_, exists = ob.props[pname]
+				if !exists {
 					vm.setProp(recv, pname, MakeNull())
 				}
 			}
-			vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
+			if !exists {
+				vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
+				warned = true
+			}
 		}
 	}
-	vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
+	if !warned && !arrMode {
+		vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
+	}
 	// Обработчик ошибки мог создать свойство (oss_fuzz_61712b: `$c->a %= 10`
 	// при set_error_handler, добавляющем $a): Zend читает значение после
 	// предупреждения, поэтому оно уже существует.

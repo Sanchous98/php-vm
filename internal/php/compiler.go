@@ -336,6 +336,12 @@ type compiler struct {
 	file         string // путь к компилируемому файлу (для __FILE__/__DIR__)
 	globals      map[string]bool
 	staticKeys   map[string]string
+	// staticUnbound — статические переменные функции, объявление которых
+	// ещё не скомпилировано: до точки `static $x` имя ведёт себя как обычная
+	// CV (Zend выполняет BIND_STATIC в рантайме, поэтому присваивания до
+	// объявления не пишут в статический слот —
+	// static_variables_destructor).
+	staticUnbound map[string]bool
 	// rebound — переменные, для которых оператор `global $x` (в функции с
 	// одноимённой static $x) перепривязал CV к глобальной таблице: обращения
 	// после него идут по имени, а не по ключу статического слота. Оператор
@@ -1146,6 +1152,11 @@ func (c *compiler) useGlobal(name string) bool {
 		// — по-прежнему в VM.globals.
 		return !c.promote[name]
 	}
+	// До выполнения `static $x` имя живёт как обычная CV (см. staticUnbound):
+	// статический слот подключается в точке объявления.
+	if c.staticUnbound[name] && !c.globals[name] {
+		return false
+	}
 	return c.globals[name] || c.staticKeys[name] != ""
 }
 
@@ -1704,7 +1715,12 @@ func (c *compiler) prescan(stmts []Stmt) {
 		case *ClosureExpr:
 			for _, u := range x.Uses {
 				if u.ByRef {
-					addRef(u.Name)
+					if !c.isMain {
+						addRef(u.Name)
+					}
+					// main: ref-ячейка подключается в точке замыкания
+					// (closureExpr) — до неё чтение $x остаётся обычным и
+					// печатает «Undefined variable» (closure_012).
 				} else {
 					add(u.Name)
 				}
@@ -4579,6 +4595,12 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 		}
 		seenIfaces := map[vm.ClassInfo]bool{}
 		ifaceSeen := map[int]string{}
+		// ifaceMethods — уже собранные методы предков интерфейса (в порядке
+		// `extends`) для диагностики конфликта static-ности (inter_007).
+		var ifaceMethods map[string]ifaceMethod
+		if cd.IsInterface {
+			ifaceMethods = map[string]ifaceMethod{}
+		}
 		for _, in := range cd.Interfaces {
 			// Повторная реализация того же интерфейса (в т.ч. с другим
 			// регистром) — фатал компиляции, как в Zend.
@@ -4632,6 +4654,50 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				return nil, base.newFatal(fmt.Sprintf("%s %s cannot implement previously implemented interface %s", kind, cd.Name, classes[ii].Name()))
 			}
 			ifaceSeen[ii] = in
+			// Два предка-интерфейса с одноимённым (без учёта регистра) методом
+			// разной static-ности — фатал в точке первого объявления; Zend
+			// называет метод первого предка и второй как родителя (inter_007).
+			if ifaceMethods != nil {
+				declByGlobalIdx := func(j int) *ClassDecl {
+					if d := j - classBase; d >= 0 && d < len(classDecls) {
+						return classDecls[d]
+					}
+					return nil
+				}
+				resolve := func(n string) *ClassDecl {
+					if j, ok := classIdx[n]; ok {
+						return declByGlobalIdx(j)
+					}
+					if j, ok := ciLookup(classIdx, n); ok {
+						return declByGlobalIdx(j)
+					}
+					if tgt, isAlias := base.classAlias[strings.ToLower(strings.TrimLeft(n, "\\"))]; isAlias {
+						if j, ok := classIdx[tgt]; ok {
+							return declByGlobalIdx(j)
+						}
+						if j, ok := ciLookup(classIdx, tgt); ok {
+							return declByGlobalIdx(j)
+						}
+					}
+					return nil
+				}
+				for _, pm := range ifaceMethodTable(declByGlobalIdx(ii), resolve, map[*ClassDecl]bool{}) {
+					k := strings.ToLower(pm.m.MName)
+					prev, dup := ifaceMethods[k]
+					if !dup {
+						ifaceMethods[k] = pm
+						continue
+					}
+					if prev.m.Static == pm.m.Static {
+						continue
+					}
+					base.curLine = prev.m.Line
+					if prev.m.Static {
+						return nil, base.newFatal(fmt.Sprintf("Cannot make non static method %s::%s() static in class %s", pm.owner.Name, prev.m.MName, prev.owner.Name))
+					}
+					return nil, base.newFatal(fmt.Sprintf("Cannot make static method %s::%s() non static in class %s", pm.owner.Name, prev.m.MName, prev.owner.Name))
+				}
+			}
 			if in == "UnitEnum" || in == "BackedEnum" {
 				if cd.IsEnum {
 					if in == "BackedEnum" && cd.EnumBacking == "" {
@@ -5283,6 +5349,9 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 							fmt.Sprintf("Private methods cannot be final as they are never overridden by other classes in %s on line %d", file, m.Line))
 					}
 					cf.SetOwner(fn)
+					// Метаданные статических переменных нужны и методам: копии
+					// трейт-методов получают собственные ячейки (RebindStaticKeys).
+					copyFuncStatics(fn, cf)
 					if strings.HasPrefix(ci.Name(), "\x00anon#") {
 						base := "class"
 						if p := ci.Parent(); p != nil {
@@ -9548,6 +9617,13 @@ func (c *compiler) compileBody(name string, params []Param, captures []Param, bo
 				continue
 			}
 			cc.staticKeys[sv.Name] = name + "\x00" + sv.Name
+			// До точки объявления имя — обычная CV (см. compiler.staticUnbound).
+			if !cc.isMain {
+				if cc.staticUnbound == nil {
+					cc.staticUnbound = map[string]bool{}
+				}
+				cc.staticUnbound[sv.Name] = true
+			}
 		}
 		// Метаданные для var_dump замыканий/FCC и рефлексии: имена, ключи
 		// ячеек и значения по умолчанию (Zend хранит их в static_variables).
@@ -11642,15 +11718,34 @@ func (c *compiler) stmt(st Stmt) error {
 				if key == "" {
 					continue
 				}
+				keyc := int32(c.chunk.AddConst(vm.StrConst(key)))
 				iss := c.alloc()
-				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
-				jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss})
+				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss, C: keyc})
+				jt := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss})
+				// Инициализатор компилируется до подключения статического
+				// слота: `static $a = $a;` видит прежнюю CV.
 				r, err := c.expr(def)
 				if err != nil {
 					return err
 				}
-				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: r, C: int32(c.chunk.AddConst(vm.StrConst(key)))})
-				c.setJump(jf, c.chunk.Len())
+				// Точка BIND_STATIC: дальше имя адресует статический слот.
+				delete(c.staticUnbound, n)
+				// Инициализатор мог рекурсивно выполнить это же объявление и
+				// уже заполнить слот (static_variables_recursive) — тогда
+				// вычисленное значение не перезаписывает сохранённое.
+				iss2 := c.alloc()
+				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalIsset, A: iss2, C: keyc})
+				js := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfTrue, A: iss2})
+				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalSet, A: r, C: keyc})
+				end := c.chunk.Len()
+				c.setJump(jt, end)
+				c.setJump(js, end)
+				// BIND_STATIC уничтожает прежнее значение CV: значение,
+				// записанное до объявления, освобождается здесь — с вызовом
+				// деструктора (static_variables_destructor).
+				if reg, ok := c.vars[n]; ok {
+					c.chunk.Emit(vm.Instruction{Op: vm.OpNull, A: reg})
+				}
 				continue
 			}
 			r, err := c.expr(def)
@@ -15078,6 +15173,34 @@ func (c *compiler) checkNoClassScope(kw string) error {
 		c.scopeFatal = err
 	}
 	return err
+}
+
+// ifaceMethod — метод интерфейса вместе с объявлением-владельцем (диагностика
+// конфликта static-ности у нескольких предков, inter_007).
+type ifaceMethod struct {
+	owner *ClassDecl
+	m     *ClassMember
+}
+
+// ifaceMethodTable собирает методы интерфейса: собственные, затем
+// унаследованные от предков в порядке `extends` (первое имя выигрывает).
+func ifaceMethodTable(cd *ClassDecl, resolve func(string) *ClassDecl, seen map[*ClassDecl]bool) []ifaceMethod {
+	if cd == nil || seen[cd] {
+		return nil
+	}
+	seen[cd] = true
+	var out []ifaceMethod
+	for _, m := range cd.Members {
+		if m.Kind == "method" || m.Kind == "signature" {
+			out = append(out, ifaceMethod{owner: cd, m: m})
+		}
+	}
+	for _, in := range cd.Interfaces {
+		if p := resolve(in); p != nil {
+			out = append(out, ifaceMethodTable(p, resolve, seen)...)
+		}
+	}
+	return out
 }
 
 // ciLookup ищет класс по имени без учёта регистра (PHP-семантика).

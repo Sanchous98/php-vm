@@ -2036,15 +2036,20 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 		if i := strings.Index(lookup, "::"); i >= 0 {
 			cls := strings.TrimLeft(lookup[:i], "\\")
 			meth := lookup[i+2:]
-			// Deprecation «Use of "self" in callables» Zend печатает только
-			// для валидного callable (bug45186: невалидный self::y не
-			// предупреждает) — откладываем до успешной проверки.
+			// Deprecation «Use of "self" in callables»: при активном классе-
+			// скоупе Zend печатает её сразу при разборе имени — даже если
+			// метод не найден (lsb_013: «static::ok» в Test1); в глобальной
+			// области невалидный self::y deprecation не даёт (bug45186_2).
 			deprecateSelf := strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static")
 			deprecateName := cls
 			deprecate := func() {
 				if deprecateSelf {
+					deprecateSelf = false
 					vm.Deprecated(`Use of "` + deprecateName + `" in callables is deprecated`)
 				}
+			}
+			if vm.ctx.self != nil {
+				deprecate()
 			}
 			cn := vm.callableClassName(cls)
 			nm := cn + "::" + meth
@@ -2077,7 +2082,7 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 				deprecate()
 				return true, nm
 			}
-			if _, m := vm.staticMagicFallback(ci); m != "" {
+			if vm.isCallableMagic(ci) {
 				deprecate()
 				return true, nm
 			}
@@ -2187,7 +2192,7 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 				}
 				return true, nm
 			}
-			if _, m := vm.staticMagicFallback(ci); m != "" {
+			if vm.isCallableMagic(ci) {
 				return true, nm
 			}
 			return false, nm
@@ -2221,6 +2226,27 @@ func (vm *VM) callableClassName(cls string) string {
 		return vm.ctx.self.Name()
 	}
 	return cls
+}
+
+// isCallableMagic отвечает на вопрос zend_is_callable: покрывает ли магия
+// отсутствующий метод. __callStatic класса callable достаточно; __call
+// учитывается лишь когда класс callable совпадает с классом $this
+// (is_callable_trampoline_uaf: «B::foo» для родительского B — false).
+func (vm *VM) isCallableMagic(ci ClassInfo) bool {
+	if ci == nil {
+		return false
+	}
+	if ci.lookupMethod("__callStatic") != nil {
+		return true
+	}
+	if vm.cur != nil {
+		if t := deref(vm.cur.this); t.typ == ObjectType {
+			if tci := vm.classInfo(t); tci != nil && tci == ci {
+				return tci.lookupMethod("__call") != nil
+			}
+		}
+	}
+	return false
 }
 
 // callableDisplayRaw — имя класса как в zend: для анонимного класса берётся

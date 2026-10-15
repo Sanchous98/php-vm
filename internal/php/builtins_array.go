@@ -1227,7 +1227,7 @@ func arrayUniqueFn(ctx *vm.Context) vm.Value {
 			}
 			key = "#s" + sortStringOf(ctx, v)
 		default: // SORT_REGULAR
-			key = "#r" + v.ToString()
+			key = regularUniqueKey(ctx, v)
 		}
 		if seen[key] {
 			continue
@@ -1236,6 +1236,40 @@ func arrayUniqueFn(ctx *vm.Context) vm.Value {
 		out.Set(k, v)
 	}
 	return vm.MakeArray(out)
+}
+
+// regularUniqueKey строит ключ уникальности для SORT_REGULAR: скаляры — по
+// строковому виду (как сравнение == в PHP), объекты — по идентичности
+// (enum-кейсы и одинаковые объекты схлопываются), массивы — рекурсивно.
+func regularUniqueKey(ctx *vm.Context, v vm.Slot) string {
+	switch v.Type() {
+	case vm.ObjectType, vm.ClosureType:
+		if o := ctx.VMInstance().SlotObject(v); o != nil {
+			return "#o" + strconv.FormatInt(int64(o.ID()), 10)
+		}
+		return "#o"
+	case vm.ArrayType:
+		var b strings.Builder
+		b.WriteString("#A(")
+		a := v.AsArray()
+		if a != nil {
+			for k, el := range a.All() {
+				if k.IsStr() {
+					b.WriteString("s:")
+					b.WriteString(k.StrVal())
+				} else {
+					b.WriteString("i:")
+					b.WriteString(strconv.FormatInt(k.IntVal(), 10))
+				}
+				b.WriteString("=")
+				b.WriteString(regularUniqueKey(ctx, el))
+				b.WriteString(";")
+			}
+		}
+		b.WriteString(")")
+		return b.String()
+	}
+	return "#r" + v.ToString()
 }
 
 func arrayPadFn(ctx *vm.Context) vm.Value {

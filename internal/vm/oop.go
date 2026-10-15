@@ -519,7 +519,12 @@ func mixinTraitMembers(c, tr *runtimeClass) {
 				c.staticProps = map[string]*Slot{}
 			}
 			if _, exists := c.staticProps[name]; !exists {
-				c.staticProps[name] = s
+				// Zend копирует статическую переменную трейта в каждый
+				// использующий класс: A::$test и B::$test (B extends A,
+				// тоже использует трейт) — разные свойства (gh10935).
+				ns := new(Slot)
+				*ns = *s
+				c.staticProps[name] = ns
 				appendUnique(&c.staticOrder, name)
 			}
 		}
@@ -1004,6 +1009,20 @@ func staticUninitErr(cls ClassInfo, name string) error {
 // без приведения, а при успешной привязке (`=&`, refAdopt) на ячейку
 // добавляется источник этого свойства. Для ссылки без источников значение
 // приводится НА МЕСТЕ (слабо; zend_verify_scalar_type_hint).
+// releasedObjWriteErr — диагностика Zend «Object was released while assigning
+// to property X::$y» (gh10169): __toString (или другой код приведения) успел
+// уничтожить объект-приёмник до самой записи.
+func (vm *VM) releasedObjWriteErr(recv Slot, ci ClassInfo, pname string, v Slot) *Throwable {
+	o := vm.objectOf(recv)
+	if o == nil || v.typ != ObjectType {
+		return nil
+	}
+	if !o.dead && o.Refs() > 0 {
+		return nil
+	}
+	return NewThrowable("Error", "Object was released while assigning to property "+classDisplayName(ci)+"::$"+pname)
+}
+
 func (vm *VM) coercePropValue(pd *propDecl, decl ClassInfo, name string, v Slot, strict bool, refAdopt bool) (Slot, error) {
 	if pd == nil || !pd.hasType || strings.EqualFold(pd.typ, "mixed") {
 		return v, nil
@@ -1056,6 +1075,12 @@ func (vm *VM) coercePropValue(pd *propDecl, decl ClassInfo, name string, v Slot,
 	if ok, out := vm.coerceReturnMode(pd.typ, v, strict); ok {
 		vm.deprecatePropFloatToInt(v, out)
 		return out, nil
+	}
+	if t := vm.takePendingStringableErr(); t != nil {
+		// Приведение значения к типу свойства бросило исключение (например,
+		// __toString при записи в string-свойство) — оно приоритетнее
+		// диагностики типа (gh14969).
+		return v, t
 	}
 	kind := valueTypeName(vm, v)
 	return v, vm.propTypeError(kind, classDisplayName(decl), name, vm.displayTypeResolved(pd.typ), false)

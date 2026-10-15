@@ -951,6 +951,21 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 		}
 	}
 	vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
+	// Обработчик ошибки мог создать свойство (oss_fuzz_61712b: `$c->a %= 10`
+	// при set_error_handler, добавляющем $a): Zend читает значение после
+	// предупреждения, поэтому оно уже существует.
+	if v, ok := vm.getProp(recv, pname); ok {
+		{
+			old := regs[in.A]
+			wv := deref(valueSlot(v))
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		shareSlot(regs[in.A])
+		return execResult{}
+	}
 	{
 		old := regs[in.A]
 		wv := MakeNull()
@@ -1031,6 +1046,14 @@ func (vm *VM) propSetDeclaredFast(ci ClassInfo, o Slot, pname string, valReg int
 	}
 	plain := deref(regs[valReg])
 	val, verr := vm.coercePropValue(pd, decl, pname, plain, chunk != nil && chunk.Strict, false)
+	if verr == nil {
+		if derr := vm.releasedObjWriteErr(o, ci, pname, plain); derr != nil {
+			if !vm.handleThrow(chunk, derr) {
+				return execResult{err: derr}, true
+			}
+			return execResult{next: true}, true
+		}
+	}
 	if verr != nil {
 		if !vm.handleThrow(chunk, verr) {
 			return execResult{err: verr}, true
@@ -1194,6 +1217,14 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			return execResult{next: true}
 		}
 		val, verr := vm.coercePropValue(pd, decl, pname, plain, vm.chunk != nil && vm.chunk.Strict, false)
+		if verr == nil {
+			if derr := vm.releasedObjWriteErr(o, ci, pname, plain); derr != nil {
+				if !vm.handleThrow(chunk, derr) {
+					return execResult{err: derr}
+				}
+				return execResult{next: true}
+			}
+		}
 		if verr != nil {
 			if !vm.handleThrow(chunk, verr) {
 				return execResult{err: verr}

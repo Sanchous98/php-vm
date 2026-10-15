@@ -84,7 +84,13 @@ type ContinueStmt struct {
 	Level  int
 	OpKind int
 }
-type ReturnStmt struct{ X Expr }
+type ReturnStmt struct {
+	X Expr
+	// Implicit — синтезированный return стрелочной функции (`fn() => expr`):
+	// Zend не считает его «возвратом» для проверки never (gh7900 — функция
+	// `fn(): never => 42` компилируется, ошибка возникает при вызове).
+	Implicit bool
+}
 type FuncDecl struct {
 	Name        string
 	Params      []Param
@@ -189,6 +195,18 @@ type ClassDecl struct {
 	// IfaceNotInterface — имя «интерфейса», который на самом деле класс;
 	// для класса с рантайм-разрешаемым родителем Zend сообщает об этом при
 	// связывании (после автозагрузки родителя), а не при компиляции.
+	// seenIfaces — интерфейсы, уже встреченные в этом объявлении (для
+	// диагностики "cannot implement previously implemented interface").
+	seenIfaces map[string]bool
+	// IfaceDeprecation — текст deprecation, печатаемой в рантайме в точке
+	// объявления (Serializable без __serialize/__unserialize): обработчик
+	// ошибок может превратить её в исключение (gh15907).
+	IfaceDeprecation string
+	// IfaceDeprecationName — имя интерфейса для контекста наследования.
+	IfaceDeprecationName string
+	// AnonSuffix — суффикс Zend-имени анонимного класса ("\x00<file>:<line>$N")
+	// для get_class()/reflection; у неанонимных классов пуст.
+	AnonSuffix        string
 	IfaceNotInterface string
 	// RuntimeFatal — сообщение фатальной ошибки, которую PHP поднимает в
 	// момент выполнения объявления класса (напр. нереализованные abstract-
@@ -389,6 +407,9 @@ type CoalesceExpr struct{ L, R Expr }
 type CallExpr struct {
 	Name string
 	Args []Expr
+	// NameLine — строка токена имени функции (Zend привязывает кадр вызова
+	// к строке имени, а не к началу оператора); 0 — брать строку выражения.
+	NameLine int
 	// AssertText — исходный текст первого аргумента assert() (для диагностик
 	// Zend: "assert($a != 0)"); заполняется только для вызовов assert.
 	AssertText string
@@ -414,6 +435,8 @@ type ArgSpreadExpr struct{ X Expr }
 type MethodCallExpr struct {
 	Recv Expr
 	Name string
+	// NameLine — строка имени метода (см. CallExpr.NameLine).
+	NameLine int
 	// NameExpr — динамическое имя метода ($obj->$m(...)).
 	NameExpr Expr
 	Args     []Expr
@@ -426,11 +449,16 @@ type StaticCallExpr struct {
 	// NameExpr — динамическое имя статического метода (Class::$m(...)).
 	NameExpr Expr
 	Args     []Expr
+	// NameLine — строка имени метода (см. CallExpr.NameLine).
+	NameLine int
 }
 type NewExpr struct {
 	Class     string
 	ClassExpr Expr // non-nil => new $var(...)
 	Args      []Expr
+	// ArgLine — строка первого аргумента (Zend привязывает кадр NEW к
+	// аргументу, если список аргументов непуст); 0 — строка выражения.
+	ArgLine int
 }
 
 // NewAnonClassExpr — анонимный класс: `new class(args) extends ... { ... }`.
@@ -441,6 +469,9 @@ type NewAnonClassExpr struct {
 type DynCallExpr struct {
 	Name Expr
 	Args []Expr
+	// CallLine — строка открывающей скобки списка аргументов (Zend для
+	// динамического вызова берёт её, а не строку вызываемого выражения).
+	CallLine int
 }
 type StaticPropExpr struct {
 	Class string
@@ -1024,6 +1055,10 @@ func (p *Parser) parseAttrs(raws []AttrRaw) []AttrDecl {
 						return out
 					}
 					if e, err := p.parseAttrExpr(a); err == nil {
+						if exprHasEmptyArrayElem(e) {
+							p.attrErr = &fatalError{msg: "Cannot use empty array elements in arrays", line: raw.Line}
+							return out
+						}
 						if !attrExprAllowed(e) {
 							p.attrErr = &fatalError{msg: "Constant expression contains invalid operations", line: raw.Line}
 							return out
@@ -1065,6 +1100,54 @@ func attrExprAllowed(e Expr) bool {
 		return true
 	case *NewAnonClassExpr:
 		return true
+	}
+	return false
+}
+
+// exprHasEmptyArrayElem сообщает, что выражение содержит массив с пропущенным
+// элементом (`[,]`) — Zend отвергает такое ещё на компиляции, в том числе в
+// аргументах атрибутов (парсер атрибутов строит их отдельным разбором).
+func exprHasEmptyArrayElem(e Expr) bool {
+	switch x := e.(type) {
+	case nil:
+		return false
+	case *ArrayLit:
+		for _, el := range x.Elems {
+			if el.Val == nil {
+				return true
+			}
+			if exprHasEmptyArrayElem(el.Val) || exprHasEmptyArrayElem(el.Key) {
+				return true
+			}
+		}
+	case *UnaryExpr:
+		return exprHasEmptyArrayElem(x.X)
+	case *BinExpr:
+		return exprHasEmptyArrayElem(x.L) || exprHasEmptyArrayElem(x.R)
+	case *LogicalExpr:
+		return exprHasEmptyArrayElem(x.L) || exprHasEmptyArrayElem(x.R)
+	case *TernaryExpr:
+		return exprHasEmptyArrayElem(x.Cond) || exprHasEmptyArrayElem(x.Then) || exprHasEmptyArrayElem(x.Else)
+	case *NullsafeExpr:
+		return exprHasEmptyArrayElem(x.Recv) || exprHasEmptyArrayElem(x.Body)
+	case *CoalesceExpr:
+		return exprHasEmptyArrayElem(x.L) || exprHasEmptyArrayElem(x.R)
+	case *IndexExpr:
+		return exprHasEmptyArrayElem(x.Arr) || exprHasEmptyArrayElem(x.Key)
+	case *PropExpr:
+		return exprHasEmptyArrayElem(x.Recv) || exprHasEmptyArrayElem(x.NameExpr)
+	case *NewExpr:
+		for _, a := range x.Args {
+			if exprHasEmptyArrayElem(a) {
+				return true
+			}
+		}
+	case *CallExpr:
+		for _, a := range x.Args {
+			if exprHasEmptyArrayElem(a) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -4262,7 +4345,7 @@ func (p *Parser) assertArgText(start int) string {
 // строк (typed_class_constants_ast_print).
 func normalizeAssertArgText(s string) string {
 	if !strings.Contains(s, "\n") {
-		return s
+		return stripAssertArrowParens(s)
 	}
 	lines := strings.Split(s, "\n")
 	min := -1
@@ -4287,7 +4370,59 @@ func normalizeAssertArgText(s string) string {
 		}
 		lines[i] = ln[j:]
 	}
-	return strings.Join(lines, "\n")
+	return stripAssertArrowParens(strings.Join(lines, "\n"))
+}
+
+// stripAssertArrowParens убирает скобки вокруг стрелочной функции в начале
+// текста assert(): Zend печатает сообщение по AST, где лишних скобок нет
+// (`assert((fn(): never => 42) && false)` → "assert(fn(): never => 42 && false)",
+// gh7900).
+func stripAssertArrowParens(s string) string {
+	if !strings.HasPrefix(s, "(") {
+		return s
+	}
+	inner := strings.TrimPrefix(s, "(")
+	if !strings.HasPrefix(inner, "fn") && !strings.HasPrefix(inner, "static fn") {
+		return s
+	}
+	depth := 0
+	var quote byte
+	for i := 0; i < len(inner); i++ {
+		ch := inner[i]
+		if quote != 0 {
+			if ch == '\\' {
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '\'', '"':
+			quote = ch
+		case '(', '[', '{':
+			depth++
+		case ')':
+			if depth == 0 {
+				rest := inner[i+1:]
+				if strings.HasPrefix(strings.TrimSpace(rest), "&&") ||
+					strings.HasPrefix(strings.TrimSpace(rest), "||") ||
+					strings.HasPrefix(strings.TrimSpace(rest), "and ") ||
+					strings.HasPrefix(strings.TrimSpace(rest), "or ") {
+					return inner[:i] + rest
+				}
+				return s
+			}
+			depth--
+		case ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return s
 }
 
 // qualifyDecl добавляет текущее пространство имён к имени объявления функции.
@@ -4318,7 +4453,7 @@ func (p *Parser) nameRefExpr() (Expr, error) {
 			return &CallExpr{Name: "eval", Args: args}, nil
 		}
 		fq, fb := p.resolveFuncName(raw)
-		ce := &CallExpr{Name: fq, Fallback: fb, Args: args}
+		ce := &CallExpr{Name: fq, Fallback: fb, Args: args, NameLine: p.lineAt(pos)}
 		if strings.EqualFold(strings.TrimLeft(raw, "\\"), "assert") && len(args) > 0 {
 			ce.AssertText = "assert(" + p.assertArgText(argStart) + ")"
 		}
@@ -4655,7 +4790,8 @@ func (p *Parser) memberAccess(recv Expr) (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &MethodCallExpr{Recv: recv, Name: name, NameExpr: nameExpr, Args: args}, nil
+		return &MethodCallExpr{Recv: recv, Name: name, NameExpr: nameExpr, Args: args,
+			NameLine: p.lineAt(namePos)}, nil
 	}
 	return &PropExpr{Recv: recv, Name: name, NameExpr: nameExpr}, nil
 }
@@ -4696,16 +4832,39 @@ func constClassNameNonString(e Expr) bool {
 	return false
 }
 
+// newFrameLine возвращает строку для кадра NEW: первый аргумент (если список
+// непуст), иначе строка имени класса.
+func (p *Parser) newFrameLine(args []Expr, namePos int) int {
+	if ln := p.firstArgLine(args); ln > 0 {
+		return ln
+	}
+	return p.lineAt(namePos)
+}
+
+// firstArgLine возвращает строку первого аргумента вызова (Zend привязывает
+// кадр NEW к строке аргумента, а не к началу выражения).
+func (p *Parser) firstArgLine(args []Expr) int {
+	if len(args) == 0 {
+		return 0
+	}
+	if ln, ok := p.exprLines[args[0]]; ok && ln > 0 {
+		return ln
+	}
+	return 0
+}
+
 // postfixTail разбирает остаток postfix-цепочки для уже разобранного выражения.
 func (p *Parser) postfixTail(x Expr) (Expr, error) {
 	for {
 		switch {
-		case p.accept(TOp, "("):
+		case p.is(TOp, "("):
+			lp := p.cur().Pos
+			p.next()
 			args, err := p.argList()
 			if err != nil {
 				return nil, err
 			}
-			x = &DynCallExpr{Name: x, Args: args}
+			x = &DynCallExpr{Name: x, Args: args, CallLine: p.lineAt(lp)}
 		case p.accept(TOp, "["):
 			var key Expr
 			if !p.is(TOp, "]") {
@@ -4748,7 +4907,11 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 			// x::name(...) / x::CONST / x::$prop / x::${expr} / x::$var(...)
 			// Литеральное/константное не-строковое имя класса слева от `::`
 			// Zend отвергает на этапе компиляции (bug70782, bug77530).
-			if constClassNameNonString(x) {
+			// Исключение — динамический доступ `x::{expr}`: там имя класса
+			// проверяет компилятор (в константном выражении диагностика иная:
+			// "Class name must be a valid object or a string").
+			brace := p.peekAt(1).Kind == TOp && p.peekAt(1).Val == "{"
+			if !brace && constClassNameNonString(x) {
 				line := 0
 				if p.exprLines != nil {
 					line = p.exprLines[x]
@@ -4780,7 +4943,8 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 						if err != nil {
 							return nil, err
 						}
-						x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne, Args: args}
+						x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne, Args: args,
+							NameLine: p.lineAt(t.Pos)}
 						break
 					}
 					x = &StaticPropExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne}
@@ -4792,7 +4956,8 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 					if err != nil {
 						return nil, err
 					}
-					x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: &VarExpr{Name: t.Val}, Args: args}
+					x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: &VarExpr{Name: t.Val}, Args: args,
+						NameLine: p.lineAt(t.Pos)}
 				} else {
 					x = &StaticPropExpr{Class: clsName, ClassExpr: clsExpr, Name: name}
 				}
@@ -4819,7 +4984,8 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 					if err != nil {
 						return nil, err
 					}
-					x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne, Args: args}
+					x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne, Args: args,
+						NameLine: p.lineAt(t.Pos)}
 				} else {
 					x = &ConstExpr{Name: clsName, ClassExpr: clsExpr, NameExpr: ne}
 				}
@@ -4830,7 +4996,8 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 				if err != nil {
 					return nil, err
 				}
-				x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, Name: name, Args: args}
+				x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, Name: name, Args: args,
+					NameLine: p.lineAt(t.Pos)}
 			} else if strings.EqualFold(name, "class") {
 				// `Foo::class` — не константа класса, а ключевое слово (PHP 8).
 				x = &ClassKeywordExpr{Class: clsName, ClassExpr: clsExpr}
@@ -4942,6 +5109,9 @@ func (p *Parser) argList() ([]Expr, error) {
 
 func (p *Parser) newExpr() (Expr, error) {
 	p.next() // new
+	// Строка имени класса: Zend привязывает кадр NEW к аргументу, если он
+	// есть, иначе — к имени класса (gh8810_7).
+	namePos := p.cur().Pos
 	// new [attrs] [abstract|final|readonly]* class { ... } — анонимный класс.
 	if p.anonClassAhead() {
 		return p.anonClass()
@@ -5008,7 +5178,7 @@ func (p *Parser) newExpr() (Expr, error) {
 				return nil, err
 			}
 		}
-		return &NewExpr{ClassExpr: ce, Args: args}, nil
+		return &NewExpr{ClassExpr: ce, Args: args, ArgLine: p.newFrameLine(args, namePos)}, nil
 	}
 	// new (expr) [(args)] — имя класса вычисляется выражением (PHP 8.0+).
 	if p.is(TOp, "(") {
@@ -5023,7 +5193,7 @@ func (p *Parser) newExpr() (Expr, error) {
 				return nil, err
 			}
 		}
-		return &NewExpr{ClassExpr: ce, Args: args}, nil
+		return &NewExpr{ClassExpr: ce, Args: args, ArgLine: p.newFrameLine(args, namePos)}, nil
 	}
 	name := p.className()
 	// new A::$s [(args)] — имя класса из статического свойства.
@@ -5041,7 +5211,7 @@ func (p *Parser) newExpr() (Expr, error) {
 				return nil, err
 			}
 		}
-		return &NewExpr{ClassExpr: ce, Args: args}, nil
+		return &NewExpr{ClassExpr: ce, Args: args, ArgLine: p.newFrameLine(args, namePos)}, nil
 	}
 	// new class { ... } — пока не поддерживаем
 	var args []Expr
@@ -5052,7 +5222,7 @@ func (p *Parser) newExpr() (Expr, error) {
 			return nil, err
 		}
 	}
-	return &NewExpr{Class: name, Args: args}, nil
+	return &NewExpr{Class: name, Args: args, ArgLine: p.newFrameLine(args, namePos)}, nil
 }
 
 // isAnonClassModifier — модификатор анонимного класса (abstract/final —

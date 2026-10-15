@@ -1747,6 +1747,9 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		var paramNames []string
 		var capNames []string
 		var capVals []vm.Slot
+		var staticNames []string
+		var staticKeys []string
+		var staticDefaults []vm.Slot
 		hasThis := false
 		if cl != nil {
 			if cl.Fake && cl.Fn != nil && cl.Fn.Name != "" && cl.Fn.Name != "{closure}" {
@@ -1762,6 +1765,11 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 				capNames = make([]string, len(cl.Captures))
 			}
 			capVals = cl.Captures
+			if cl.Fn != nil && len(cl.Fn.StaticNames) > 0 {
+				staticNames = cl.Fn.StaticNames
+				staticKeys = cl.Fn.StaticKeys
+				staticDefaults = cl.Fn.StaticDefaults
+			}
 			hasThis = derefSlot(cl.BoundThis).Type() == vm.ObjectType
 		}
 		n := 0
@@ -1771,7 +1779,7 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		if len(paramNames) > 0 {
 			n++
 		}
-		if len(capVals) > 0 {
+		if len(capVals) > 0 || len(staticNames) > 0 {
 			n++
 		}
 		if hasThis {
@@ -1798,7 +1806,7 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 			b.WriteString(inner)
 			dumpElem(b, vm.MakeArray(parr), indent+1, st)
 		}
-		if len(capVals) > 0 {
+		if len(capVals) > 0 || len(staticNames) > 0 {
 			b.WriteString(inner + `["static"]=>` + "\n")
 			sarr := vm.NewArray()
 			for i, v := range capVals {
@@ -1807,6 +1815,21 @@ func dumpSlot(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 					name = capNames[i]
 				}
 				_ = sarr.SetStr(name, v)
+			}
+			// Статические переменные функции: текущее значение ячейки в
+			// globals, иначе значение по умолчанию (Zend static_variables).
+			for i, name := range staticNames {
+				val := vm.MakeNull()
+				got := false
+				if i < len(staticKeys) && st.vm != nil {
+					if v, ok := st.vm.GlobalRef(staticKeys[i]); ok {
+						val, got = v, true
+					}
+				}
+				if !got && i < len(staticDefaults) {
+					val = staticDefaults[i]
+				}
+				_ = sarr.SetStr(name, val)
 			}
 			b.WriteString(inner)
 			dumpElem(b, vm.MakeArray(sarr), indent+1, st)

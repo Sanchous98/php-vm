@@ -112,12 +112,22 @@ func (c *Context) Throw(v *Throwable) {
 			// вызванные из внутренних функций (напр. обработчик ошибок,
 			// вызванный из нативного report-механизма), пропускаем: Zend
 			// берёт место в userland-коде.
-			for i := len(v.Trace) - 1; i >= 0; i-- {
-				f := v.Trace[i]
-				if f.callerFile != "" && f.callerFile != "[internal function]" {
-					v.LocFile = f.callerFile
-					v.LocLine = f.callerLine
-					break
+			if c.vm.chunk != nil && c.vm.chunk.IsConstExpr() {
+				// Ошибка внутри константного выражения: Zend указывает
+				// файл/строку объявления (gh7771 — .inc-файл, не место
+				// обращения к константе).
+				v.LocFile = c.vm.curFile
+				if l := c.vm.line(); l > 0 {
+					v.LocLine = l
+				}
+			} else {
+				for i := len(v.Trace) - 1; i >= 0; i-- {
+					f := v.Trace[i]
+					if f.callerFile != "" && f.callerFile != "[internal function]" {
+						v.LocFile = f.callerFile
+						v.LocLine = f.callerLine
+						break
+					}
 				}
 			}
 			if v.LocLine == 0 {
@@ -139,6 +149,15 @@ func (c *Context) takeThrown() *Throwable {
 // HasThrown сообщает, есть ли распространяющееся исключение. Используется
 // нативным кодом для немедленного выхода после Throw (error-протокол).
 func (c *Context) HasThrown() bool { return c.thrown != nil }
+
+// SetThrowContext добавляет контекст к текущему непойманному исключению —
+// Zend печатает «During inheritance of X, while implementing Y: Uncaught ...»
+// для ошибок, возникших при связывании класса (gh15907).
+func (vm *VM) SetThrowContext(ctx string) {
+	if t := vm.ctx.thrown; t != nil && t.Context == "" {
+		t.Context = ctx
+	}
+}
 
 // Throwable — PHP-исключение/ошибка. Если исключение брошено из userland,
 // Value хранит объект-исключение (а Class/Message дублируют его данные).
@@ -163,6 +182,9 @@ type Throwable struct {
 	// LocOverridden — локация исключения переписана пользовательским
 	// конструктором ($this->file/line): даже пустой файл печатается как есть.
 	LocOverridden bool
+	// Context — контекст связывания класса для непойманной ошибки, поднятой
+	// объявлением («During inheritance of X, while implementing Y», gh15907).
+	Context string
 	// close — служебный сигнал принудительного закрытия генератора: не
 	// фиксирует трейс и не может быть пойман catch.
 	close bool

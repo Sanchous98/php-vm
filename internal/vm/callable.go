@@ -795,7 +795,26 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 	switch c.typ {
 	case ClosureType:
 		cl := c.asClosure()
-		if cl == nil || cl.Fn == nil {
+		if cl == nil {
+			return Slot{}, NewThrowable("Error", "Value is not callable")
+		}
+		if cl.Fn == nil {
+			// Трамплин магического метода (Fn == nil, MagicName задан):
+			// вызов уходит в __call/__callStatic (gh16515).
+			if cl.MagicName != "" {
+				if ci := vm.classInfo(cl.BoundThis); ci != nil {
+					if res, ok, err := vm.callMagicMethod(ci, cl.BoundThis, "__call",
+						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+						return res, err
+					}
+				}
+				if cl.Scope != nil {
+					if res, ok, err := vm.callMagicMethodCalled(cl.Scope, cl.Called, Slot{}, "__callStatic",
+						[]Slot{MakeString(cl.MagicName), argsArray(args)}); ok {
+						return res, err
+					}
+				}
+			}
 			return Slot{}, NewThrowable("Error", "Value is not callable")
 		}
 		return vm.invokeClosure(cl, args)
@@ -1831,7 +1850,9 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 	switch c.typ {
 	case ClosureType:
 		cl := c.asClosure()
-		return cl != nil && cl.Fn != nil, "Closure::__invoke"
+		// Трамплин магического метода (__call/__callStatic, Fn == nil, но
+		// задан MagicName) тоже вызываем (gh16515).
+		return cl != nil && (cl.Fn != nil || cl.MagicName != ""), "Closure::__invoke"
 	case ObjectType:
 		ci := vm.classInfo(c)
 		if ci != nil {

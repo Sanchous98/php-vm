@@ -285,6 +285,11 @@ type runtimeClass struct {
 	name   string
 	parent *runtimeClass
 
+	// anonSuffix — суффикс Zend-имени анонимного класса
+	// ("\x00<file>:<line>$<N>"), печатается get_class()/reflection после
+	// краткого class@anonymous.
+	anonSuffix string
+
 	methods map[string]*Function
 	ctor    *Function
 	ctorVis Visibility
@@ -652,6 +657,23 @@ func newClassInfo(name string, parent *runtimeClass) *runtimeClass {
 		methods: map[string]*Function{},
 		consts:  map[string]Value{},
 	}
+}
+
+// SetClassAnonSuffix сохраняет суффикс Zend-имени анонимного класса
+// ("\x00<file>:<line>$<N>"): get_class()/reflection печатают его после
+// краткого имени class@anonymous.
+func SetClassAnonSuffix(ci ClassInfo, suffix string) {
+	if rc, ok := ci.(*runtimeClass); ok {
+		rc.anonSuffix = suffix
+	}
+}
+
+// AnonClassSuffix возвращает суффикс Zend-имени анонимного класса.
+func (vm *VM) AnonClassSuffix(ci ClassInfo) string {
+	if rc, ok := ci.(*runtimeClass); ok {
+		return rc.anonSuffix
+	}
+	return ""
 }
 
 // NewClass создаёт дескриптор PHP-класса (данные класса пусты).

@@ -4660,13 +4660,27 @@ func errnoReason(err error) string {
 
 func opendirFn(ctx *vm.Context) vm.Value {
 	ensureDefaultStreamContext()
-	if res, handled := callUserWrapper(ctx, arg0(ctx).ToString(), "dir_opendir", arg0(ctx), vm.MakeInt(0)); handled {
-		if !res.ToBool() {
-			return vm.Bool(false)
+	// Пользовательская обёртка: дескриптор хранит объект-обёртку
+	// (stream_get_meta_data(...)['wrapper_data']) и после
+	// stream_wrapper_unregister (gh8548_2).
+	if scheme, ok := userScheme(arg0(ctx).ToString()); ok {
+		if _, reg := streamWrappers[strings.ToLower(scheme)]; reg {
+			u, ok2 := openUserDir(ctx, arg0(ctx).ToString())
+			if ctx.HasThrown() {
+				return *new(vm.Value)
+			}
+			if !ok2 {
+				return vm.Bool(false)
+			}
+			h := &fsHandle{path: arg0(ctx).ToString(), mode: "r", dir: true, push: -1, canRead: true, us: u}
+			h.meta = map[string]vm.Slot{
+				"wrapper_type": vm.MakeString("user-space"),
+				"stream_type":  vm.MakeString("user-space"),
+				"wrapper_data": u.obj,
+			}
+			fsLastDir = h
+			return fsNewResource(h, "stream")
 		}
-		h := &fsHandle{path: arg0(ctx).ToString(), mode: "r", dir: true, push: -1, canRead: true}
-		fsLastDir = h
-		return fsNewResource(h, "stream")
 	}
 	path := pathString(ctx, 0)
 	if !checkOpenBasedir(ctx.VM(), "opendir", arg0(ctx).ToString(), arg0(ctx).ToString()) {

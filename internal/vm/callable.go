@@ -1599,7 +1599,7 @@ func (vm *VM) callStringCallable(raw string, args []Slot) (Slot, error) {
 func (vm *VM) callArrayCallable(c Slot, args []Slot) (Slot, error) {
 	a := c.AsArray()
 	if a == nil || a.Len() != 2 {
-		return Slot{}, NewThrowable("Error", "Value is not callable")
+		return Slot{}, NewThrowable("Error", "Array callback must have exactly two elements")
 	}
 	vals := a.Values()
 	recv := deref(vals[0])

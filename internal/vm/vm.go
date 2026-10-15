@@ -1987,8 +1987,14 @@ func (vm *VM) FramesArray(frames []callFrameInfo, options int64, limit int) Slot
 			if idx := strings.Index(name, "::"); idx >= 0 {
 				cls = name[:idx]
 				name = name[idx+2:]
-			} else if fr.objMethod && fr.callee.Scope != nil {
-				cls = ClassDisplayName(fr.callee.Scope.Name())
+			} else if fr.objMethod {
+				if fr.callee.Scope != nil {
+					cls = ClassDisplayName(fr.callee.Scope.Name())
+				} else if strings.HasPrefix(name, "{closure}") {
+					// Замыкание, привязанное к объекту без scope:
+					// Zend показывает класс Closure.
+					cls = "Closure"
+				}
 			}
 			_ = e.SetStr("function", MakeString(name))
 			if cls != "" {
@@ -2033,13 +2039,7 @@ func (vm *VM) DebugBacktraceString() string {
 	var b strings.Builder
 	for j, i := 0, len(frames)-1; i >= 0; i, j = i-1, j+1 {
 		fr := frames[i]
-		name := ""
-		if fr.callee != nil {
-			name = funcDisplayName(fr.callee)
-			if fr.objMethod {
-				name = strings.Replace(name, "::", "->", 1)
-			}
-		}
+		name := frameCalleeName(fr)
 		if fr.callerFile == "[internal function]" || fr.callerFile == "" {
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
 			fmt.Fprintf(&b, "#%d [internal function]: %s(%s)\n", j, name, vm.traceArgsNamed(sargs, snamed))
@@ -2118,13 +2118,7 @@ func (vm *VM) traceString(frames []callFrameInfo, defFile string, defLine int) s
 	}
 	for i := len(frames) - 1; i >= 0; i-- {
 		fr := frames[i]
-		name := ""
-		if fr.callee != nil {
-			name = funcDisplayName(fr.callee)
-			if fr.objMethod {
-				name = strings.Replace(name, "::", "->", 1)
-			}
-		}
+		name := frameCalleeName(fr)
 		cf := fr.callerFile
 		if cf == "[internal function]" || cf == "" {
 			sargs, snamed := vm.traceFrameArgsSensitive(fr)
@@ -5723,7 +5717,23 @@ func (vm *VM) ctorAccessError(vis Visibility, clsName, method string) error {
 	return NewThrowable("Error", "Call to "+visWord(vis)+" "+clsName+"::"+method+"() from "+scopeDesc(vm.ctx.self))
 }
 
-// funcDisplayName возвращает имя функции для диагностик ("Class::method").
+// frameCalleeName — имя кадра стека с учётом objMethod: замыкание,
+// привязанное к объекту без scope, Zend рендерит как Closure->{closure}().
+func frameCalleeName(fr callFrameInfo) string {
+	if fr.callee == nil {
+		return ""
+	}
+	name := funcDisplayName(fr.callee)
+	if fr.objMethod {
+		if fr.callee.Scope == nil && strings.HasPrefix(name, "{closure}") {
+			return "Closure->" + name
+		}
+		name = strings.Replace(name, "::", "->", 1)
+	}
+	return name
+}
+
+// funcDisplayName рендерит имя функции для трейсов (Scope::Name).
 func funcDisplayName(fn *Function) string {
 	if fn.DisplayName != "" {
 		return fn.DisplayName
@@ -7084,6 +7094,19 @@ func argsArray(args []Slot) Slot {
 		_, _ = a.Append(deref(s))
 	}
 	return MakeArray(a)
+}
+
+// objClassName возвращает имя класса объекта/замыкания для диагностик
+// (пустая строка, если класс не найден).
+func (vm *VM) objClassName(s Slot) string {
+	s = deref(s)
+	if s.typ == ClosureType {
+		return "Closure"
+	}
+	if ci := vm.classInfo(s); ci != nil {
+		return ci.Name()
+	}
+	return ""
 }
 
 // stringify приводит слот к строке с учётом __toString (конкатенация/echo).

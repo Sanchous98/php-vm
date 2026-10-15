@@ -2546,6 +2546,12 @@ func inlineEval(x *CallExpr, file string, inc map[string]bool) (Expr, []Stmt, er
 	if err != nil {
 		return x, nil, nil
 	}
+	// Диагностики компиляции eval-кода печатаются в момент выполнения
+	// (с локацией "file(line) : eval()'d code"): инлайн потерял бы и текст,
+	// и время вывода (bug69388 — use-warning через error handler).
+	if len(sub.TypeWarnings) > 0 {
+		return x, nil, nil
+	}
 	// Классы, объявленные в eval(), PHP регистрирует в рантайме (в момент
 	// выполнения eval), а не hoist'ит в охватывающий юнит. Инлайн сделал бы их
 	// видимыми до вызова eval и перенёс бы стартовые deprecation-сообщения
@@ -2711,6 +2717,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_named_arg_check", namedArgCheckFn),
 		vm.Register("__php_default_check", defaultArgCheckBuiltin),
 		vm.Register("__php_index_ref_check", indexRefCheckBuiltin),
+		vm.Register("__php_append_ref_check", appendRefCheckBuiltin),
 		vm.Register("__php_dyn_static_get", dynStaticGetBuiltin),
 		vm.Register("__php_dyn_static_set", dynStaticSetBuiltin),
 		vm.Register("__php_dyn_static_isset", dynStaticIssetBuiltin),
@@ -2740,6 +2747,19 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_list_index", listIndexBuiltin),
 	}
 	return funcs
+}
+
+// appendRefCheckBuiltin — предварительная проверка LHS `$arr[] =& expr` ДО
+// вычисления RHS: Zend выполняет FETCH_DIM_W первым, поэтому ошибка занятого
+// авто-ключа имеет приоритет над Notice о передаче не-переменной
+// (assign_ref_error_var_handling).
+func appendRefCheckBuiltin(ctx *vm.Context) vm.Slot {
+	a := vm.Deref(arg(ctx, 0))
+	if a.Type() == vm.ArrayType && a.AsArray().NextFree() == math.MaxInt64 {
+		ctx.Throw(vm.NewThrowable("Error", "Cannot add element to the array as the next element is already occupied"))
+		return vm.MakeNull()
+	}
+	return vm.MakeNull()
 }
 
 // listIndexBuiltin — чтение элемента для деструктуризации list()/[$a,$b]:
@@ -3978,6 +3998,15 @@ func compileProgramLink(src, file string, phpMode bool, linkBase *Compiled) (*Co
 				ci.Implements(classes[ii])
 			}
 		}
+		// Zend: класс не может реализовывать одновременно Iterator и
+		// IteratorAggregate (в т.ч. унаследовав один из них).
+		if !cd.IsInterface && !cd.IsEnum && cd.MissingParent == "" && cd.MissingInterface == "" &&
+			classInheritsInterface(ci, "Iterator") && classInheritsInterface(ci, "IteratorAggregate") {
+			base.curLine = cd.Line
+			return nil, base.newFatal(fmt.Sprintf(
+				"Class %s cannot implement both Iterator and IteratorAggregate at the same time",
+				classDeclDisplayName(cd)))
+		}
 	}
 	// Deprecated: class implements Serializable without __serialize/__unserialize.
 	// PHP печатает это до начала выполнения (объявление класса с ранним
@@ -4646,6 +4675,29 @@ classLoop:
 					return nil, base.newFatal(fmt.Sprintf("The modifiers of the trait method %s() are changed, but this method does not exist. Error", ta.Method))
 				}
 				return nil, base.newFatal(fmt.Sprintf("An alias (%s) was defined for method %s(), but this method does not exist", ta.AliasName, ta.Method))
+			}
+			// Метод есть в нескольких трейтах без insteadof-разрешения:
+			// Zend запрещает alias и просит указать T::method (bug62069).
+			if ta.AliasName != "" {
+				var prov []string
+				for _, tr := range cd.Uses {
+					td2 := declByName0(classDecls, tr)
+					if td2 == nil || !td2.IsTrait {
+						continue
+					}
+					if skip[strings.ToLower(tr)][strings.ToLower(ta.Method)] {
+						continue
+					}
+					if declOrTraitHasMethod(classDecls, td2, ta.Method, map[string]bool{}) {
+						prov = append(prov, td2.Name)
+					}
+				}
+				if len(prov) >= 2 {
+					base.curLine = cd.Line
+					return nil, base.newFatal(fmt.Sprintf(
+						"An alias was defined for method %s(), which exists in both %s and %s. Use %s::%s or %s::%s to resolve the ambiguity",
+						ta.Method, prov[0], prov[1], prov[0], ta.Method, prov[1], ta.Method))
+				}
 			}
 		}
 		for _, ta := range cd.TraitAdapt {
@@ -6124,7 +6176,7 @@ func classInheritsInterface(ci vm.ClassInfo, name string) bool {
 		}
 		seen[strings.ToLower(c.Name())] = true
 		for _, i := range c.Interfaces() {
-			if strings.EqualFold(i.Name(), name) || walk(i) {
+			if i != nil && (strings.EqualFold(i.Name(), name) || walk(i)) {
 				return true
 			}
 		}
@@ -10334,9 +10386,9 @@ func (c *compiler) stmt(st Stmt) error {
 		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpRet, A: r})
 	case *BreakStmt:
-		return c.breakStmt(s.Level)
+		return c.breakStmt(s.Level, s.OpKind)
 	case *ContinueStmt:
-		return c.continueStmt(s.Level)
+		return c.continueStmt(s.Level, s.OpKind)
 	case *UnsetStmt:
 		c.emitLine(c.curLine)
 		for _, a := range s.Args {
@@ -10897,6 +10949,9 @@ func (c *compiler) tryStmt(s *TryStmt) error {
 	catches := make([]vm.TryCatch, 0, len(s.Catches))
 	var jumps []int
 	for _, cc := range s.Catches {
+		if cc.Var == "$this" || cc.Var == "this" {
+			return &fatalError{msg: "Cannot re-assign $this", line: cc.Line}
+		}
 		pc := c.chunk.Len()
 		if cc.Var != "" {
 			if c.isRef(cc.Var) {
@@ -10958,9 +11013,16 @@ func (c *compiler) tryStmt(s *TryStmt) error {
 	return nil
 }
 
-func (c *compiler) breakStmt(level int) error {
+func (c *compiler) breakStmt(level, opKind int) error {
+	// Операнд проверяется до контекста (как в Zend).
+	if opKind == 1 {
+		return c.newFatal("'break' operator accepts only positive integers")
+	}
+	if opKind == 2 {
+		return c.newFatal("'break' operator with non-integer operand is no longer supported")
+	}
 	if level < 1 {
-		level = 1
+		return c.newFatal("'break' operator accepts only positive integers")
 	}
 	if len(c.loops) == 0 {
 		return c.newFatal("'break' not in the 'loop' or 'switch' context")
@@ -10981,9 +11043,16 @@ func (c *compiler) breakStmt(level int) error {
 	return nil
 }
 
-func (c *compiler) continueStmt(level int) error {
+func (c *compiler) continueStmt(level, opKind int) error {
+	// Операнд проверяется до контекста (как в Zend).
+	if opKind == 1 {
+		return c.newFatal("'continue' operator accepts only positive integers")
+	}
+	if opKind == 2 {
+		return c.newFatal("'continue' operator with non-integer operand is no longer supported")
+	}
 	if level < 1 {
-		level = 1
+		return c.newFatal("'continue' operator accepts only positive integers")
 	}
 	if len(c.loops) == 0 {
 		return c.newFatal("'continue' not in the 'loop' or 'switch' context")
@@ -11435,8 +11504,10 @@ func (c *compiler) foreachStmt(s *ForeachStmt) error {
 		c.chunk.Emit(vm.Instruction{Op: vm.OpIterValid, A: cond, B: iterState})
 		jf := c.chunk.Emit(vm.Instruction{Op: vm.OpJumpIfFalse, A: cond})
 		c.chunk.Emit(vm.Instruction{Op: vm.OpIterKey, A: keyR, B: iterState})
-		if s.Key != "" {
-			c.storeVar(s.Key, keyR)
+		if s.Key != "" || s.KeyTarget != nil {
+			if err := c.storeForeachTarget(s.Key, s.KeyTarget, keyR); err != nil {
+				return err
+			}
 		}
 		c.chunk.Emit(vm.Instruction{Op: vm.OpIterCurrentRef, A: cell, B: iterState})
 		if refListTarget {
@@ -12410,6 +12481,22 @@ func (c *compiler) byRefArgInfo(e Expr, info byRefInfo, pos int) (uint8, func(),
 			c.bindRefCell(tv.Name, cell)
 			return cell, nil, nil
 		}
+	}
+	if ix, ok := e.(*IndexExpr); ok && ix.Key == nil {
+		// `f($arr[])` для by-ref параметра (Zend FETCH_DIM_W): элемент
+		// создаётся и передаётся ссылкой. OpIndexRef с C=-1 — append-режим.
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
+		arr, wb, err := c.indexBase(ix, true)
+		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
+		if err != nil {
+			return 0, nil, err
+		}
+		cell := c.alloc()
+		c.chunk.Emit(vm.Instruction{Op: vm.OpIndexRef, A: cell, B: arr, C: -1})
+		if wb != nil {
+			wb(arr)
+		}
+		return cell, nil, nil
 	}
 	if ix, ok := e.(*IndexExpr); ok && ix.Key != nil {
 		c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
@@ -14320,6 +14407,13 @@ func (c *compiler) nullsafeExpr(x *NullsafeExpr) (uint8, error) {
 	return res, nil
 }
 
+// byRefThisExpr сообщает, что выражение — `$this`: ссылка на $this в Zend не
+// создаётся (элементы [&$this] и т.п. хранят объект по значению).
+func byRefThisExpr(e Expr) bool {
+	v, ok := e.(*VarExpr)
+	return ok && v.NameExpr == nil && (v.Name == "$this" || v.Name == "this")
+}
+
 func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 	for _, el := range x.Elems {
 		if el.Val == nil {
@@ -14360,7 +14454,7 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 		if el.Key == nil {
 			var v uint8
 			var err error
-			if el.ByRef {
+			if el.ByRef && !byRefThisExpr(el.Val) {
 				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 				v, err = c.refCellForExpr(el.Val)
 				c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
@@ -14378,7 +14472,7 @@ func (c *compiler) arrayLit(x *ArrayLit) (uint8, error) {
 			return 0, err
 		}
 		var v uint8
-		if el.ByRef {
+		if el.ByRef && !byRefThisExpr(el.Val) {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
 			v, err = c.refCellForExpr(el.Val)
 			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
@@ -15776,6 +15870,25 @@ func (c *compiler) assignIndex(t *IndexExpr, op string, value Expr, discardResul
 // assignIndexRef компилирует `$a[$k] = &$x` / `$a[] = &$x`: элемент массива
 // становится той же ссылкой, что и источник.
 func (c *compiler) assignIndexRef(t *IndexExpr, value Expr) (uint8, error) {
+	if t.Key == nil {
+		// Zend выполняет FETCH_DIM_W первым: ошибка занятого авто-ключа
+		// имеет приоритет над диагностиками RHS.
+		arr, wb, err := c.indexBase(t, true)
+		if err != nil {
+			return 0, err
+		}
+		c.emitCall("__php_append_ref_check", []uint8{arr})
+		srcCell, err := c.refCellForExpr(value)
+		if err != nil {
+			return 0, err
+		}
+		c.chunk.Emit(vm.Instruction{Op: vm.OpAppend, A: arr, B: srcCell})
+		if wb != nil {
+			wb(arr)
+		}
+		c.emitRefSweep()
+		return srcCell, nil
+	}
 	srcCell, err := c.refCellForExpr(value)
 	if err != nil {
 		return 0, err
@@ -15793,14 +15906,6 @@ func (c *compiler) assignIndexRef(t *IndexExpr, value Expr) (uint8, error) {
 	arr, wb, err := c.indexBase(t, true)
 	if err != nil {
 		return 0, err
-	}
-	if t.Key == nil {
-		c.chunk.Emit(vm.Instruction{Op: vm.OpAppend, A: arr, B: srcCell})
-		if wb != nil {
-			wb(arr)
-		}
-		c.emitRefSweep()
-		return srcCell, nil
 	}
 	k, err := c.expr(t.Key)
 	if err != nil {

@@ -493,6 +493,19 @@ func getDefinedFunctionsFn(ctx *vm.Context) vm.Value {
 }
 
 func defineFn(ctx *vm.Context) vm.Value {
+	// define(string $constant_name, mixed $value): массив (как и объект без
+	// __toString) в weak-режиме не приводится к строке — TypeError.
+	if a0 := arg(ctx, 0); a0.Type() == vm.ArrayType ||
+		(a0.Type() == vm.ObjectType && !ctx.VM().IsStringable(a0)) ||
+		a0.Type() == vm.ResourceType ||
+		(ctx.VM().StrictTypes() && a0.Type() != vm.StringType) {
+		ctx.Throw(vm.NewThrowable("TypeError",
+			vm.ArgTypeError("define", 1, "constant_name", "string", phpTypeName(ctx, 0), "", 0)))
+		if ctx.HasThrown() {
+			return *new(vm.Value)
+		}
+		return vm.MakeNull()
+	}
 	name := arg(ctx, 0).ToString()
 	// Имя __COMPILER_HALT_OFFSET__ зарезервировано Zend (регистрируется при
 	// старте как специальная константа): define() предупреждает и не определяет.

@@ -166,6 +166,15 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		shareSlot(res)
 		return execResult{}
 	}
+	// Не-вызываемые скаляры и ресурсы: Zend различает строку (ищет функцию)
+	// и остальные типы ("Value of type null is not callable").
+	if src := deref(regs[base]); src.typ <= FloatType || src.typ == ResourceType {
+		err := NewThrowable("Error", "Value of type "+src.typ.String()+" is not callable")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	name := regs[base].ToString()
 	// PHP допускает ведущий "\" в строковом имени функции: '\id' — это id.
 	// Снимается ровно один обратный слэш; в диагностике имя остаётся исходным.

@@ -125,7 +125,25 @@ func (vm *VM) opNew(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) ex
 
 func (vm *VM) opNewDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
 	base := int(in.B)
-	name := regs[base].ToString()
+	// Zend: объект как имя класса — его класс (__toString игнорируется),
+	// строка — имя, остальные типы — Error "Class name must be a valid
+	// object or a string".
+	baseSlot := deref(regs[base])
+	var name string
+	switch baseSlot.typ {
+	case ObjectType, ClosureType:
+		if ci := vm.classInfo(baseSlot); ci != nil {
+			name = ci.Name()
+		}
+	case StringType:
+		name = baseSlot.ToString()
+	default:
+		err := NewThrowable("Error", "Class name must be a valid object or a string")
+		if !vm.handleThrow(chunk, err) {
+			return execResult{err: err}
+		}
+		return execResult{next: true}
+	}
 	argc := int(in.C)
 	classIdx := -1
 	for i, c := range vm.classes {
@@ -359,6 +377,11 @@ func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 		if gres, stop := vm.staticShadowGuard(ci, pname, "__get", chunk); stop {
 			return gres
 		}
+		// Свойство-ссылка при чтении разыменовывается (Zend FETCH_OBJ_R):
+		// значение фиксируется в момент чтения (bug72543_3).
+		if sl, ok := v.(Slot); ok {
+			v = Deref(sl)
+		}
 		old := regs[in.A]
 		SlotOf(&regs[in.A], v)
 		if trackedType(old.typ) || trackedType(regs[in.A].typ) {
@@ -484,6 +507,11 @@ func (vm *VM) opPropGetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 	if v, ok := vm.getProp(recv, pname); ok {
 		if gres, stop := vm.staticShadowGuard(ci, pname, "__get", chunk); stop {
 			return gres
+		}
+		// Свойство-ссылка при чтении разыменовывается (Zend FETCH_OBJ_R):
+		// значение фиксируется в момент чтения (bug72543_3).
+		if sl, ok := v.(Slot); ok {
+			v = Deref(sl)
 		}
 		old := regs[in.A]
 		SlotOf(&regs[in.A], v)

@@ -66,10 +66,15 @@ func builtins() []*vm.Function {
 		vm.Register("is_callable", isCallableFn),
 		vm.Register("get_class", func(ctx *vm.Context) vm.Value {
 			if len(ctx.Args()) == 0 {
-				// get_class() без аргумента: класс текущего scope (устаревшее).
-				ctx.VM().Deprecated("Calling get_class() without arguments is deprecated")
+				// get_class() без аргумента: класс текущего scope (устаревшее);
+				// вне класса — Error (без deprecation).
 				if ci := ctx.Self(); ci != nil {
+					ctx.VM().Deprecated("Calling get_class() without arguments is deprecated")
 					return vm.Str(ci.Name())
+				}
+				ctx.Throw(vm.NewThrowable("Error", "get_class() without arguments must be called from within a class"))
+				if ctx.HasThrown() {
+					return *new(vm.Value)
 				}
 				return vm.Bool(false)
 			}

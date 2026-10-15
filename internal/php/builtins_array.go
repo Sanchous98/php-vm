@@ -1,6 +1,7 @@
 package php
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"phpvm/internal/vm"
@@ -871,8 +872,51 @@ func arrayMergeFn(ctx *vm.Context) vm.Value {
 
 // mergeRecInto рекурсивно сливает arr в out по правилам array_merge_recursive:
 // строковые ключи объединяются (при совпадении — в массив), числовые добавляются.
-// path — массивы в текущей ветке рекурсии (детект циклов, как в PHP); false —
-// обнаружена рекурсия.
+// path — массивы в текущей ветке рекурсии (детект циклов, как в PHP):
+// errRecursion — цикл, errNextOccupied — переполнение авто-ключа.
+func mergeRecInto(m *vm.VM, out *vm.Array, arr *vm.Array, path map[*vm.Array]bool) error {
+	if path[arr] {
+		return errRecursion
+	}
+	path[arr] = true
+	defer delete(path, arr)
+	for k, v := range arr.All() {
+		v = derefLoneRefVM(m, v)
+		if !k.IsStr() {
+			if _, err := out.Append(v); err != nil {
+				return err
+			}
+			continue
+		}
+		existing, ok := out.Get(k)
+		if !ok {
+			out.SetStr(k.StrVal(), v)
+			continue
+		}
+		merged := vm.NewArray()
+		if existing.Type() == vm.ArrayType {
+			// Копируем существующие элементы, СОХРАНЯЯ ключи (в т.ч. числовые)
+			// и nextFree — как Zend при рекурсивном слиянии вложенных массивов.
+			copyEntriesPreserve(merged, existing.AsArray())
+		} else if !isMergeSkipType(existing.Type()) {
+			if _, err := merged.Append(vm.Deref(existing)); err != nil {
+				return err
+			}
+		}
+		if v.Type() == vm.ArrayType {
+			if err := mergeRecInto(m, merged, v.AsArray(), path); err != nil {
+				return err
+			}
+		} else if !isMergeSkipType(v.Type()) {
+			if _, err := merged.Append(vm.Deref(v)); err != nil {
+				return err
+			}
+		}
+		out.SetStr(k.StrVal(), vm.MakeArray(merged))
+	}
+	return nil
+}
+
 // copyEntriesPreserve копирует элементы src в dst, сохраняя все ключи (в т.ч.
 // числовые) и, соответственно, nextFree целевого массива.
 func copyEntriesPreserve(dst, src *vm.Array) {
@@ -896,42 +940,8 @@ func isMergeSkipType(t vm.Type) bool {
 	return t == vm.ObjectType || t == vm.ClosureType
 }
 
-func mergeRecInto(m *vm.VM, out *vm.Array, arr *vm.Array, path map[*vm.Array]bool) bool {
-	if path[arr] {
-		return false
-	}
-	path[arr] = true
-	defer delete(path, arr)
-	for k, v := range arr.All() {
-		v = derefLoneRefVM(m, v)
-		if !k.IsStr() {
-			out.Append(v)
-			continue
-		}
-		existing, ok := out.Get(k)
-		if !ok {
-			out.SetStr(k.StrVal(), v)
-			continue
-		}
-		merged := vm.NewArray()
-		if existing.Type() == vm.ArrayType {
-			// Копируем существующие элементы, СОХРАНЯЯ ключи (в т.ч. числовые)
-			// и nextFree — как Zend при рекурсивном слиянии вложенных массивов.
-			copyEntriesPreserve(merged, existing.AsArray())
-		} else if !isMergeSkipType(existing.Type()) {
-			merged.Append(vm.Deref(existing))
-		}
-		if v.Type() == vm.ArrayType {
-			if !mergeRecInto(m, merged, v.AsArray(), path) {
-				return false
-			}
-		} else if !isMergeSkipType(v.Type()) {
-			merged.Append(vm.Deref(v))
-		}
-		out.SetStr(k.StrVal(), vm.MakeArray(merged))
-	}
-	return true
-}
+// errRecursion — детект цикла в array_merge_recursive.
+var errRecursion = errors.New("Recursion detected")
 
 func arrayMergeRecursiveFn(ctx *vm.Context) vm.Value {
 	args := ctx.Args()
@@ -954,8 +964,8 @@ func arrayMergeRecursiveFn(ctx *vm.Context) vm.Value {
 	}
 	out := vm.NewArray()
 	for _, a := range args {
-		if !mergeRecInto(ctx.VM(), out, a.AsArray(), map[*vm.Array]bool{}) {
-			ctx.Throw(vm.NewThrowable("Error", "Recursion detected"))
+		if err := mergeRecInto(ctx.VM(), out, a.AsArray(), map[*vm.Array]bool{}); err != nil {
+			ctx.Throw(vm.NewThrowable("Error", err.Error()))
 			if ctx.HasThrown() {
 				return *new(vm.Value)
 			}

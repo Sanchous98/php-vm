@@ -574,6 +574,10 @@ func fccFn(ctx *vm.Context) vm.Value {
 			return vm.Bool(false)
 		}
 		recv := derefSlot(a[1])
+		// `$closure->__invoke(...)` в Zend даёт сам объект-замыкание.
+		if recv.Type() == vm.ClosureType && strings.EqualFold(derefSlot(a[2]).ToString(), "__invoke") && recv.AsClosure() != nil {
+			return recv
+		}
 		ci := ctx.VM().SlotClassInfo(recv)
 		if ci == nil {
 			return vm.Bool(false)

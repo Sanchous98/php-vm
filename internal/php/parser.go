@@ -74,8 +74,16 @@ type SwitchCase struct {
 	Default bool
 	Body    []Stmt
 }
-type BreakStmt struct{ Level int }
-type ContinueStmt struct{ Level int }
+type BreakStmt struct {
+	Level int
+	// OpKind — вид операнда `break N`: 0 — нет/целое, 1 — double/string
+	// литерал, 2 — не литерал. Диагностика как в Zend (PHP 7+).
+	OpKind int
+}
+type ContinueStmt struct {
+	Level  int
+	OpKind int
+}
 type ReturnStmt struct{ X Expr }
 type FuncDecl struct {
 	Name        string
@@ -286,6 +294,8 @@ type CatchClause struct {
 	Classes []string
 	Var     string
 	Body    []Stmt
+	// Line — строка `catch` (диагностика "Cannot re-assign $this").
+	Line int
 }
 
 // --- AST: выражения ---
@@ -1519,16 +1529,31 @@ func (p *Parser) statementInner() (Stmt, error) {
 		isBreak := p.kw("break")
 		p.next()
 		level := 1
+		// opKind: 0 — операнда нет или целочисленный литерал; 1 — литерал
+		// double/string; 2 — не литерал (переменная, выражение, true/null/…).
+		// Zend проверяет операнд на этапе компиляции (PHP 7/8).
+		opKind := 0
 		if p.is(TInt, "") {
 			level = int(p.next().Num)
+		} else if !p.is(TOp, ";") {
+			x, err := p.expr()
+			if err != nil {
+				return nil, err
+			}
+			switch x.(type) {
+			case *FloatLit, *StrLit:
+				opKind = 1
+			default:
+				opKind = 2
+			}
 		}
 		if err := p.endStmt(); err != nil {
 			return nil, err
 		}
 		if isBreak {
-			return &BreakStmt{Level: level}, nil
+			return &BreakStmt{Level: level, OpKind: opKind}, nil
 		}
-		return &ContinueStmt{Level: level}, nil
+		return &ContinueStmt{Level: level, OpKind: opKind}, nil
 	case p.kw("function"):
 		// function name(...) — именованная функция (не замыкание);
 		// `function &name()` — возврат по ссылке.
@@ -1795,6 +1820,7 @@ func hasDynamicGlobal(list []Stmt) bool {
 //	use const Foo\BAR;
 //	use Foo\{A, B as C, function f, const X};
 func (p *Parser) useStmt() (Stmt, error) {
+	usePos := p.cur().Pos
 	p.next() // use
 	kind := "class"
 	if p.kw("function") {
@@ -1862,11 +1888,21 @@ func (p *Parser) useStmt() (Stmt, error) {
 				return nil, err
 			}
 		} else {
+			hasAs := p.kw("as")
 			alias := p.useAlias(raw)
 			if err := p.checkUseAlias(kind, raw, alias); err != nil {
 				return nil, err
 			}
-			if err := p.addUse(kind, strings.Trim(raw, "\\"), alias); err != nil {
+			trimmed := strings.Trim(raw, "\\")
+			// В глобальном пространстве имён импорт несоставного имени без
+			// `as` ни на что не влияет (Zend: E_WARNING).
+			if p.ns == "" && !hasAs && !strings.Contains(trimmed, "\\") {
+				p.typeWarnings = append(p.typeWarnings, TypeWarning{
+					Line: p.lineAt(usePos),
+					Msg:  fmt.Sprintf("The use statement with non-compound name '%s' has no effect", trimmed),
+				})
+			}
+			if err := p.addUse(kind, trimmed, alias); err != nil {
 				return nil, err
 			}
 		}
@@ -2894,11 +2930,12 @@ func (p *Parser) tryStmt() (Stmt, error) {
 	}
 	st := &TryStmt{Body: body}
 	for p.kw("catch") {
+		catchLine := p.lineAt(p.cur().Pos)
 		p.next()
 		if err := p.expect(TOp, "("); err != nil {
 			return nil, err
 		}
-		cc := &CatchClause{}
+		cc := &CatchClause{Line: catchLine}
 		for {
 			cc.Classes = append(cc.Classes, p.className())
 			if !p.accept(TOp, "|") {
@@ -4242,6 +4279,7 @@ func (p *Parser) postfixExpr() (Expr, error) {
 func (p *Parser) memberAccess(recv Expr) (Expr, error) {
 	var name string
 	var nameExpr Expr
+	namePos := p.cur().Pos
 	if p.cur().Kind == TVar || p.is(TOp, "{") {
 		ne, err := p.dynMemberName()
 		if err != nil {
@@ -4252,6 +4290,10 @@ func (p *Parser) memberAccess(recv Expr) (Expr, error) {
 		name = p.next().Val
 	}
 	if p.accept(TOp, "(") {
+		// Zend: литеральное не-строковое имя метода — ошибка компиляции.
+		if nameExpr != nil && !isMethodNameExpr(nameExpr) {
+			return nil, &fatalError{msg: "Method name must be a string", line: p.lineAt(namePos)}
+		}
 		args, err := p.argList()
 		if err != nil {
 			return nil, err
@@ -4259,6 +4301,42 @@ func (p *Parser) memberAccess(recv Expr) (Expr, error) {
 		return &MethodCallExpr{Recv: recv, Name: name, NameExpr: nameExpr, Args: args}, nil
 	}
 	return &PropExpr{Recv: recv, Name: name, NameExpr: nameExpr}, nil
+}
+
+// isMethodNameExpr сообщает, что выражение-имя метода может быть вычислено в
+// рантайме (не литеральный int/float/bool/null/array): Zend отвергает
+// последние на этапе компиляции ("Method name must be a string").
+func isMethodNameExpr(e Expr) bool {
+	switch e.(type) {
+	case *IntLit, *FloatLit, *BoolLit, *NullLit, *ArrayLit:
+		return false
+	}
+	return true
+}
+
+// constClassNameNonString сообщает, что выражение слева от `::` — константно
+// вычислимое имя класса, не являющееся строкой (Zend: "Illegal class name").
+func constClassNameNonString(e Expr) bool {
+	switch v := e.(type) {
+	case *StrLit:
+		return false
+	case *IntLit, *FloatLit, *BoolLit, *NullLit, *ArrayLit:
+		return true
+	case *UnaryExpr:
+		switch v.X.(type) {
+		case *IntLit, *FloatLit, *BoolLit, *NullLit:
+			return true
+		}
+		return false
+	case *BinExpr:
+		if v.Op == "." {
+			// Конкатенация литералов даёт строку (или ошибку, если операнд
+			// не конвертируется) — "Illegal class name" не эмитится.
+			return false
+		}
+		return constClassNameNonString(v.L) && constClassNameNonString(v.R)
+	}
+	return false
 }
 
 // postfixTail разбирает остаток postfix-цепочки для уже разобранного выражения.
@@ -4311,6 +4389,18 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 			x = member
 		case p.is(TOp, "::"):
 			// x::name(...) / x::CONST / x::$prop / x::${expr} / x::$var(...)
+			// Литеральное/константное не-строковое имя класса слева от `::`
+			// Zend отвергает на этапе компиляции (bug70782, bug77530).
+			if constClassNameNonString(x) {
+				line := 0
+				if p.exprLines != nil {
+					line = p.exprLines[x]
+				}
+				if line <= 0 {
+					line = p.lineAt(p.cur().Pos)
+				}
+				return nil, &fatalError{msg: "Illegal class name", line: line}
+			}
 			p.next()
 			t := p.next()
 			clsName := classRefName(x)
@@ -4325,6 +4415,16 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 					ne, err := p.dynAfterDollar()
 					if err != nil {
 						return nil, err
+					}
+					// `Class::$$var(...)` / `Class::${expr}(...)` — вызов
+					// статического метода с динамическим именем.
+					if p.accept(TOp, "(") {
+						args, err := p.argList()
+						if err != nil {
+							return nil, err
+						}
+						x = &StaticCallExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne, Args: args}
+						break
 					}
 					x = &StaticPropExpr{Class: clsName, ClassExpr: clsExpr, NameExpr: ne}
 					break
@@ -4353,6 +4453,11 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 					return nil, err
 				}
 				if p.accept(TOp, "(") {
+					// Zend: литеральное не-строковое имя метода — ошибка
+					// компиляции "Method name must be a string".
+					if !isMethodNameExpr(ne) {
+						return nil, &fatalError{msg: "Method name must be a string", line: p.lineAt(t.Pos)}
+					}
 					args, err := p.argList()
 					if err != nil {
 						return nil, err
@@ -4380,6 +4485,13 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 				} else {
 					x = &ConstExpr{Name: clsName + "::" + cname}
 				}
+			}
+		case p.is(TOp, "{"):
+			// PHP 8.0 удалил доступ к смещению строк/массивов через фигурные
+			// скобки — это ошибка компиляции (не разбора).
+			return nil, &fatalError{
+				msg:  "Array and string offset access syntax with curly braces is no longer supported",
+				line: p.lineAt(p.cur().Pos),
 			}
 		case p.is(TOp, "++") || p.is(TOp, "--"):
 			if p.noIncDec > 0 {
@@ -4986,7 +5098,13 @@ func (p *Parser) dynAfterDollarMember() (Expr, error) {
 		}
 		return &VarExpr{NameExpr: e}, nil
 	}
-	return p.dynAfterDollar()
+	inner, err := p.dynAfterDollar()
+	if err != nil {
+		return nil, err
+	}
+	// `$obj->$$var`: имя члена — значение ${$var} (ещё один уровень
+	// разыменования к имени из dynAfterDollar).
+	return &VarExpr{NameExpr: inner}, nil
 }
 
 // dynAfterDollar разбирает продолжение после одиночного `$`:

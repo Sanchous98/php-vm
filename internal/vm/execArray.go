@@ -124,6 +124,9 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 		if !found {
 			vm.Warn("Undefined array key " + intToString(ks.Int()))
 		}
+		// Элемент-ссылка разыменовывается при чтении (FETCH_DIM_R):
+		// значение фиксируется в момент чтения (bug72543_3).
+		v = deref(v)
 		shareSlot(v)
 		{
 			old := regs[in.A]
@@ -147,6 +150,7 @@ func (vm *VM) opIndex(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) 
 	if !found {
 		vm.Warn("Undefined array key " + arrayKeyRepr(k))
 	}
+	v = deref(v)
 	shareSlot(v)
 	{
 		old := regs[in.A]
@@ -557,6 +561,38 @@ func (vm *VM) opIndexRef(regs []Slot, consts []Slot, chunk *Chunk, in Instructio
 			return execResult{err: err}
 		}
 		return execResult{next: true}
+	}
+	if in.C < 0 {
+		// `$arr[]` в write-контексте (например, передача в by-ref параметр):
+		// Zend создаёт новый элемент (null) и возвращает ссылку на него.
+		a := src.AsArray().Unshare()
+		cell := MakeRef(&Ref{v: MakeNull()})
+		if _, err := a.Append(cell); err != nil {
+			if err == errNextOccupied {
+				err = NewThrowable("Error", err.Error())
+			}
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}
+			}
+			return execResult{next: true}
+		}
+		{
+			old := regs[in.B]
+			wv := MakeArray(a)
+			regs[in.B] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.B), old)
+			}
+		}
+		{
+			old := regs[in.A]
+			wv := cell
+			regs[in.A] = wv
+			if trackedType(old.typ) || trackedType(wv.typ) {
+				vm.wRegSlow(int(in.A), old)
+			}
+		}
+		return execResult{}
 	}
 	k, ok := vm.KeyOfWarn(regs[in.C])
 	if !ok {

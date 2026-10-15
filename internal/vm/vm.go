@@ -7281,9 +7281,16 @@ func (vm *VM) DynStaticCall(cls Slot, mname string, args []Slot) (Slot, error) {
 	if vis != Public && !vm.methodAccessibleFromProto(ci, decl, mname, vis, vm.ctx.self) {
 		if pm, pdecl, pvis, ok := vm.scopePrivateMethod(ci, mname); ok {
 			m, decl, vis = pm, pdecl, pvis
+		} else if sres, ok, merr := vm.callMagicUndefStatic(ci, ci, mname, args); ok {
+			// Недоступный статический метод + магия: __call/__callStatic
+			// (bug48533: $x::a() при private a и __callStatic).
+			return sres, merr
 		} else {
 			return Slot{}, vm.accessError(decl, mname, vis)
 		}
+	}
+	if err := vm.checkStaticCall(m, ci); err != nil {
+		return Slot{}, err
 	}
 	return vm.invokeMethod(m, vm.staticCallRecv(ci), ci, args)
 }

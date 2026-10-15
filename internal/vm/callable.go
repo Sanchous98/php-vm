@@ -1878,6 +1878,27 @@ func (vm *VM) MethodStatic(ci ClassInfo, name string) (bool, bool) {
 	return false, false
 }
 
+// CallableStaticStringValid — валиден ли строковый callable "C::m"
+// (или [C, m]): объявленный метод, __callStatic, либо __call при совместимом
+// $this (та же логика, что в IsCallableEx; bug45186_2: [C,m] без
+// __callStatic невалиден, даже если есть __call).
+func (vm *VM) CallableStaticStringValid(ci ClassInfo, name string) bool {
+	if ci == nil {
+		return false
+	}
+	if m, _, _ := ci.methodInfo(name); m != nil {
+		return true
+	}
+	if _, magic := vm.staticMagicFallback(ci); magic != "" {
+		return true
+	}
+	return false
+}
+
+// CtxSelf возвращает класс текущей области (для builtins: разрешение
+// self/parent/static в callable).
+func (vm *VM) CtxSelf() ClassInfo { return vm.ctx.self }
+
 // FunctionByName сообщает, существует ли функция с таким именем (без учёта регистра).
 func (vm *VM) FunctionByName(name string) bool { return vm.functionByName(name) != nil }
 
@@ -1913,8 +1934,15 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 		if i := strings.Index(lookup, "::"); i >= 0 {
 			cls := strings.TrimLeft(lookup[:i], "\\")
 			meth := lookup[i+2:]
-			if strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static") {
-				vm.Deprecated(`Use of "` + cls + `" in callables is deprecated`)
+			// Deprecation «Use of "self" in callables» Zend печатает только
+			// для валидного callable (bug45186: невалидный self::y не
+			// предупреждает) — откладываем до успешной проверки.
+			deprecateSelf := strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static")
+			deprecateName := cls
+			deprecate := func() {
+				if deprecateSelf {
+					vm.Deprecated(`Use of "` + deprecateName + `" in callables is deprecated`)
+				}
 			}
 			cn := vm.callableClassName(cls)
 			nm := cn + "::" + meth
@@ -1938,9 +1966,11 @@ func (vm *VM) IsCallableEx(c Slot, syntaxOnly bool) (bool, string) {
 				if !vm.callableMethodVisible(ci, meth, vm.ctx.self) {
 					return false, nm
 				}
+				deprecate()
 				return true, nm
 			}
 			if _, m := vm.staticMagicFallback(ci); m != "" {
+				deprecate()
 				return true, nm
 			}
 			return false, nm

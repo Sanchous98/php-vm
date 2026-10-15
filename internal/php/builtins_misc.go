@@ -960,6 +960,12 @@ func throwCallable(ctx *vm.Context, err error) {
 	if err == nil {
 		return
 	}
+	if vm.IsExitSignal(err) {
+		// exit/die внутри callable: останавливаем скрипт, а не превращаем
+		// сигнал в Error "exit" (bug54910).
+		ctx.VM().RequestHalt()
+		return
+	}
 	if th, ok := err.(*vm.Throwable); ok {
 		ctx.Throw(th)
 		if ctx.HasThrown() {
@@ -1281,6 +1287,11 @@ func callableReason(ctx *vm.Context, cb vm.Slot) string {
 		name := cb.ToString()
 		if i := strings.Index(name, "::"); i >= 0 {
 			cls := strings.TrimLeft(name[:i], "\\")
+			if strings.EqualFold(cls, "self") || strings.EqualFold(cls, "parent") || strings.EqualFold(cls, "static") {
+				if ctx.VMInstance().CtxSelf() == nil {
+					return fmt.Sprintf("cannot access %q when no class scope is active", strings.ToLower(cls))
+				}
+			}
 			if ctx.VMInstance().FindClass(cls) == nil {
 				ctx.VMInstance().Autoload(ctx, cls)
 			}
@@ -1289,8 +1300,8 @@ func callableReason(ctx *vm.Context, cb vm.Slot) string {
 				return fmt.Sprintf("class %q not found", name[:i])
 			}
 			mname := name[i+2:]
-			if !ctx.VMInstance().ClassHasMethod(ci, mname) {
-				return fmt.Sprintf("class %s does not have a method %q", cls, mname)
+			if !ctx.VMInstance().CallableStaticStringValid(ci, mname) {
+				return fmt.Sprintf("class %s does not have a method %q", ci.Name(), mname)
 			}
 			return ""
 		}

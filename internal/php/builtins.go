@@ -502,7 +502,7 @@ func builtins() []*vm.Function {
 		vm.Register("get_cfg_var", getCfgVarFn),
 		vm.Register("getenv", getenvFn),
 		vm.Register("putenv", putenvFn),
-		vm.Register("error_reporting", func(ctx *vm.Context) vm.Value { return vm.Int(0) }),
+		vm.Register("error_reporting", vm.ErrorReportingBuiltin),
 		vm.Register("header", headerFn),
 		vm.Register("setcookie", setcookieFn),
 		vm.Register("setrawcookie", setrawcookieFn),

@@ -2893,6 +2893,7 @@ func internalFuncs() []*vm.Function {
 		vm.Register("__php_sizeof", vm.SizeofBuiltin),
 		vm.Register("__php_is_countable", vm.IsCountableBuiltin),
 		vm.Register("__php_error_reporting", vm.ErrorReportingBuiltin),
+		vm.Register("__php_verify_return", vm.VerifyReturnAtPointBuiltin),
 		vm.Register("iterator_to_array", vm.IteratorToArrayBuiltin),
 		vm.Register("__php_yield_from_ret", vm.YieldFromRetBuiltin),
 		vm.Register("__php_yield_from_begin", vm.YieldFromBeginBuiltin),
@@ -10967,6 +10968,14 @@ func (c *compiler) stmt(st Stmt) error {
 				return err
 			}
 		}
+		// Zend верифицирует объявленный тип возврата в точке return — до
+		// выполнения finally (VERIFY_RETURN; bug72347: Deprecated о float->int
+		// печатается раньше тела finally).
+		if s.X != nil && c.curRetType != "" && !c.byrefReturn && !c.hasYield && c.hasFinallyRegion() {
+			if _, isVoid := s.X.(*NullLit); !isVoid {
+				r = c.emitCall("__php_verify_return", []uint8{r})
+			}
+		}
 		r = c.saveAcrossUnwind(r)
 		if err := c.unwindToRegions(0); err != nil {
 			return err
@@ -11875,6 +11884,17 @@ func (c *compiler) unwindToRegions(keep int) error {
 	}
 	c.regions = saved
 	return nil
+}
+
+// hasFinallyRegion сообщает, что текущая точка компиляции находится внутри
+// try-региона с finally (раскрутка выполнит его тело при return).
+func (c *compiler) hasFinallyRegion() bool {
+	for _, reg := range c.regions {
+		if reg.try != nil && reg.try.hasFinally {
+			return true
+		}
+	}
+	return false
 }
 
 // saveAcrossUnwind сохраняет значение r в стабильный регистр, если предстоит

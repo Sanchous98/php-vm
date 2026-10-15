@@ -992,7 +992,19 @@ func (vm *VM) staticPropAccessErr(cls ClassInfo, name string) error {
 	}
 	for k := rc; k != nil; k = k.parent {
 		if pd, ok := k.ownProps[name]; ok && pd.static {
-			return vm.propAccessErr(pd, k, name)
+			// Zend называет класс из выражения доступа (self::$x в B при
+			// private A::$x — «B::$x», bug70873), а не объявивший.
+			switch pd.vis {
+			case Private:
+				if vm.ctx.self != k {
+					return NewThrowable("Error", "Cannot access private property "+classDisplayName(cls)+"::$"+name)
+				}
+			case Protected:
+				if !canAccess(Protected, k, vm.ctx.self) {
+					return NewThrowable("Error", "Cannot access protected property "+classDisplayName(cls)+"::$"+name)
+				}
+			}
+			return nil
 		}
 	}
 	return nil

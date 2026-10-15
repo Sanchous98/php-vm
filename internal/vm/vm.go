@@ -250,6 +250,11 @@ type VM struct {
 	// на каждом вызове функции: это давало 1 аллокацию на вызов).
 	retVal Slot
 
+	// retVerifiedDepth — глубина callStack, для которой тип возврата уже
+	// проверен в точке return (__php_verify_return, bug72347): на выходе из
+	// функции повторная проверка пропускается. 0 — проверки не было.
+	retVerifiedDepth int
+
 	// resDropPending/resDrops — ресурсы с OnDrop, потерявшие последнего
 	// учтённого владельца: финализаторы выполняются в точке OpSweep (аналог
 	// детерминированного уничтожения при обнулении refcount в Zend).
@@ -5863,7 +5868,12 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 		res, err = fn.Executable.Call(vm, &vm.ctx, args)
 		if err == nil {
 			if fn.RetType != "" {
-				res, err = vm.checkReturnType(fn, res)
+				if vm.retVerifiedDepth == len(vm.callStack) {
+					// Тип уже проверен в точке return (__php_verify_return).
+					vm.retVerifiedDepth = 0
+				} else {
+					res, err = vm.checkReturnType(fn, res)
+				}
 			}
 		}
 	}
@@ -6335,6 +6345,49 @@ func (vm *VM) checkReturnType(fn *Function, res Slot) (Slot, error) {
 	}
 	th := vm.returnTypeError(name, vm.displayTypeResolved(t), kind)
 	return res, loc(th)
+}
+
+// VerifyReturnAtPointBuiltin — приведение значения к объявленному типу
+// возврата в точке return (до раскрутки finally, как Zend VERIFY_RETURN).
+// Регистрируется как __php_verify_return.
+func VerifyReturnAtPointBuiltin(ctx *Context) Slot {
+	vm := ctx.vm
+	a := ctx.Args()
+	if len(a) == 0 {
+		return MakeNull()
+	}
+	// Кадр самой служебной функции может отсутствовать (быстрый прямой вызов):
+	// ищем кадр userland-функции и глубину, на которой её проверять.
+	n := len(vm.callStack)
+	fn := (*Function)(nil)
+	setDepth := n
+	if n > 0 {
+		if c := vm.callStack[n-1].callee; c != nil && c.Name == "__php_verify_return" {
+			setDepth = n - 1
+			if n >= 2 {
+				fn = vm.callStack[n-2].callee
+			}
+		} else {
+			fn = vm.callStack[n-1].callee
+		}
+	}
+	if fn == nil || fn.RetType == "" {
+		return a[0]
+	}
+	if l := vm.line(); l > 0 {
+		vm.retLine = l
+	}
+	out, err := vm.checkReturnType(fn, a[0])
+	if err != nil {
+		if th, ok := err.(*Throwable); ok {
+			ctx.Throw(th)
+			return Slot{}
+		}
+		ctx.Throw(NewThrowable("Error", err.Error()))
+		return Slot{}
+	}
+	vm.retVerifiedDepth = setDepth
+	return out
 }
 
 // fnStrict сообщает, что функция объявлена в strict_types-файле.
@@ -6827,7 +6880,12 @@ func (vm *VM) invokeClosure(cl *Closure, args []Slot) (res Slot, err error) {
 		res, err = fn.Executable.Call(vm, &vm.ctx, full)
 		if err == nil {
 			if fn.RetType != "" {
-				res, err = vm.checkReturnType(fn, res)
+				if vm.retVerifiedDepth == len(vm.callStack) {
+					// Тип уже проверен в точке return (__php_verify_return).
+					vm.retVerifiedDepth = 0
+				} else {
+					res, err = vm.checkReturnType(fn, res)
+				}
 			}
 		}
 	}
@@ -6917,7 +6975,12 @@ func (vm *VM) invokeMethod(fn *Function, recv Slot, called ClassInfo, args []Slo
 		res, err = fn.Executable.Call(vm, &vm.ctx, args)
 		if err == nil {
 			if fn.RetType != "" {
-				res, err = vm.checkReturnType(fn, res)
+				if vm.retVerifiedDepth == len(vm.callStack) {
+					// Тип уже проверен в точке return (__php_verify_return).
+					vm.retVerifiedDepth = 0
+				} else {
+					res, err = vm.checkReturnType(fn, res)
+				}
 			}
 		}
 	}

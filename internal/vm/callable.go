@@ -640,6 +640,15 @@ var scopeIntrospectionNames = map[string]bool{
 	"func_get_arg": true, "func_get_args": true, "func_num_args": true,
 }
 
+// scopeIntrospectionError — ошибка динамического вызова frameless-функции.
+// Zend бросает её уже с внутренним кадром в стеке (bug71221:
+// `#0 [internal function]: get_defined_vars()`).
+func (vm *VM) scopeIntrospectionError(name string) error {
+	th := NewThrowable("Error", "Cannot call "+name+"() dynamically")
+	th.Trace = []callFrameInfo{{callee: vm.functionByName(name), callerFile: "[internal function]"}}
+	return th
+}
+
 // scopeIntrospectionArityErr — Zend проверяет арность frameless-функций
 // (func_get_args/func_num_args — 0, func_get_arg — 1) до запрета динамического
 // вызова: лишние аргументы дают ArgumentCountError (bug72107).
@@ -798,7 +807,7 @@ func (vm *VM) callCallableMode(ctx *Context, c Slot, args []Slot, direct bool) (
 		if aerr := scopeIntrospectionArityErr(name, len(args)); aerr != nil {
 			return Slot{}, aerr
 		}
-		return Slot{}, NewThrowable("Error", "Cannot call "+name+"() dynamically")
+		return Slot{}, vm.scopeIntrospectionError(name)
 	}
 	savedThis, savedSelf, savedCalled := vm.ctx.this, vm.ctx.self, vm.ctx.called
 	savedMarkInternal := vm.markNextFrameInternal

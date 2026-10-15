@@ -1721,13 +1721,37 @@ func (vm *VM) staticShadowGuard(ci ClassInfo, pname, magic string, chunk *Chunk)
 		return execResult{}, false
 	}
 	if err := vm.propAccessErr(pd, decl, pname); err != nil {
-		if !vm.handleThrow(chunk, err) {
-			return execResult{err: err}, true
+		// Zend продолжает поиск по предкам: доступный там одноимённый
+		// статический член «закрывает» недоступный у потомка (bug76860_2:
+		// private static A::$a при private static B::$a).
+		if !vm.staticShadowVisibleAncestor(rc, pname) {
+			// Свойство объявлено только у предка и недоступно из области —
+			// Zend считает его неопределённым (без notice и без Error).
+			if decl != rc {
+				return execResult{}, false
+			}
+			if !vm.handleThrow(chunk, err) {
+				return execResult{err: err}, true
+			}
+			return execResult{next: true}, true
 		}
-		return execResult{next: true}, true
 	}
-	vm.Notice(fmt.Sprintf("Accessing static property %s::$%s as non static", classDisplayName(decl), pname))
+	// Notice всегда называет класс объекта, а не объявивший (bug76860: «B::$a»).
+	vm.Notice(fmt.Sprintf("Accessing static property %s::$%s as non static", classDisplayName(ci), pname))
 	return execResult{}, false
+}
+
+// staticShadowVisibleAncestor сообщает, что в цепочке класса есть объявленное
+// статическое свойство name, доступное текущей области.
+func (vm *VM) staticShadowVisibleAncestor(rc *runtimeClass, name string) bool {
+	for k := rc; k != nil; k = k.parent {
+		if pd, ok := k.ownProps[name]; ok && pd.static {
+			if vm.propAccessErr(pd, k, name) == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // propIssetCommon реализует isset() над свойством объекта с Zend-семантикой:

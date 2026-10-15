@@ -185,7 +185,7 @@ func (vm *VM) opCallDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	if sn, ok := scopeIntrospectionName(regs[base]); ok {
 		err := scopeIntrospectionArityErr(sn, argc)
 		if err == nil {
-			err = NewThrowable("Error", "Cannot call "+sn+"() dynamically")
+			err = vm.scopeIntrospectionError(sn)
 		}
 		if !vm.handleThrow(chunk, err) {
 			return execResult{err: err}

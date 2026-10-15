@@ -1,6 +1,9 @@
 package vm
 
-import "fmt"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // Битовые операции PHP 8.3 (сверено с живым php):
 //
@@ -98,37 +101,59 @@ func shift(a, b Slot, left bool) (Slot, error) {
 // Результат: для & и ^ — длина min(len(a), len(b)); для | — длина
 // max(len(a), len(b)), недостающие байты считаются нулями.
 func bitwiseStrings(a, b string, op byte) string {
+	c := min(len(a), len(b)) // общая часть (& | ^ идут по ней)
+	n := c
 	if op == bitOr {
-		n := len(a)
-		if len(b) > n {
-			n = len(b)
-		}
-		buf := make([]byte, n)
-		for i := 0; i < n; i++ {
-			var x, y byte
-			if i < len(a) {
-				x = a[i]
-			}
-			if i < len(b) {
-				y = b[i]
-			}
-			buf[i] = x | y
-		}
-		return string(buf)
+		n = max(len(a), len(b)) // | — по длиннейшей, недостающее = нули
 	}
-	n := len(a)
-	if len(b) < n {
-		n = len(b)
+	if n == 0 {
+		return ""
 	}
 	buf := make([]byte, n)
-	for i := 0; i < n; i++ {
-		if op == bitAnd {
+	// Общая часть: по 8 байт за раз.
+	if w := c / 8; w > 0 {
+		aw := unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.StringData(a))), w)
+		bw := unsafe.Slice((*uint64)(unsafe.Pointer(unsafe.StringData(b))), w)
+		dw := unsafe.Slice((*uint64)(unsafe.Pointer(&buf[0])), w)
+		switch op {
+		case bitAnd:
+			for i := 0; i < w; i++ {
+				dw[i] = aw[i] & bw[i]
+			}
+		case bitOr:
+			for i := 0; i < w; i++ {
+				dw[i] = aw[i] | bw[i]
+			}
+		default:
+			for i := 0; i < w; i++ {
+				dw[i] = aw[i] ^ bw[i]
+			}
+		}
+	}
+	// Хвост общей части — скаляром.
+	switch op {
+	case bitAnd:
+		for i := c &^ 7; i < c; i++ {
 			buf[i] = a[i] & b[i]
-		} else {
+		}
+	case bitOr:
+		for i := c &^ 7; i < c; i++ {
+			buf[i] = a[i] | b[i]
+		}
+		// Остаток длиннейшей строки: x | 0 == x — просто копируем.
+		if n > c {
+			if len(a) > len(b) {
+				copy(buf[c:], a[c:])
+			} else {
+				copy(buf[c:], b[c:])
+			}
+		}
+	default:
+		for i := c &^ 7; i < c; i++ {
 			buf[i] = a[i] ^ b[i]
 		}
 	}
-	return string(buf)
+	return unsafe.String(&buf[0], n)
 }
 
 // bitwiseToInt приводит операнд &,|,^ к int. ok == false означает TypeError.

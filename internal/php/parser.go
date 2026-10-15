@@ -177,7 +177,7 @@ type ClassDecl struct {
 	// AnonSite — сайт (file:line) объявления анонимного класса; get_class()
 	// печатает `Parent@anonymous\x00<file>:<line>$<n>`.
 	AnonSite string
-	Members []*ClassMember
+	Members  []*ClassMember
 	// TraitAdapt — адаптации use Trait { ... } (insteadof / as).
 	TraitAdapt []*TraitAdapt
 	// Line — 1-based строка объявления класса (для диагностик компилятора).

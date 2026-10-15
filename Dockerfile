@@ -4,7 +4,10 @@
 #   docker build -t phpvm-bench .
 #
 # A/B-перф-стенд (12 нагрузок, CPU-время, cur vs перф-референс 70d92dd):
-#   docker run --rm -v "$PWD":/repo phpvm-bench          # N=3
+#   docker run --rm -v "$PWD":/repo phpvm-bench          # N=3 (Linux/macOS)
+#   docker run --rm -v "${PWD}:/repo" phpvm-bench        # PowerShell (Windows)
+#   docker run --rm phpvm-bench                          # без монтирования —
+#                                                        # по копии репо в образе
 #   docker run --rm -v "$PWD":/repo phpvm-bench 5        # N=5
 #
 # Ручной режим (PHPT-прогоны и т.п.):
@@ -42,7 +45,16 @@ RUN git clone --depth 1 --branch "${PHPSRC_BRANCH}" https://github.com/php/php-s
 # но оставляем и привычный путь.
 RUN ln -sf /usr/local/bin/php /usr/bin/php
 
+# Копия репозитория в образе: `docker run --rm phpvm-bench` работает без
+# монтирования (Windows PowerShell и т.п.). Монтирование -v ...:/repo
+# перекрывает эту копию. .git включён — bench/ab.sh делает git worktree
+# для сборки перф-референса.
+COPY . /repo
+
 WORKDIR /repo
 COPY bench/entry.sh /usr/local/bin/entry.sh
-RUN chmod +x /usr/local/bin/entry.sh
+# CRLF-контекст сборки (Windows): шебанг 'bash\r' ломает запуск — нормализуем LF.
+RUN chmod +x /usr/local/bin/entry.sh \
+    && sed -i 's/\r$//' /usr/local/bin/entry.sh /repo/bench/ab.sh /repo/bench/bench.py /repo/bench/entry.sh \
+    && chmod +x /repo/bench/*.sh
 ENTRYPOINT ["entry.sh"]

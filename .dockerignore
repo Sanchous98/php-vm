@@ -1,0 +1,10 @@
+# Артефакты стенда не нужны в образе (load-файлы и тест-бинари генерируются заново).
+bench/*.test
+bench/work*
+bench/cur.txt
+bench/ref.txt
+bench/work_smoke
+
+# Прочее тяжёлое, не относящееся к сборке.
+_runs/
+*.bundle

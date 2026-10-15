@@ -1,0 +1,8 @@
+# Проект Linux-first: тексты всегда с LF, даже при чекауте на Windows
+# (иначе shell-скрипты ломаются в контейнере: 'bash\r' в шебанге).
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+*.go text eol=lf

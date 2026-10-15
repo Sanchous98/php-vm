@@ -188,13 +188,16 @@ func (vm *VM) isLifetimeSpecial(o *Object) bool {
 // ArmHandles включает точный сбор PHP-хендлов: дальнейшие потери ссылок
 // приводят к немедленному проходу сборщика, чтобы нумерация #N совпадала с
 // Zend. Вызывается функциями, печатающими хендлы (var_dump и т.п.).
-func (vm *VM) ArmHandles() {
+// Возвращает ошибку деструктора, сработавшего в этом проходе (её поднимает
+// вызывающая функция: fe_fetch_dtor_exception).
+func (vm *VM) ArmHandles() error {
 	if !vm.handlesArmed {
 		vm.handlesArmed = true
 		if vm.lifeCandidate || vm.zeroObjs > 0 {
-			vm.FlushLifetime()
+			return vm.FlushLifetime()
 		}
 	}
+	return nil
 }
 
 // --- Writeback учёта ссылок ---
@@ -620,12 +623,13 @@ func (vm *VM) dropFrame(f *Frame) {
 	}
 }
 
-// FlushLifetime немедленно выполняет проход сборщика, если есть кандидаты.
-func (vm *VM) FlushLifetime() {
+// FlushLifetime немедленно выполняет проход сборщика, если есть кандидаты;
+// возвращает ошибку деструктора (Zend поднимает её в текущем операторе).
+func (vm *VM) FlushLifetime() error {
 	if (!vm.lifeCandidate && vm.zeroObjs <= 0) || vm.sweepBusy {
-		return
+		return nil
 	}
-	_ = vm.sweepLifetime(false, vm.chunk, vm.ip-1)
+	return vm.sweepLifetime(false, vm.chunk, vm.ip-1).err
 }
 
 // noteDroppedValue — как noteDropped для Value-границы (значения свойств).

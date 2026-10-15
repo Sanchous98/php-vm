@@ -4788,7 +4788,9 @@ func (vm *VM) exec(chunk *Chunk) error {
 			}
 
 		case OpThrow:
-			err := vm.makeThrowable(regs[in.A])
+			// Значение-ссылка (свойство-ссылка/foreach-алиас) разыменовывается:
+			// throw $ref-на-объект должен бросать объект (temporary_cleaning_009).
+			err := vm.makeThrowable(deref(regs[in.A]))
 			if l := vm.line(); l > 0 {
 				vm.curLine = l
 			}

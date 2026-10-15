@@ -4532,7 +4532,7 @@ func escapeshellcmd(s string) string {
 // debug_zval_dump() в PHP.
 func debugZvalDumpFn(ctx *vm.Context) vm.Value {
 	if v := ctx.VM(); v != nil {
-		v.ArmHandles()
+		_ = v.ArmHandles()
 	}
 	var b strings.Builder
 	st := &dumpState{vm: ctx.VM(), objIDs: map[*vm.Object]int{}, arrs: map[*vm.Array]bool{}, objs: map[*vm.Object]bool{}, refCount: map[*vm.Ref]int{}}

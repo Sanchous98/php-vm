@@ -1700,7 +1700,7 @@ func (vm *VM) WeakMapDumpEntries(o *Object) ([]DumpEntry, bool) {
 func registerWeakMapMembers(ci *runtimeClass) {
 	ci.Method("count", &Function{Name: "count", NumArgs: 0, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakMapData]()
 			if d == nil {
 				return MakeInt(0), nil
@@ -1711,7 +1711,7 @@ func registerWeakMapMembers(ci *runtimeClass) {
 
 	ci.Method("offsetExists", &Function{Name: "offsetExists", NumArgs: 1, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakMapData]()
 			o := ctx.vm.splArgObj(args, 0)
 			if o == nil {
@@ -1727,7 +1727,7 @@ func registerWeakMapMembers(ci *runtimeClass) {
 
 	ci.Method("offsetGet", &Function{Name: "offsetGet", NumArgs: 1, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakMapData]()
 			o := ctx.vm.splArgObj(args, 0)
 			if o == nil {
@@ -1754,7 +1754,7 @@ func registerWeakMapMembers(ci *runtimeClass) {
 
 	ci.Method("offsetSet", &Function{Name: "offsetSet", NumArgs: 2, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakMapData]()
 			if len(args) > 0 && deref(args[0]).typ == NullType {
 				// $map[] = v — WeakMap не поддерживает append.
@@ -1792,7 +1792,7 @@ func registerWeakMapMembers(ci *runtimeClass) {
 
 	ci.Method("offsetUnset", &Function{Name: "offsetUnset", NumArgs: 1, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakMapData]()
 			o := ctx.vm.splArgObj(args, 0)
 			if o == nil {
@@ -1813,7 +1813,7 @@ func registerWeakMapMembers(ci *runtimeClass) {
 
 	ci.Method("getIterator", &Function{Name: "getIterator", NumArgs: 0, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakMapData]()
 			arr := NewArray()
 			if d != nil {
@@ -1849,7 +1849,7 @@ func registerWeakReferenceMembers(ci *runtimeClass) {
 
 	ci.Method("create", &Function{Name: "create", NumArgs: 1, NumRequired: 1, IsStatic: true, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			o := ctx.vm.splArgObj(args, 0)
 			if o == nil {
 				ctx.Throw(NewThrowable("TypeError", "WeakReference::create(): Argument #1 ($object) must be of type object"))
@@ -1880,7 +1880,7 @@ func registerWeakReferenceMembers(ci *runtimeClass) {
 
 	ci.Method("get", &Function{Name: "get", NumArgs: 0, Executable: &NativeFunction{
 		fn: func(ctx *Context, args []Slot) (Slot, error) {
-			ctx.vm.ArmHandles()
+			_ = ctx.vm.ArmHandles()
 			d := ctx.This[weakReferenceData]()
 			if d == nil || deref(d.target).typ != ObjectType {
 				return MakeNull(), nil

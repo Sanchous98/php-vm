@@ -28,9 +28,9 @@ func bitNotStringWide(s string) string {
 	for i := 0; i < remaining; i += vl {
 		simd.LoadUint8s(src[i:]).Not().Store(buf[i:])
 	}
-	if remaining < n {
-		v, _ := simd.LoadUint8sPart(src[remaining:])
-		v.Not().StorePart(buf[remaining:])
-	}
+	// Хвост (< длины вектора). При remaining == n слайс пуст, но частичные
+	// Load/Store принимают нулевую длину — отдельный гард не нужен.
+	v, _ := simd.LoadUint8sPart(src[remaining:])
+	v.Not().StorePart(buf[remaining:])
 	return unsafe.String(&buf[0], n)
 }

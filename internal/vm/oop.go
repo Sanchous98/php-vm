@@ -368,6 +368,8 @@ func (c *runtimeClass) UnimplementedAbstract() []string {
 			req = append(req, reqEntry{cls, name})
 		}
 	}
+	// Zend перечисляет сначала нереализованные абстрактные методы классов-
+	// предков, затем интерфейсов (bug44414: "(A::foo, B::bar)").
 	for k := c; k != nil; k = k.parent {
 		for _, name := range k.methodOrder {
 			if _, ok := k.methods[name]; ok {
@@ -377,9 +379,13 @@ func (c *runtimeClass) UnimplementedAbstract() []string {
 				resolved[name] = true
 			}
 		}
+	}
+	for k := c; k != nil; k = k.parent {
 		for _, name := range k.sigOrder {
 			addReq(k, name)
 		}
+	}
+	for k := c; k != nil; k = k.parent {
 		for _, i := range k.ifaces {
 			collectIfaceReqs(i, resolved, visited, &req)
 		}

@@ -2409,6 +2409,17 @@ func (vm *VM) writeUncaughtChain(chain []*Throwable) {
 		} else {
 			vm.Write(prefix + class + " in " + file + ":" + strconv.Itoa(line) + "\n")
 		}
+		// error_get_last() после фатальной ошибки показывает именно её
+		// (E_ERROR, bug61767: type => 1), а не предыдущий warning.
+		vm.lastErrLevel = E_ERROR
+		if e.Message != "" {
+			vm.lastErrMsg = "Uncaught " + class + ": " + e.Message
+		} else {
+			vm.lastErrMsg = "Uncaught " + class
+		}
+		vm.lastErrFile = file
+		vm.lastErrLine = line
+		vm.lastErrSet = true
 		vm.Write("Stack trace:\n")
 		vm.Write(vm.traceString(e.Trace, file, line) + "\n")
 	}
@@ -2524,6 +2535,17 @@ func (vm *VM) reportUncaught(err error) {
 		vm.Write("\nParse error: " + th.Message + " in " + file + " on line " + strconv.Itoa(line) + "\n")
 		return
 	}
+	// error_get_last() после непойманного исключения показывает фатальную
+	// ошибку (E_ERROR, bug61767: type => 1).
+	vm.lastErrLevel = E_ERROR
+	if th.Message != "" {
+		vm.lastErrMsg = "Uncaught " + class + ": " + th.Message
+	} else {
+		vm.lastErrMsg = "Uncaught " + class
+	}
+	vm.lastErrFile = file
+	vm.lastErrLine = line
+	vm.lastErrSet = true
 	if th.Message != "" {
 		if html {
 			msg := errHTML(th.Message)
@@ -2737,9 +2759,9 @@ func escapeTraceString(s string) string {
 		case '\'':
 			b.WriteString(`\'`)
 		default:
-			if c < 0x20 || c == 0x7f {
+			if c < 0x20 || c >= 0x7f {
 				b.WriteString(`\x`)
-				const hexd = "0123456789abcdef"
+				const hexd = "0123456789ABCDEF"
 				b.WriteByte(hexd[c>>4])
 				b.WriteByte(hexd[c&0xf])
 			} else {
@@ -3263,6 +3285,11 @@ func (vm *VM) exec(chunk *Chunk) error {
 
 		case OpFatal:
 			msg := consts[in.C].StringVal()
+			if msg != "" && msg[0] == 0 {
+				// Ошибка связывания класса: Zend печатает без локации.
+				fmt.Fprintf(vm.out, "\nFatal error: %s in Unknown on line 0\n", msg[1:])
+				return exitSignal{}
+			}
 			file := vm.curFileAt()
 			if file == "" {
 				file = "php"

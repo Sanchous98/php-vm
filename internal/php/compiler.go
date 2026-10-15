@@ -5840,7 +5840,9 @@ compatLoop:
 		}
 		if !cd.IsAbstract && !implementsIteratorAPI(cd, declByName) && declaresTraversable(cd, declByName) {
 			base.curLine = cd.Line
-			cd.RuntimeFatal = fmt.Sprintf("Class %s must implement interface Traversable as part of either Iterator or IteratorAggregate", cd.Name)
+			// Zend рапортует эту ошибку без локации (Unknown on line 0);
+			// маркер \x00 снимается в OpFatal.
+			cd.RuntimeFatal = "\x00" + fmt.Sprintf("Class %s must implement interface Traversable as part of either Iterator or IteratorAggregate", cd.Name)
 			continue
 		}
 		ci := classes[classBase+i]

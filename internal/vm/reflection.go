@@ -1201,6 +1201,7 @@ func (vm *VM) reflInvokeMethod(d *reflectionData, args []Slot, arrayArgs bool) (
 	if d.fn == nil {
 		return Slot{}, NewThrowable("Error", "Cannot invoke abstract method "+d.class.Name()+"::"+d.name+"()")
 	}
+
 	named := vm.TakeExtraNamedParams()
 	var cargs []Slot
 	recv := Slot{}
@@ -1232,6 +1233,9 @@ func (vm *VM) reflInvokeMethod(d *reflectionData, args []Slot, arrayArgs bool) (
 		}
 		return vm.InvokeMethodNamed(d.fn, recv, d.class, arr)
 	}
+	// recv мог прийти Ref-ячейкой ($this как аргумент): разыменовываем,
+	// иначе метод вызывается как статический и кадр теряет "->" (bug45805).
+	recv = deref(recv)
 	if d.fn.IsStatic || recv.typ != ObjectType {
 		return vm.invokeMethod(d.fn, Slot{}, d.class, cargs)
 	}

@@ -14772,34 +14772,10 @@ func (c *compiler) closureExpr(e Expr) (uint8, error) {
 	}
 	for i, sp := range specs {
 		var r uint8
-		suppressRead := false
-		if !ci.isArrow {
-			// `use ($x)`/`use (&$x)` с несуществующей переменной: Zend печатает
-			// «Undefined variable» в точке создания замыкания (OpGlobalGet в
-			// таблице глобалов предупреждает сам).
-			saveLine := c.curLine
-			c.curLine = ci.line
-			if c.useGlobal(sp.name) {
-				r := c.alloc()
-				c.emitLine(ci.line)
-				c.chunk.Emit(vm.Instruction{Op: vm.OpGlobalGet, A: r,
-					C: int32(c.chunk.AddConst(vm.StrConst(c.globalKey(sp.name))))})
-				suppressRead = true
-			} else {
-				c.emitUndefReadWarn(sp.name, ci.line)
-			}
-			c.curLine = saveLine
-		}
-		if suppressRead {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOn})
-		}
 		if sp.byref {
 			r = c.refCell(sp.name)
 		} else {
 			r = c.loadVar(sp.name)
-		}
-		if suppressRead {
-			c.chunk.Emit(vm.Instruction{Op: vm.OpSuppressOff})
 		}
 		if dst := base + uint8(i); dst != r {
 			c.chunk.Emit(vm.Instruction{Op: vm.OpMove, A: dst, B: r})

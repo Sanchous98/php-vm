@@ -3259,20 +3259,37 @@ func (vm *VM) exec(chunk *Chunk) error {
 			vm.SuppressOff()
 
 		case OpExit:
-			str, serr := vm.stringify(regs[in.A])
-			if serr != nil {
-				th := serr
-				if t, ok := serr.(*Throwable); ok {
-					th = t
-				} else {
-					th = NewThrowable("Error", serr.Error())
+			// Zend: строка выводится как есть; true → "1"; float — своё
+			// представление; int/null — ничего (статус выхода); массив/объект
+			// конвертируются в строку (Error для объекта без __toString).
+			s := deref(regs[in.A])
+			switch s.typ {
+			case StringType:
+				vm.Write(s.StringVal())
+			case BoolType:
+				if s.ToBool() {
+					vm.Write("1")
 				}
-				if !vm.handleThrow(chunk, th) {
-					return th
+			case FloatType:
+				vm.Write(s.ToString())
+			case IntType, NullType:
+				// статус выхода, ничего не печатаем
+			default:
+				str, serr := vm.stringify(regs[in.A])
+				if serr != nil {
+					th := serr
+					if t, ok := serr.(*Throwable); ok {
+						th = t
+					} else {
+						th = NewThrowable("Error", serr.Error())
+					}
+					if !vm.handleThrow(chunk, th) {
+						return th
+					}
+					continue
 				}
-				continue
+				vm.Write(str)
 			}
-			vm.Write(str)
 			return exitSignal{}
 
 		case OpFatal:

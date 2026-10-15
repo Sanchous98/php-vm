@@ -24,7 +24,14 @@ func runSplPHP(t *testing.T, src string) string {
 	if werr != nil {
 		t.Fatalf("php failed for %q: %v\noutput: %s", src, werr, want)
 	}
-	got, err := runFileAt(src, f)
+	// VM сравнивается с php, запущенным с error_reporting=0: глушим те же
+	// диагностики и в интерпретаторе (иначе корректные Warning'и, которые php
+	// печатает в stderr, ломают побайтовое сравнение stdout).
+	vmSrc := src
+	if i := len("<?php"); len(src) >= i && src[:i] == "<?php" {
+		vmSrc = "<?php error_reporting(0);" + src[i:]
+	}
+	got, err := runFileAt(vmSrc, f)
 	if err != nil {
 		t.Fatalf("vm failed for %q: %v\noutput: %q", src, err, got)
 	}

@@ -1359,6 +1359,13 @@ func registerReflectionFunctionMembers(ci ClassInfo) {
 		return MakeNull(), nil
 	})
 	reflMethodReg(ci, "getClosureThis", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {
+		if d.closure {
+			if cl := d.closureSlot.asClosure(); cl != nil {
+				if cl.BoundThis.typ == ObjectType {
+					return cl.BoundThis, nil
+				}
+			}
+		}
 		return MakeNull(), nil
 	})
 	reflMethodReg(ci, "getClosureCalledClass", func(ctx *Context, d *reflectionData, _ []Slot) (Slot, error) {

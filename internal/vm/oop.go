@@ -695,7 +695,9 @@ func (c *runtimeClass) AddEnumCase(name string, value Value, hasValue bool, clas
 	if o.props == nil {
 		o.props = map[string]Value{}
 	}
-	o.props["name"] = MakeString(name)
+	// Имя case — interned-строка (Zend: debug_zval_dump печатает
+	// `string(N) "Bar" interned`).
+	o.props["name"] = MakeInternedString(name)
 	if hasValue {
 		var vs Slot
 		SlotOf(&vs, value)
@@ -769,7 +771,7 @@ func (c *runtimeClass) registerEnumValue(name, key string, slot Slot) {
 // backed-enum, значение которого вычисляется лениво).
 func (c *runtimeClass) AddLazyEnumCase(name string, th *Thunk, classIdx int) ClassInfo {
 	o := &Object{class: c}
-	o.props = map[string]Value{"name": MakeString(name)}
+	o.props = map[string]Value{"name": MakeInternedString(name)}
 	slot := c.objectSlot(o, classIdx)
 	c.DefineConst(name, slot)
 	c.enumCaseSlots = append(c.enumCaseSlots, slot)
@@ -1823,6 +1825,7 @@ func (vm *VM) IncDecTypedProp(o Slot, name string, cur Slot, dec bool) (Slot, er
 		if verr != nil {
 			return Slot{}, verr
 		}
+		vm.consumeReadonlyReinit(o, pd, decl, name)
 		key := vm.propKey(pd, decl, name)
 		if ob := vm.objectOf(o); ob != nil {
 			ob.ClearUnset(key)
@@ -2141,6 +2144,19 @@ func (vm *VM) staticRefCell(cls ClassInfo, name string) (Slot, error) {
 	return cell, nil
 }
 
+// consumeReadonlyReinit снимает разрешение на одноразовую переинициализацию
+// readonly-свойства. Zend снимает флаг IS_PROP_REINITABLE только после
+// успешной проверки типа значения (при TypeError флаг сохраняется —
+// Zend/tests/readonly_props/readonly_clone_success4).
+func (vm *VM) consumeReadonlyReinit(o Slot, pd *propDecl, decl ClassInfo, name string) {
+	if pd == nil || !pd.readonly {
+		return
+	}
+	if ob := vm.objectOf(o); ob != nil {
+		ob.ConsumeReadonlyReinit(vm.propKey(pd, decl, name))
+	}
+}
+
 // checkPropWrite проверяет readonly-семантику записи свойства name.
 func (vm *VM) checkPropWrite(ci ClassInfo, o Slot, name string) error {
 	pd, decl, ok := vm.scopedProp(vm.ctx.self, ci, name)
@@ -2156,7 +2172,7 @@ func (vm *VM) checkPropWrite(ci ClassInfo, o Slot, name string) error {
 	key := vm.propKey(pd, decl, name)
 	_, initialized := vm.getProp(o, key)
 	if initialized {
-		if ob := vm.objectOf(o); ob != nil && ob.ConsumeReadonlyReinit(key) {
+		if ob := vm.objectOf(o); ob != nil && ob.ReadonlyReinitPending(key) {
 			return nil
 		}
 		return NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+name)
@@ -2379,6 +2395,16 @@ func (vm *VM) checkPropUnset(ci ClassInfo, o Slot, name string) error {
 	if !pd.readonly {
 		return nil
 	}
+	// Разрешение на одноразовую переинициализацию (состояние после clone)
+	// действует и для unset: флаг снимается, свойство становится
+	// неинициализированным (Zend zend_std_unset_property,
+	// readonly_props/readonly_clone_success2).
+	key := vm.propKey(pd, decl, name)
+	if ob := vm.objectOf(o); ob != nil {
+		if _, initialized := vm.getProp(o, key); initialized && ob.ConsumeReadonlyReinit(key) {
+			return nil
+		}
+	}
 	if _, initialized := vm.getProp(o, name); initialized {
 		return NewThrowable("Error", "Cannot unset readonly property "+classDisplayName(decl)+"::$"+name)
 	}
@@ -2425,6 +2451,28 @@ func classIsUserDefined(ci ClassInfo) bool {
 		return rc.defFile != "" && !rc.internal
 	}
 	return false
+}
+
+// UnserializeDynamicPropCheck сообщает ошибку записи необъявленного свойства
+// при unserialize: для readonly-классов (и прочих NO_DYNAMIC_PROPERTIES) Zend
+// бросает Error, а не печатает deprecation
+// (Zend/tests/readonly_classes/readonly_class_unserialize_error).
+func (vm *VM) UnserializeDynamicPropCheck(ci ClassInfo, name string) *Throwable {
+	if ci == nil || ci.HasProperty(name) {
+		return nil
+	}
+	// readonly-класс запрещает динамические свойства (Zend
+	// ZEND_ACC_NO_DYNAMIC_PROPERTIES у readonly-классов).
+	if isReadonlyClass(ci) || func() bool {
+		rc, ok := asRuntimeClass(ci)
+		return ok && rc != nil && rc.NoDynamicProps()
+	}() {
+		if classAllowsDynamicProps(ci) {
+			return nil
+		}
+		return NewThrowable("Error", "Cannot create dynamic property "+classDisplayName(ci)+"::$"+name)
+	}
+	return nil
 }
 
 // MaybeDeprecateDynamicProp печатает deprecation PHP 8.2+ при записи

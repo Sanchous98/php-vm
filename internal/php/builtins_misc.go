@@ -4552,6 +4552,12 @@ func debugObjRefCount(o *vm.Object) int {
 	if o != nil && int(o.Refs()) > n {
 		n = int(o.Refs())
 	}
+	// Кейс enum всегда держится таблицей констант класса: Zend учитывает
+	// эту ссылку с самого первого обращения (в VM учёт отстаёт до первого
+	// прохода жизненного цикла).
+	if o != nil && n < 2 && o.Class() != nil && o.Class().IsEnum() {
+		n = 2
+	}
 	return n
 }
 
@@ -4616,10 +4622,8 @@ func zvalDump(b *strings.Builder, s vm.Slot, indent int, st *dumpState) {
 		}
 		b.WriteString(pad + "}\n")
 	case vm.ObjectType:
-		if d, ok := st.vm.EnumDump(s); ok {
-			b.WriteString(d + "\n")
-			return
-		}
+		// debug_zval_dump печатает enum-кейс как обычный объект (в отличие от
+		// var_dump, где Zend выводит enum(Class::Case)).
 		o := st.vm.SlotObject(s)
 		if o == nil {
 			b.WriteString("NULL\n")

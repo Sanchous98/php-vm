@@ -396,6 +396,16 @@ type VM struct {
 	// самом конце запроса, после shutdown-функций.
 	headerCallbacks []Slot
 
+	// genDelegPos — делегирующий генератор, чья приостановленная позиция
+	// служит местом вызова вложенного генератора в трейсе (Zend: кадр
+	// yield from).
+	genDelegPos *Generator
+	// genResumeDepth — глубина вложенных resume генераторов (0 — внешний).
+	genResumeDepth int
+	// genCallDepth — глубина вложенных next/send/throw генераторов: флаг
+	// DO_INIT проверяется только на внешнем вызове (Zend zend_generator_resume).
+	genCallDepth int
+
 	// nextObjID — счётчик PHP-хендлов объектов (#N в var_dump).
 	nextObjID int
 
@@ -6060,6 +6070,10 @@ type wbSkipEntry struct {
 	ob   *Object
 	name string
 	real bool
+	// roOK — дим-запись в readonly-свойство, разрешённая одноразовой
+	// переинициализацией после clone (FETCH_OBJ_W снял флаг IS_PROP_REINITABLE):
+	// запись-обратно выполняется без повторной readonly-проверки.
+	roOK bool
 }
 
 // pushWbSkip регистрирует отмену записи-обратно для ob::$name.
@@ -6068,6 +6082,29 @@ func (vm *VM) pushWbSkip(ob *Object, name string, real bool) {
 		return
 	}
 	vm.wbSkip = append(vm.wbSkip, wbSkipEntry{ob: ob, name: name, real: real})
+}
+
+// pushWbSkipReadonly помечает, что запись-обратно в readonly-свойство уже
+// разрешена снятым флагом переинициализации.
+func (vm *VM) pushWbSkipReadonly(ob *Object, name string) {
+	if ob == nil {
+		return
+	}
+	vm.wbSkip = append(vm.wbSkip, wbSkipEntry{ob: ob, name: name, roOK: true})
+}
+
+// takeWbSkipReadonly снимает со стека совпадающую пометку roOK для ob::$name.
+func (vm *VM) takeWbSkipReadonly(ob *Object, name string) bool {
+	if ob == nil {
+		return false
+	}
+	if n := len(vm.wbSkip); n > 0 {
+		if e := vm.wbSkip[n-1]; e.ob == ob && e.name == name && e.roOK {
+			vm.wbSkip = vm.wbSkip[:n-1]
+			return true
+		}
+	}
+	return false
 }
 
 // accessError формирует PHP-совместимую ошибку доступа к непубличному методу.
@@ -6109,13 +6146,14 @@ func frameCalleeName(fr callFrameInfo) string {
 	return name
 }
 
-// funcDisplayName рендерит имя функции для трейсов (Scope::Name).
+// funcDisplayName рендерит имя функции для трейсов (Scope::Name). Для методов
+// анонимных классов — имя предка/первого интерфейса (`Two@anonymous`).
 func funcDisplayName(fn *Function) string {
 	if fn.DisplayName != "" {
 		return fn.DisplayName
 	}
 	if fn.Scope != nil {
-		return fn.Scope.Name() + "::" + fn.Name
+		return classDisplayName(fn.Scope) + "::" + fn.Name
 	}
 	return fn.Name
 }

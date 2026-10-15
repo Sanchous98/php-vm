@@ -75,7 +75,14 @@ func (vm *VM) coerceArith(a, b Slot, op string) (Slot, Slot, error) {
 		if aNo || bNo {
 			return Slot{}, Slot{}, bitwiseTypeError(a, b, op)
 		}
-		vm.Warn("A non-numeric value encountered")
+		// Ведуще-числовые строки: Zend предупреждает про КАЖДЫЙ такой
+		// операнд (два Warning для "2 Lorem" + "3 ipsum").
+		if aBad {
+			vm.Warn("A non-numeric value encountered")
+		}
+		if bBad {
+			vm.Warn("A non-numeric value encountered")
+		}
 	}
 	return arithOperand(a), arithOperand(b), nil
 }

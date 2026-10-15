@@ -817,25 +817,36 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 			declared = false
 		}
 		if declared && pd.readonly && !readMode {
-			// Косвенная запись в readonly-свойство:
-			// - промежуточное звено (OpPropGetRWInterm): инициализированное
-			//   свойство допустимо (модифицируется вложенный объект), пустое —
-			//   «Cannot indirectly modify» (variation_nested);
-			// - прямой контейнер (OpPropGetRW): пустое — «indirectly», а
-			//   инициализированное — «Cannot modify» (variation.phpt).
-			if _, init := vm.getProp(recv, key); !init {
+			// Косвенная запись в readonly-свойство (Zend
+			// zend_std_read_property, BP_VAR_W/RW):
+			// - неинициализированное — «Cannot indirectly modify»;
+			// - значение-объект — допустимо, значение отдаётся копией
+			//   (модификация самого объекта видна, замена значения — нет);
+			// - одноразовая переинициализация после clone — флаг снимается;
+			// - иначе — «Cannot modify».
+			v, init := vm.getProp(recv, key)
+			if !init {
 				err := NewThrowable("Error", "Cannot indirectly modify readonly property "+decl.Name()+"::$"+pname)
 				if !vm.handleThrow(chunk, err) {
 					return execResult{err: err}
 				}
 				return execResult{next: true}
 			}
-			if !interm {
-				err := NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+pname)
-				if !vm.handleThrow(chunk, err) {
-					return execResult{err: err}
+			if v.Type() != ObjectType {
+				if ob := vm.objectOf(recv); !(ob != nil && ob.ConsumeReadonlyReinit(key)) {
+					err := NewThrowable("Error", "Cannot modify readonly property "+classDisplayName(decl)+"::$"+pname)
+					if !vm.handleThrow(chunk, err) {
+						return execResult{err: err}
+					}
+					return execResult{next: true}
 				}
-				return execResult{next: true}
+				// Модификация разрешена снятым флагом переинициализации:
+				// запись-обратно идёт без повторной readonly-проверки (Zend
+				// пишет прямо в полученный слот).
+				vm.pushWbSkipReadonly(vm.objectOf(recv), pname)
+			} else if !interm {
+				// Объект: значение отдаётся копией — запись в копию не
+				// затрагивает свойство (readonly_containing_object).
 			}
 		}
 	}
@@ -1061,6 +1072,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 	}
 	pname := consts[in.C].StringVal()
 	o := regs[in.A]
+	roSkip := vm.takeWbSkipReadonly(vm.objectOf(o), pname)
 	if d := deref(o); d.typ == ObjectType && (*Object)(d.ptr).incomplete {
 		if r, ok := vm.incompleteWriteGuard(o, chunk); ok {
 			return r
@@ -1187,11 +1199,13 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 				return execResult{}
 			}
 		}
-		if err := vm.checkPropWrite(ci, o, pname); err != nil {
-			if !vm.handleThrow(chunk, err) {
-				return execResult{err: err}
+		if !roSkip {
+			if err := vm.checkPropWrite(ci, o, pname); err != nil {
+				if !vm.handleThrow(chunk, err) {
+					return execResult{err: err}
+				}
+				return execResult{next: true}
 			}
-			return execResult{next: true}
 		}
 		val, verr := vm.coercePropValue(pd, decl, pname, plain, vm.chunk != nil && vm.chunk.Strict, false)
 		if verr != nil {
@@ -1200,6 +1214,7 @@ func (vm *VM) opPropSet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction
 			}
 			return execResult{next: true}
 		}
+		vm.consumeReadonlyReinit(o, pd, decl, pname)
 		if ob := vm.objectOf(o); ob != nil {
 			ob.ClearUnset(declKey)
 		}
@@ -1351,6 +1366,7 @@ func (vm *VM) opPropSetDyn(regs []Slot, consts []Slot, chunk *Chunk, in Instruct
 			}
 			return execResult{next: true}
 		}
+		vm.consumeReadonlyReinit(o, pd, decl, pname)
 		if ob := vm.objectOf(o); ob != nil {
 			ob.ClearUnset(declKey)
 		}
@@ -1528,6 +1544,7 @@ func (vm *VM) propSetRefCommon(regs []Slot, chunk *Chunk, in Instruction, ci Cla
 			}
 			return execResult{next: true}
 		}
+		vm.consumeReadonlyReinit(o, pd, decl, pname)
 		if ob := vm.objectOf(o); ob != nil {
 			ob.ClearUnset(key)
 		}

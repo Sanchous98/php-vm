@@ -1432,6 +1432,10 @@ func (u *phpUnser) parseObject(pos int) (vm.Slot, int, bool) {
 		}
 		placed := false
 		if _, exists := o.GetProp(storeName); !exists {
+			if derr := u.vm.UnserializeDynamicPropCheck(ci, propName); derr != nil {
+				u.ctx.Throw(derr)
+				return *new(vm.Slot), *new(int), *new(bool)
+			}
 			u.vm.MaybeDeprecateDynamicProp(ci, o, propName)
 		}
 		u.pendingLoc = func(s vm.Slot) { o.SetProp(storeName, s); placed = true }

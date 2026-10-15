@@ -108,12 +108,90 @@ type Generator struct {
 	// pendingThrow — исключение, которое нужно бросить во внешний генератор
 	// при resume вида resumeThrowErr (переброс из вложенного yield from).
 	pendingThrow *Throwable
+
+	// doInit — аналог ZEND_GENERATOR_DO_INIT: генератор только что начал
+	// делегировать (yield from по генератору), и первый resume, если у
+	// текущего генератора уже есть значение, не продвигает цепочку
+	// (иначе yield from «съел» бы первый элемент — backtrace_multi_yield_from).
+	doInit bool
 }
 
 // SetCurrentYieldFromInner запоминает внутренний генератор текущего yield from.
 func (vm *VM) SetCurrentYieldFromInner(s Slot) {
 	if n := len(vm.runningGens); n > 0 {
 		vm.runningGens[n-1].inner = vm.genOfSlot(s)
+	}
+}
+
+// dropSavedRegs списывает учтённые ссылки сохранённого кадра генератора
+// (аналог dropFrame для кадра) и освобождает его слоты. Вызывается, когда
+// кадр генератора уничтожается: закрытие незавершённого генератора или
+// завершение тела (Zend zend_generator_close/zend_free_compiled_variables) —
+// локальные переменные освобождаются, деструкторы объектов срабатывают в этой
+// точке (bug71013, bug71601: ссылка на вложенный генератор отпускается).
+func (vm *VM) dropSavedRegs(g *Generator) {
+	if g == nil {
+		return
+	}
+	if g.gNTracked > 0 {
+		var fr Frame
+		fr.regs = g.regs
+		fr.tracked = g.gTracked
+		fr.nTracked = g.gNTracked
+		vm.dropFrame(&fr)
+	}
+	g.gTracked = [maxRegsHard / 64]uint64{}
+	g.gNTracked = 0
+	for i := range g.regs {
+		g.regs[i] = Slot{}
+	}
+	g.regs = nil
+}
+
+// releaseInnerRef отпускает ссылку на вложенный генератор (yield from),
+// хранимую полем inner и регистрами сохранённого кадра. После этого
+// неиспользуемый вложенный генератор уничтожается (его finally исполняется
+// раньше finally внешнего — Zend zend_generator_dtor_storage).
+func (vm *VM) releaseInnerRef(g *Generator) {
+	if g == nil || g.inner == nil || g.inner == g {
+		return
+	}
+	inner := g.inner
+	target := &inner.Object
+	g.inner = nil
+	g.delegating = false
+	// Ссылки из сохранённого кадра на вложенный генератор: счётчик учитывает
+	// только те объекты, чьи ссылки регистрировались (refs > 0). При refs == 0
+	// учёт не велся (вложенный генератор пришёл извне — напр. аргументом),
+	// такой генератор НЕ закрываем: его может держать вызывающий код
+	// (repeated_yield_from_with_immediate_release).
+	tracked := target.Refs() > 0
+	for r := range g.regs {
+		d := deref(g.regs[r])
+		if d.typ != ObjectType || vm.objectOf(d) != target {
+			continue
+		}
+		if g.gTracked[r/64]&(uint64(1)<<uint(r%64)) != 0 {
+			g.gTracked[r/64] &^= uint64(1) << uint(r%64)
+			if g.gNTracked > 0 {
+				g.gNTracked--
+			}
+		}
+		if tracked {
+			vm.decRefs(g.regs[r], 0)
+		}
+		g.regs[r] = Slot{}
+		if vm.cur != nil && r < len(vm.cur.regs) {
+			if d2 := deref(vm.cur.regs[r]); d2.typ == ObjectType && vm.objectOf(d2) == target {
+				vm.cur.regs[r] = Slot{}
+			}
+		}
+	}
+	if tracked && target.Refs() <= 0 && !target.dead {
+		// Последняя ссылка снята: закрываем вложенный генератор сейчас, его
+		// finally исполняется раньше finally внешнего (Zend
+		// zend_generator_dtor_storage: OBJ_RELEASE(node.parent)).
+		_ = vm.closeGenerator(inner, false)
 	}
 }
 
@@ -232,13 +310,24 @@ func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
 	vm.forceClosing = g
 	defer func() { g.forceClose = false }()
 
-	// Сначала закрываем вложенный генератор (yield from), как Zend: его
-	// finally исполняется раньше finally внешнего генератора.
-	if g.inner != nil && g.inner != g {
-		inner := g.inner
-		g.inner = nil
-		g.delegating = false
-		_ = vm.closeGenerator(inner, atShutdown)
+	// Вложенный генератор (yield from) НЕ закрываем принудительно: в Zend он
+	// закрывается только когда пропадает последняя ссылка на него. Ссылку
+	// держит кадр внешнего генератора (регистр-источник yield from), поэтому
+	// после очистки регистров ниже неиспользуемый вложенный генератор
+	// закрывается сам (zend_generator_dtor_storage через refcount), а всё ещё
+	// используемый снаружи (repeated_yield_from_with_immediate_release)
+	// остаётся живым.
+
+	// Ссылка на вложенный генератор (yield from) отпускается ДО finally
+	// внешнего: в Zend zend_generator_dtor_storage делает OBJ_RELEASE(node.parent)
+	// раньше zend_generator_close, поэтому finally вложенного генератора
+	// исполняется первым (bug71601).
+	vm.releaseInnerRef(g)
+	// Немедленное уничтожение вложенного генератора (его finally до finally
+	// внешнего): отметки времени жизни выполняются проходом сейчас, а не в
+	// следующей точке.
+	if g != nil {
+		vm.FlushLifetime()
 	}
 
 	var err error
@@ -276,6 +365,11 @@ func (vm *VM) closeGenerator(g *Generator, atShutdown bool) error {
 	vm.fp = genFP - 1
 	vm.cur = &vm.frames[genFP-1]
 	vm.ip = callerPC
+	// Кадр закрытого генератора уничтожается (Zend zend_generator_close):
+	// локальные переменные и ссылка на вложенный генератор отпускаются здесь,
+	// поэтому их finally/деструкторы срабатывают до finally внешнего
+	// генератора (bug71601).
+	vm.dropSavedRegs(g)
 	g.done = true
 	g.hasCur = false
 	return err
@@ -326,6 +420,9 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 	if g.running {
 		return NewThrowable("Error", "Cannot resume an already running generator")
 	}
+	outermost := vm.genResumeDepth == 0
+	vm.genResumeDepth++
+	defer func() { vm.genResumeDepth-- }()
 	if g.done {
 		return nil
 	}
@@ -434,6 +531,12 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 	if traced {
 		vm.popCall()
 	}
+	if outermost {
+		// Zend zend_generator_resume: флаг DO_INIT снимается у генератора,
+		// чей resume был внешним (вложенные resume внутри цепочки свой флаг
+		// сохраняют).
+		g.doInit = false
+	}
 
 	// Снять оставшиеся обработчики генератора и вернуть состояние.
 	vm.saveTriesForFrame(g, genFP)
@@ -469,6 +572,12 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 		// Во всех остальных случаях (обычный yield, yield from массива/итератора)
 		// делегации нет.
 		if e.from && g.inner != nil && g.inner != g {
+			// Флаг DO_INIT ставится только в начале делегации и только если
+			// кадр возобновлялся вложенно (внешний resume снимает флаг у
+			// своего генератора — Zend zend_generator_resume).
+			if !g.delegating {
+				g.doInit = !outermost
+			}
 			g.delegating = true
 		} else {
 			g.delegating = false
@@ -479,16 +588,21 @@ func (vm *VM) advance(g *Generator, kind resumeKind, val Slot) error {
 		g.done = true
 		g.hasCur = false
 		g.ret = vm.retVal
+		// Тело завершилось: локальные переменные кадра освобождаются
+		// (Zend zend_generator_close при выходе из тела — bug71013).
+		vm.dropSavedRegs(g)
 		return nil
 	case nil:
 		g.done = true
 		g.hasCur = false
 		g.ret = MakeNull()
+		vm.dropSavedRegs(g)
 		return nil
 	default:
 		g.done = true
 		g.hasCur = false
 		g.ret = MakeNull()
+		vm.dropSavedRegs(g)
 		if _, ok := asThrowable(err); ok {
 			g.aborted = true
 		}
@@ -519,10 +633,29 @@ func (vm *VM) genResumeCallerInternal() bool {
 	return false
 }
 
+// suspendedLine возвращает строку приостановленного кадра генератора: для
+// делегирующего генератора это строка его `yield from` — Zend показывает её
+// как место вызова вложенного генератора в трейсе.
+func (g *Generator) suspendedLine() int {
+	if g == nil || g.chunk == nil || g.pc <= 0 {
+		return 0
+	}
+	if l := g.chunk.LineAt(g.pc - 1); l > 0 {
+		return l
+	}
+	return 0
+}
+
 // pushGenCall регистрирует кадр тела генератора для stack trace. Место вызова
 // — текущая позиция (место resume) либо "[internal function]" для нативного
 // вызывающего. Строка вычисляется лениво.
 func (vm *VM) pushGenCall(g *Generator) {
+	if d := vm.genDelegPos; d != nil && d != g && d != nil {
+		// Вложенный генератор вызван из кадра делегирующего: место вызова —
+		// его приостановленный yield from (backtrace_multi_yield_from).
+		vm.pushCallAt(g.fn, vm.curFile, nil, 0, d.suspendedLine(), g.args)
+		return
+	}
 	if vm.genResumeCallerInternal() {
 		vm.pushCallAt(g.fn, "[internal function]", nil, 0, 0, g.args)
 		return
@@ -607,6 +740,27 @@ func (vm *VM) fillThrowableTrace(th *Throwable) {
 			th.LocLine = vm.line()
 		}
 	}
+}
+
+// delegationCurrent возвращает самый вложенный генератор цепочки yield from.
+func (g *Generator) delegationCurrent() *Generator {
+	cur := g
+	for cur.delegating && cur.inner != nil && cur.inner != cur {
+		cur = cur.inner
+	}
+	return cur
+}
+
+// doInitSwallow реализует ZEND_GENERATOR_DO_INIT: если генератор только что
+// начал делегировать, а у текущего (самого вложенного) генератора уже есть
+// значение, resume не продвигает цепочку — флаг снимается, вызов no-op.
+func (g *Generator) doInitSwallow() bool {
+	if !g.doInit {
+		return false
+	}
+	cur := g.delegationCurrent()
+	g.doInit = false
+	return cur != g && cur.hasCur
 }
 
 // genValid/... реализуют методы Iterator для генератора с учётом делегации
@@ -700,11 +854,19 @@ func (vm *VM) genKey(g *Generator) (Slot, error) {
 }
 
 func (vm *VM) genNext(g *Generator) error {
+	top := vm.genCallDepth == 0
+	vm.genCallDepth++
+	defer func() { vm.genCallDepth-- }()
 	g.advanced = true
 	if err := vm.ensureStarted(g); err != nil {
 		return err
 	}
 	if g.done {
+		return nil
+	}
+	// Zend проверяет DO_INIT только у генератора, чей метод вызван снаружи;
+	// вложенные шаги цепочки проверку не проходят.
+	if top && g.doInitSwallow() {
 		return nil
 	}
 	if g.delegating && g.inner != nil && g.inner != g {
@@ -718,7 +880,12 @@ func (vm *VM) genNext(g *Generator) error {
 		if traced {
 			vm.pushGenCall(g)
 		}
+		savedDeleg := vm.genDelegPos
+		if traced {
+			vm.genDelegPos = g
+		}
 		err := vm.genNext(ig)
+		vm.genDelegPos = savedDeleg
 		var vok bool
 		if err == nil {
 			vok, err = vm.genValid(ig)
@@ -758,6 +925,9 @@ func (vm *VM) delegateThrow(g *Generator, class, msg string) error {
 // genSend реализует Generator::send с учётом делегации yield from: значение
 // пересылается вложенному генератору.
 func (vm *VM) genSend(g *Generator, v Slot) (Slot, error) {
+	top := vm.genCallDepth == 0
+	vm.genCallDepth++
+	defer func() { vm.genCallDepth-- }()
 	if err := vm.ensureStarted(g); err != nil {
 		return Slot{}, err
 	}
@@ -765,6 +935,9 @@ func (vm *VM) genSend(g *Generator, v Slot) (Slot, error) {
 		return MakeNull(), nil
 	}
 	g.advanced = true
+	if top && g.doInitSwallow() {
+		return g.cur, nil
+	}
 	if g.delegating && g.inner != nil && g.inner != g {
 		res, err := vm.genSend(g.inner, v)
 		if err != nil {
@@ -794,6 +967,9 @@ func (vm *VM) genSend(g *Generator, v Slot) (Slot, error) {
 // genThrow реализует Generator::throw с учётом делегации yield from:
 // исключение бросается во вложенный генератор.
 func (vm *VM) genThrow(g *Generator, v Slot) (Slot, error) {
+	top := vm.genCallDepth == 0
+	vm.genCallDepth++
+	defer func() { vm.genCallDepth-- }()
 	if err := vm.ensureStarted(g); err != nil {
 		return Slot{}, err
 	}
@@ -802,6 +978,9 @@ func (vm *VM) genThrow(g *Generator, v Slot) (Slot, error) {
 		return Slot{}, vm.makeThrowable(v)
 	}
 	g.advanced = true
+	if top && g.doInitSwallow() {
+		return g.cur, nil
+	}
 	if g.delegating && g.inner != nil && g.inner != g {
 		res, err := vm.genThrow(g.inner, v)
 		if err != nil {

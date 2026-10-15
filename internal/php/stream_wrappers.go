@@ -348,6 +348,37 @@ func userScheme(path string) (string, bool) {
 
 // openUserStream открывает пользовательскую обёртку: инстанцирует класс,
 // вызывает stream_open и собирает список поддерживаемых методов.
+// instantiateUserWrapper создаёт экземпляр класса пользовательской обёртки и
+// выставляет его свойство context ресурсом текущего stream-контекста (Zend
+// делает это при создании экземпляра; типизированное свойство несовместимого
+// типа — TypeError, user_streams_context_001).
+// ok=false — экземпляр создать не удалось (исключение в ctx или ошибка).
+func instantiateUserWrapper(ctx *vm.Context, cls string) (vm.Slot, vm.ClassInfo, bool, error) {
+	vmi := ctx.VMInstance()
+	ci := vmi.FindClass(cls)
+	if ci == nil {
+		vmi.Autoload(ctx, cls)
+		ci = vmi.FindClass(cls)
+	}
+	if ci == nil {
+		return vm.Slot{}, nil, false, nil
+	}
+	slot, err := vmi.NewInstanceByNameFromInternal(cls, nil)
+	if err != nil {
+		return vm.Slot{}, ci, false, err
+	}
+	if derr := vmi.TakePendingDefaultError(); derr != nil {
+		return vm.Slot{}, ci, false, derr
+	}
+	ensureDefaultStreamContext()
+	if r := vm.AsResource(streamContextDefault); r != nil {
+		if perr := vmi.SetPropertyChecked(slot, "context", streamContextDefault, false); perr != nil {
+			return vm.Slot{}, ci, false, perr
+		}
+	}
+	return slot, ci, true, nil
+}
+
 func openUserStream(ctx *vm.Context, path, mode string) (*fsHandle, bool) {
 	scheme, ok := userScheme(path)
 	if !ok {
@@ -357,40 +388,27 @@ func openUserStream(ctx *vm.Context, path, mode string) (*fsHandle, bool) {
 	if !ok {
 		return nil, false
 	}
-	vmi := ctx.VMInstance()
-	ci := vmi.FindClass(cls)
-	if ci == nil {
-		vmi.Autoload(ctx, cls)
-		ci = vmi.FindClass(cls)
-	}
-	if ci == nil {
+	obj, ci, ok, err := instantiateUserWrapper(ctx, cls)
+	if !ok {
+		if err != nil {
+			if strings.Contains(err.Error(), "Cannot instantiate trait") || strings.Contains(err.Error(), "is abstract") {
+				lastUserOpenErr = "operation failed"
+				return nil, false
+			}
+			throwCallable(ctx, err)
+			return nil, false
+		}
 		ctx.VM().Warning(fmt.Sprintf("stream_wrapper_register(): class '%s' not found", cls))
 		return nil, false
 	}
-	obj, err := vmi.NewInstanceByNameFromInternal(cls, nil)
-	if err != nil {
-		if strings.Contains(err.Error(), "Cannot instantiate trait") || strings.Contains(err.Error(), "is abstract") {
-			lastUserOpenErr = "operation failed"
-			return nil, false
-		}
-		throwCallable(ctx, err)
-		if ctx.HasThrown() {
-			return *new(*fsHandle), *new(bool)
-		}
-		return nil, false
-	}
-	if derr := vmi.TakePendingDefaultError(); derr != nil {
-		throwCallable(ctx, derr)
-		if ctx.HasThrown() {
-			return *new(*fsHandle), *new(bool)
-		}
-		return nil, false
-	}
 	if !hasMethod(ci, "stream_open") {
+		// Обёртка без stream_open: открытие не удаётся (Zend печатает
+		// "Method X::stream_open is not implemented", fopen даёт false;
+		// userstreams.phpt открывает bogon:// под @).
 		lastUserOpenErr = "operation failed"
 		return nil, false
 	}
-	u := &userStream{vm: vmi, ctx: ctx, obj: obj}
+	u := &userStream{vm: ctx.VMInstance(), ctx: ctx, obj: obj}
 	u.hasRead = hasMethod(ci, "stream_read")
 	u.hasWrite = hasMethod(ci, "stream_write")
 	u.hasEof = hasMethod(ci, "stream_eof")
@@ -428,24 +446,19 @@ func openUserDir(ctx *vm.Context, path string) (*userStream, bool) {
 	if !ok {
 		return nil, false
 	}
-	vmi := ctx.VMInstance()
-	ci := vmi.FindClass(cls)
-	if ci == nil {
-		vmi.Autoload(ctx, cls)
-		ci = vmi.FindClass(cls)
-	}
-	if ci == nil || !hasMethod(ci, "dir_opendir") {
-		return nil, false
-	}
-	obj, err := vmi.NewInstanceByNameFromInternal(cls, nil)
-	if err != nil {
-		throwCallable(ctx, err)
-		if ctx.HasThrown() {
-			return *new(*userStream), *new(bool)
+	obj, ci, iok, err := instantiateUserWrapper(ctx, cls)
+	if !iok {
+		if err != nil {
+			throwCallable(ctx, err)
+			return nil, false
 		}
 		return nil, false
 	}
-	u := &userStream{vm: vmi, ctx: ctx, obj: obj}
+	if !hasMethod(ci, "dir_opendir") {
+		lastUserOpenErr = "operation failed"
+		return nil, false
+	}
+	u := &userStream{vm: ctx.VMInstance(), ctx: ctx, obj: obj}
 	res, ok := u.callMethod("dir_opendir", vm.MakeString(path), vm.MakeInt(0))
 	if ctx.HasThrown() {
 		return *new(*userStream), *new(bool)
@@ -697,6 +710,9 @@ func streamSupportsLockFn(ctx *vm.Context) vm.Value {
 type streamContext struct {
 	options vm.Slot
 	params  vm.Slot
+	// holds — число внешних держателей контекста (сокеты, proc_open и т.п.):
+	// видно в debug_zval_dump как refcount (gh10885).
+	holds int
 }
 
 func streamContextCreateFn(ctx *vm.Context) vm.Value {
@@ -950,6 +966,27 @@ func setFileBufferFn(ctx *vm.Context) vm.Value {
 		val = 0
 	}
 	if r, ok := userSetOption(ctx, h, "stream_set_write_buffer", 3, val, vm.MakeInt(n)); ok {
+		if r {
+			return vm.Int(0)
+		}
+		return vm.Int(-1)
+	}
+	return vm.Int(0)
+}
+
+// setReadFileBufferFn — stream_set_read_buffer(): как write-вариант, но
+// STREAM_OPTION_READ_BUFFER (для обычных потоков — no-op, успех).
+func setReadFileBufferFn(ctx *vm.Context) vm.Value {
+	h := streamArg(ctx, 0, "stream_set_read_buffer")
+	if ctx.HasThrown() {
+		return *new(vm.Value)
+	}
+	n := arg(ctx, 1).ToInt()
+	val := int64(2)
+	if n == 0 {
+		val = 0
+	}
+	if r, ok := userSetOption(ctx, h, "stream_set_read_buffer", 2, val, vm.MakeInt(n)); ok {
 		if r {
 			return vm.Int(0)
 		}

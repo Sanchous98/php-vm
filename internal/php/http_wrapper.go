@@ -12,6 +12,7 @@ package php
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -179,6 +180,83 @@ func splitHeaderLines(s string) []string {
 	return out
 }
 
+// --- stream notifications (stream_context_set_params ['notification']) ---
+
+// Коды и уровни php-src stream.h.
+const (
+	streamNotifyResolve      = 1
+	streamNotifyConnect      = 2
+	streamNotifyAuthRequired = 3
+	streamNotifyMimeTypeIs   = 4
+	streamNotifyFileSizeIs   = 5
+	streamNotifyRedirected   = 6
+	streamNotifyProgress     = 7
+	streamNotifyCompleted    = 8
+	streamNotifyFailure      = 9
+	streamNotifyAuthResult   = 10
+
+	streamNotifySeverityInfo = 0
+	streamNotifySeverityWarn = 1
+	streamNotifySeverityErr  = 2
+)
+
+// httpNotifier вызывает callback уведомлений контекста (php_stream_notify_*).
+type httpNotifier struct {
+	ctx  *vm.Context
+	cb   vm.Slot
+	have bool
+}
+
+// makeHTTPNotifier извлекает callable из params контекста.
+func makeHTTPNotifier(ctx *vm.Context, sc *streamContext) *httpNotifier {
+	n := &httpNotifier{ctx: ctx}
+	if sc == nil || sc.params.Type() != vm.ArrayType {
+		return n
+	}
+	if v, ok := sc.params.AsArray().Get(vm.MakeStrKey("notification")); ok {
+		switch v.Type() {
+		case vm.NullType, vm.BoolType:
+		default:
+			n.cb = v
+			n.have = true
+		}
+	}
+	return n
+}
+
+// emit вызывает callback; непойманное исключение callback'а прерывает
+// обёртку как в php (ошибка поднимается из нативной функции).
+func (n *httpNotifier) emit(code, severity int64, message string, msgCode, bytesTransferred, bytesMax int64) {
+	if n == nil || !n.have {
+		return
+	}
+	v := n.ctx.VM()
+	args := []vm.Slot{
+		vm.MakeInt(code), vm.MakeInt(severity), vm.MakeString(message),
+		vm.MakeInt(msgCode), vm.MakeInt(bytesTransferred), vm.MakeInt(bytesMax),
+	}
+	if _, err := v.CallCallable(n.ctx, n.cb, args); err != nil && n.ctx != nil {
+		if th, ok := err.(*vm.Throwable); ok {
+			n.ctx.Throw(th)
+		} else {
+			n.ctx.Throw(vm.NewThrowable("Error", err.Error()))
+		}
+	}
+}
+
+// publishHTTPResponseHeader присваивает $http_response_header (php заполняет
+// его и при неудачном запросе — уже полученными строками).
+func publishHTTPResponseHeader(v *vm.VM, lines []string) {
+	if v == nil || len(lines) == 0 {
+		return
+	}
+	arr := vm.NewArray()
+	for _, line := range lines {
+		arr.Append(vm.MakeString(line))
+	}
+	_ = v.SymtabSet("http_response_header", vm.MakeArray(arr))
+}
+
 // httpResponse — разобранный ответ сервера.
 type httpResponse struct {
 	statusLine    string
@@ -284,24 +362,32 @@ func httpOpenStream(ctx *vm.Context, rawURL, mode string, ctxIdx int, _ string) 
 func httpDoRequest(ctx *vm.Context, rawURL string, ctxIdx int, onlyHeaders bool) (*httpResponse, bool) {
 	sc := contextArgSlot(ctx, ctxIdx)
 	o := httpContextOptions(sc)
+	notify := makeHTTPNotifier(ctx, sc)
+	// pendingHeaders — строки $http_response_header, полученные к текущему
+	// моменту: php публикует их и при неудачном запросе.
+	var pendingHeaders []string
+	fail := func() (*httpResponse, bool) {
+		publishHTTPResponseHeader(ctx.VM(), pendingHeaders)
+		return nil, false
+	}
 	if o.timeout < 0 {
 		lastUserOpenErr = fmt.Sprintf("timeout must be lower than %d", uint64(phpTimeoutMax))
-		return nil, false
+		return fail()
 	}
 	// request_fulluri: полный URI не должен содержать CR/LF (до разбора URL).
 	if o.requestFullURI && strings.ContainsAny(rawURL, "\r\n") {
 		lastUserOpenErr = "HTTP wrapper full URI path does not allow CR or LF characters"
-		return nil, false
+		return fail()
 	}
 	cur, err := url.Parse(rawURL)
 	if err != nil || cur.Host == "" {
 		lastUserOpenErr = "php_network_getaddresses: getaddrinfo failed"
-		return nil, false
+		return fail()
 	}
 	if cur.Scheme == "https" {
 		// Без openssl https-обёртка недоступна — как в сборке без SSL.
 		lastUserOpenErr = "Unable to find the wrapper \"https\" - did you forget to enable it when you configured PHP?"
-		return nil, false
+		return fail()
 	}
 
 	var allHeaders []string
@@ -312,14 +398,19 @@ func httpDoRequest(ctx *vm.Context, rawURL string, ctxIdx int, onlyHeaders bool)
 	for {
 		if redirectMax < 1 {
 			lastUserOpenErr = "Redirection limit reached, aborting"
-			return nil, false
+			return fail()
 		}
-		resp, rerr := httpRoundTrip(o, cur, rawURL, redirected, keepMethod, onlyHeaders)
+		resp, rerr := httpRoundTrip(o, cur, rawURL, redirected, keepMethod, onlyHeaders, notify)
 		if rerr != nil {
+			if resp != nil {
+				allHeaders = append(allHeaders, resp.headerLines...)
+			}
+			pendingHeaders = allHeaders
 			lastUserOpenErr = rerr.Error()
-			return nil, false
+			return fail()
 		}
 		allHeaders = append(allHeaders, resp.headerLines...)
+		pendingHeaders = allHeaders
 
 		reqok := (resp.code >= 200 && resp.code < 400) || o.ignoreErrors
 		needFollow := resp.hasLocation && o.followLocation
@@ -327,7 +418,7 @@ func httpDoRequest(ctx *vm.Context, rawURL string, ctxIdx int, onlyHeaders bool)
 			if !o.followLocation || (o.ignoreErrors && redirectMax <= 1) {
 				if !reqok {
 					lastUserOpenErr = "HTTP request failed! " + resp.statusLine
-					return nil, false
+					return fail()
 				}
 				resp.allHeaders = allHeaders
 				return resp, true
@@ -336,7 +427,11 @@ func httpDoRequest(ctx *vm.Context, rawURL string, ctxIdx int, onlyHeaders bool)
 				newURL, lerr := httpResolveLocation(cur, resp.location)
 				if lerr != nil {
 					lastUserOpenErr = lerr.Error()
-					return nil, false
+					return fail()
+				}
+				notify.emit(streamNotifyRedirected, streamNotifySeverityInfo, resp.location, 0, 0, 0)
+				if ctx.HasThrown() {
+					return fail()
 				}
 				redirectMax--
 				redirected = true
@@ -347,7 +442,7 @@ func httpDoRequest(ctx *vm.Context, rawURL string, ctxIdx int, onlyHeaders bool)
 				continue
 			}
 			lastUserOpenErr = "HTTP request failed! " + resp.statusLine
-			return nil, false
+			return fail()
 		}
 		resp.allHeaders = allHeaders
 		return resp, true
@@ -390,7 +485,7 @@ func httpFinishHandle(ctx *vm.Context, resp *httpResponse) (*fsHandle, bool) {
 }
 
 // httpRoundTrip выполняет один запрос (с учётом proxy/request_fulluri).
-func httpRoundTrip(o httpOptions, u *url.URL, rawURL string, redirected, keepMethod, onlyHeaders bool) (*httpResponse, error) {
+func httpRoundTrip(o httpOptions, u *url.URL, rawURL string, redirected, keepMethod, onlyHeaders bool, notify *httpNotifier) (*httpResponse, error) {
 	target := u.EscapedPath()
 	if target == "" {
 		target = "/"
@@ -436,7 +531,7 @@ func httpRoundTrip(o httpOptions, u *url.URL, rawURL string, redirected, keepMet
 		userHeaders = stripHeaders(userHeaders, "content-length", "content-type")
 	}
 	haveContentLength, haveContentType := false, false
-	haveHost, haveConnection := false, false
+	haveHost, haveConnection, haveAuthorization := false, false, false
 	for _, h := range userHeaders {
 		name := strings.ToLower(headerName(h))
 		switch name {
@@ -448,14 +543,21 @@ func httpRoundTrip(o httpOptions, u *url.URL, rawURL string, redirected, keepMet
 			haveHost = true
 		case "connection":
 			haveConnection = true
+		case "authorization":
+			haveAuthorization = true
 		}
 	}
 
 	var req bytes.Buffer
 	fmt.Fprintf(&req, "%s %s HTTP/%s\r\n", method, target, o.protocol)
-	for _, h := range userHeaders {
-		req.WriteString(h)
-		req.WriteString("\r\n")
+	// Порядок php-src: Authorization из URL (если не задан пользователем),
+	// Host, Connection, Content-Length, пользовательские заголовки,
+	// Content-Type, пустая строка, тело.
+	if u.User != nil && !haveAuthorization {
+		if pwd, has := u.User.Password(); has {
+			cred := u.User.Username() + ":" + pwd
+			fmt.Fprintf(&req, "Authorization: Basic %s\r\n", base64.StdEncoding.EncodeToString([]byte(cred)))
+		}
 	}
 	if !haveHost {
 		fmt.Fprintf(&req, "Host: %s\r\n", hostPort)
@@ -463,13 +565,15 @@ func httpRoundTrip(o httpOptions, u *url.URL, rawURL string, redirected, keepMet
 	if !haveConnection {
 		req.WriteString("Connection: close\r\n")
 	}
-	if sendContent {
-		if !haveContentLength {
-			fmt.Fprintf(&req, "Content-Length: %d\r\n", len(o.content))
-		}
-		if !haveContentType {
-			req.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
-		}
+	if sendContent && !haveContentLength {
+		fmt.Fprintf(&req, "Content-Length: %d\r\n", len(o.content))
+	}
+	for _, h := range userHeaders {
+		req.WriteString(h)
+		req.WriteString("\r\n")
+	}
+	if sendContent && !haveContentType {
+		req.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
 	}
 	req.WriteString("\r\n")
 	if sendContent {
@@ -494,17 +598,31 @@ func httpRoundTrip(o httpOptions, u *url.URL, rawURL string, redirected, keepMet
 	// Тело не читаем для HEAD и STREAM_ONLY_GET_HEADERS (в ответе на HEAD тела
 	// нет, а Content-Length указывает на гипотетическое тело GET).
 	skipBody := onlyHeaders || method == "HEAD"
-	resp, rerr := httpParseResponse(br, skipBody)
+	resp, rerr := httpParseResponse(br, skipBody, notify)
 	if rerr != nil {
-		return nil, rerr
+		return resp, rerr
 	}
 	resp.url = u.String()
+	// STREAM_NOTIFY_COMPLETED — тело прочитано целиком.
+	max := int64(len(resp.body))
+	if resp.contentLength >= 0 {
+		max = resp.contentLength
+	}
+	notify.emit(streamNotifyCompleted, streamNotifySeverityInfo, "", 0, int64(len(resp.body)), max)
+	if ctx := notify.ctx; ctx != nil && ctx.HasThrown() {
+		return resp, &httpWrapperError{msg: lastUserOpenErr}
+	}
 	return resp, nil
 }
 
-// httpParseResponse читает статус-строку и заголовки, затем тело.
-func httpParseResponse(br *bufio.Reader, skipBody bool) (*httpResponse, error) {
+// httpParseResponse читает статус-строку и заголовки, затем тело. При ошибке
+// возвращает частично разобранный ответ (php публикует уже полученные строки
+// в $http_response_header).
+func httpParseResponse(br *bufio.Reader, skipBody bool, notify *httpNotifier) (*httpResponse, error) {
 	resp := &httpResponse{contentLength: -1}
+	errResp := func(msg string) (*httpResponse, error) {
+		return resp, &httpWrapperError{msg: msg}
+	}
 	line, ok := httpReadLine(br)
 	if !ok {
 		return nil, &httpWrapperError{msg: "HTTP request failed!"}
@@ -515,70 +633,74 @@ func httpParseResponse(br *bufio.Reader, skipBody bool) (*httpResponse, error) {
 	}
 	resp.headerLines = append(resp.headerLines, resp.statusLine)
 	if resp.code == 0 {
-		return nil, &httpWrapperError{msg: "HTTP request failed! " + resp.statusLine}
+		return errResp("HTTP request failed! " + resp.statusLine)
 	}
 
 	var pending string
 	havePending := false
-	finishPending := func() error {
+	finishPending := func() (*httpWrapperError, bool) {
 		if !havePending {
-			return nil
+			return nil, true
 		}
 		havePending = false
 		p := pending
 		pending = ""
 		colon := strings.IndexByte(p, ':')
 		if colon < 0 {
-			return &httpWrapperError{msg: "HTTP invalid response format (no colon in header line)!"}
+			return &httpWrapperError{msg: "HTTP invalid response format (no colon in header line)!"}, false
 		}
 		for i := 1; i < colon; i++ {
 			if p[i] == ' ' || p[i] == '\t' {
-				return &httpWrapperError{msg: "HTTP invalid response format (space in header name)!"}
+				return &httpWrapperError{msg: "HTTP invalid response format (space in header name)!"}, false
 			}
 		}
 		val := strings.TrimLeft(p[colon+1:], " \t")
-		resp.headerLines = append(resp.headerLines, p)
 		name := strings.ToLower(p[:colon+1])
 		switch name {
 		case "location:":
 			if len(val) > httpMaxLocationSize {
-				return &httpWrapperError{msg: fmt.Sprintf("HTTP Location header size is over the limit of %d bytes", httpMaxLocationSize)}
+				// Строка Location не попадает в $http_response_header.
+				return &httpWrapperError{msg: fmt.Sprintf("HTTP Location header size is over the limit of %d bytes", httpMaxLocationSize)}, false
 			}
 			resp.location = val
 			resp.hasLocation = true
 		case "content-length:":
 			if v, err := strconv.ParseUint(val, 10, 63); err == nil {
 				resp.contentLength = int64(v)
+				notify.emit(streamNotifyFileSizeIs, streamNotifySeverityInfo, "", 0, 0, resp.contentLength)
 			}
+		case "content-type:":
+			notify.emit(streamNotifyMimeTypeIs, streamNotifySeverityInfo, val, 0, 0, 0)
 		case "transfer-encoding:":
 			if strings.HasPrefix(strings.ToLower(val), "chunked") {
 				resp.chunked = true
 			}
 		}
-		return nil
+		resp.headerLines = append(resp.headerLines, p)
+		return nil, true
 	}
 
 	for {
 		raw, ok := httpReadLineRaw(br)
 		if !ok {
 			// Соединение закрылось до пустой строки — обрабатываем хвост.
-			if err := finishPending(); err != nil {
-				return nil, err
+			if werr, ok2 := finishPending(); !ok2 {
+				return errResp(werr.msg)
 			}
 			break
 		}
 		if raw == "\r\n" || raw == "\n" || raw == "" {
-			if err := finishPending(); err != nil {
-				return nil, err
+			if werr, ok2 := finishPending(); !ok2 {
+				return errResp(werr.msg)
 			}
 			break
 		}
 		if raw[0] == '\r' {
 			if len(raw) < 2 || raw[1] != '\n' {
-				return nil, &httpWrapperError{msg: "HTTP invalid header name (cannot start with CR character)!"}
+				return errResp("HTTP invalid header name (cannot start with CR character)!")
 			}
-			if err := finishPending(); err != nil {
-				return nil, err
+			if werr, ok2 := finishPending(); !ok2 {
+				return errResp(werr.msg)
 			}
 			break
 		}
@@ -588,13 +710,13 @@ func httpParseResponse(br *bufio.Reader, skipBody bool) (*httpResponse, error) {
 		}
 		if line[0] == ' ' || line[0] == '\t' {
 			if !havePending {
-				return nil, &httpWrapperError{msg: "HTTP invalid response format (folding header at the start)!"}
+				return errResp("HTTP invalid response format (folding header at the start)!")
 			}
 			pending += " " + strings.TrimLeft(line, " \t")
 			continue
 		}
-		if err := finishPending(); err != nil {
-			return nil, err
+		if werr, ok2 := finishPending(); !ok2 {
+			return errResp(werr.msg)
 		}
 		pending = line
 		havePending = true
@@ -616,10 +738,10 @@ func httpParseResponse(br *bufio.Reader, skipBody bool) (*httpResponse, error) {
 			err = nil
 		}
 	default:
-		body, err = io.ReadAll(br)
+		body, _ = io.ReadAll(br)
 	}
 	if err != nil {
-		return nil, &httpWrapperError{msg: "HTTP request failed!"}
+		return errResp("HTTP request failed!")
 	}
 	resp.body = body
 	return resp, nil
@@ -684,10 +806,18 @@ func httpReadChunked(br *bufio.Reader) ([]byte, error) {
 	}
 }
 
-// httpResolveLocation строит URL следующего запроса (как php-src).
+// httpResolveLocation строит URL следующего запроса (как php-src):
+// абсолютный URL/путь сохраняются; одиночный символ (GH-23521) и пустой
+// Location разрешаются от корня хоста; прочие относительные — «каталог
+// текущего пути + / + location» (историческая формула php).
 func httpResolveLocation(cur *url.URL, location string) (*url.URL, error) {
 	if location == "" {
-		return nil, &httpWrapperError{msg: "Invalid redirect URL!"}
+		nu := *cur
+		nu.Path = "/"
+		nu.RawPath = ""
+		nu.RawQuery = ""
+		nu.Fragment = ""
+		return &nu, nil
 	}
 	lower := strings.ToLower(location)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
@@ -700,15 +830,41 @@ func httpResolveLocation(cur *url.URL, location string) (*url.URL, error) {
 		}
 		return nu, nil
 	}
-	ref, err := url.Parse(location)
-	if err != nil {
-		return nil, &httpWrapperError{msg: "Invalid redirect URL! " + location}
+	var newPath string
+	switch {
+	case strings.HasPrefix(location, "/"):
+		// Абсолютный путь (в т.ч. "//host" — остаётся путём, как в php).
+		newPath = location
+	case len(location) == 1:
+		newPath = "/" + location
+	default:
+		dir := cur.Path
+		if i := strings.LastIndexByte(dir, '/'); i < 0 {
+			dir = "/"
+		} else {
+			dir = dir[:i+1]
+		}
+		newPath = dir + "/" + location
 	}
-	nu := cur.ResolveReference(ref)
+	nu := *cur
+	nu.User = nil
+	nu.Fragment = ""
+	// path + query + fragment разбираются из относительной строки.
+	if i := strings.IndexAny(newPath, "?#"); i >= 0 {
+		rest := newPath[i+1:]
+		newPath = newPath[:i]
+		if q := strings.IndexByte(rest, '#'); q >= 0 {
+			nu.Fragment = rest[q+1:]
+			rest = rest[:q]
+		}
+		nu.RawQuery = rest
+	}
+	nu.Path = newPath
+	nu.RawPath = ""
 	if hasCtrlStr(nu.Path) {
 		return nil, &httpWrapperError{msg: "Invalid redirect URL! " + location}
 	}
-	return nu, nil
+	return &nu, nil
 }
 
 func hasCtrl(u *url.Userinfo) bool {

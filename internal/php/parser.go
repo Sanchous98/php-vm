@@ -4983,8 +4983,12 @@ func (p *Parser) postfixTail(x Expr) (Expr, error) {
 			// on <type>» / «(expression)::class ...» (см. classKeyword).
 			p.next()
 			t := p.next()
+			// `x::{expr}` — динамическое имя класса: компилятор не отвергает
+			// (Zend даёт рантайм «Class name must be a valid object or a
+			// string»), поэтому brace исключает компайл-фатал (oss_fuzz_59764).
+			brace := t.Kind == TOp && t.Val == "{"
 			isClassKw := t.Kind != TVar && t.Kind != TOp && strings.EqualFold(t.Val, "class")
-			if constClassNameNonString(x) && !(isClassKw && !constClassNameScalarLiteral(x)) {
+			if !brace && constClassNameNonString(x) && !(isClassKw && !constClassNameScalarLiteral(x)) {
 				line := 0
 				if p.exprLines != nil {
 					line = p.exprLines[x]

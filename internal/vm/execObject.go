@@ -392,7 +392,7 @@ func (vm *VM) propReadNonObjectWarn(recv Slot, pname string) {
 		vm.Warn("Undefined property: Closure::$" + pname)
 		return
 	}
-	vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, operandTypeName(recv)))
+	vm.Warn(fmt.Sprintf("Attempt to read property %q on %s", pname, valueTypeName(vm, recv)))
 }
 
 func (vm *VM) opPropGet(regs []Slot, consts []Slot, chunk *Chunk, in Instruction) execResult {
@@ -1039,7 +1039,6 @@ func (vm *VM) opPropGetRW(regs []Slot, consts []Slot, chunk *Chunk, in Instructi
 					vm.setProp(recv, pname, MakeNull())
 				}
 			}
-			vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))
 		}
 	}
 	vm.Warn(fmt.Sprintf("Undefined property: %s::$%s", ci.Name(), pname))

@@ -481,7 +481,12 @@ func parsePartHeaders(headers string) (name, filename, ptype string, hasName, ha
 			name, hasName = dispositionParam(line, "name")
 			filename, hasFilename = dispositionParam(line, "filename")
 		case strings.HasPrefix(low, "content-type:"):
+			// php-src обрезает параметры Content-Type по ';' без правого trim
+			// ("text/plain ;" → "text/plain ").
 			ptype = strings.TrimSpace(line[len("content-type:"):])
+			if i := strings.IndexByte(ptype, ';'); i >= 0 {
+				ptype = ptype[:i]
+			}
 		}
 	}
 	return name, filename, ptype, hasName, hasFilename

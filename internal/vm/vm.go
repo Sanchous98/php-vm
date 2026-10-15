@@ -6813,6 +6813,18 @@ func (vm *VM) invoke(fn *Function, args []Slot) (res Slot, err error) {
 				}
 				return Slot{}, th
 			}
+			// strict_types=1 в вызывающем файле распространяется на аргументы
+			// встроенных функций как на userland: несовпадение типа — TypeError
+			// без коэрции (Zend ZPP). call_user_func*/forward_static_call
+			// строгость вызывающего не наследуют (vm.cufCall).
+			if vm.argStrict() && !vm.cufCall && len(fn.BuiltinParamTypes) > 0 {
+				if serr := vm.checkNativeStrictParams(fn, args, provided, pmask, pmaskSet); serr != nil {
+					if pushed {
+						vm.popCall()
+					}
+					return Slot{}, serr
+				}
+			}
 			// USED_RET для нативного вызова (array_splice): из ближайшего
 			// опкода вызова; флаг сбрасывается, чтобы не протёк во вложенные.
 			vm.ctx.retUsed = vm.retUsed
@@ -7090,6 +7102,96 @@ func (vm *VM) checkParamsCore(fn *Function, args []Slot, provided int, mask int6
 		}
 	}
 	return args, nil
+}
+
+// checkNativeStrictParams — strict-проверка аргументов встроенной функции
+// (Zend ZPP при strict_types=1): коэрции нет, кроме расширения int->float и
+// точного совпадения/подтипа. Работает по BuiltinParamTypes (reflection php
+// 8.3), поэтому применима к *NativeFunction, для которой checkParamsCore
+// выходит сразу. Текст ошибки — без «called in ...»: Zend не добавляет
+// локацию вызова к ошибкам типов internal-функций.
+//
+// provided/mask повторяют логику checkParamsCore: null-заглушка непереданного
+// необязательного аргумента не является нарушением типа.
+func (vm *VM) checkNativeStrictParams(fn *Function, args []Slot, provided int, mask int64, maskSet bool) error {
+	types := fn.BuiltinParamTypes
+	if len(types) == 0 {
+		return nil
+	}
+	// Функции с рукописной strict-диагностикой, отличающейся от generic
+	// (ini_set() не печатает ", <тип> given"): оставляем им проверку.
+	if nativeStrictSelfChecked[strings.ToLower(fn.Name)] {
+		return nil
+	}
+	variadic := strings.HasPrefix(types[len(types)-1], "...")
+	nFixed := len(types)
+	if variadic {
+		nFixed--
+	}
+	for i := 0; i < len(args); i++ {
+		raw := ""
+		name := ""
+		switch {
+		case variadic && i >= nFixed:
+			// Вариативный хвост: Zend не печатает имя параметра.
+			raw = strings.TrimPrefix(types[len(types)-1], "...")
+		case i < len(types):
+			raw = types[i]
+			if i < len(fn.ParamNames) {
+				name = fn.ParamNames[i]
+			}
+		default:
+			continue
+		}
+		if raw == "" {
+			continue
+		}
+		// callable-параметры встроенных функций имеют собственную диагностику
+		// Zend («must be a valid callback ...»), которую requireCallable* уже
+		// выдаёт в обоих режимах: не перекрываем её generic-текстом. Строгая
+		// проверка остальных типов ниже.
+		if typeMentionsCallable(raw) {
+			continue
+		}
+		arg := deref(args[i])
+		omitted := false
+		if maskSet {
+			omitted = mask&(1<<uint(i)) == 0
+		} else if provided >= 0 {
+			omitted = i >= provided
+		}
+		if arg.typ == NullType && omitted {
+			continue
+		}
+		if ok, _ := vm.coerceReturnMode(raw, arg, true); ok {
+			continue
+		}
+		th := vm.argTypeError(funcDisplayName(fn), i+1, name, typeDisplay(raw), valueTypeName(vm, arg), "", 0)
+		th.Trace = vm.captureExceptionTrace()
+		return th
+	}
+	return nil
+}
+
+// nativeStrictSelfChecked — встроенные функции, которые сами проверяют типы
+// аргументов в strict-режиме и печатают диагностику, отличную от generic-текста
+// (ini_set() не добавляет ", <тип> given"). Их generic-проверка пропускается.
+var nativeStrictSelfChecked = map[string]bool{
+	"ini_set":   true,
+	"ini_alter": true,
+}
+
+// typeMentionsCallable сообщает, что среди альтернатив типа есть callable:
+// такие параметры встроенные функции проверяют сами (requireCallable*) с
+// более точной диагностикой («must be a valid callback ...»).
+func typeMentionsCallable(t string) bool {
+	t = strings.TrimPrefix(t, "?")
+	for _, alt := range splitTopLevelAll(t, '|') {
+		if strings.TrimSpace(alt) == "callable" {
+			return true
+		}
+	}
+	return false
 }
 
 // wbSkipEntry — запись в стеке vm.wbSkip: свойство ob::$name было прочитано

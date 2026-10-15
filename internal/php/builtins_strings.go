@@ -3637,6 +3637,11 @@ func highlightRender(src string) string {
 			highlightHTMLPuts(&b, t.text)
 			continue
 		}
+		// Пустой токен (тело пустого nowdoc) не должен переключать цвет:
+		// Zend не печатает для него смену span (nowdoc_014).
+		if t.text == "" {
+			continue
+		}
 		next := cDefault
 		switch t.kind {
 		case hlInlineHTML:

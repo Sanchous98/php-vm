@@ -4022,7 +4022,17 @@ func (vm *VM) exec(chunk *Chunk) error {
 				// переиспользован следующим. Без этого объект, удерживаемый
 				// массивом-временем, доживал бы до перезаписи регистра
 				// (сдвиг хендлов: compact_this, array_walk_closure).
-				vm.dropStmtTemps(chunk)
+				//
+				// Дёшево: в узком чанке (numRegs<=64) именованные переменные
+				// dropStmtTemps не трогает — если все учтённые регистры суть
+				// переменные, вызов не нужен (частый случай: объект-переменная).
+				if chunk.numRegs > 0 && chunk.numRegs <= 64 {
+					if f.tracked[0]&^chunk.varRegs[0] != 0 {
+						vm.dropStmtTemps(chunk)
+					}
+				} else {
+					vm.dropStmtTemps(chunk)
+				}
 			}
 			if f := vm.cur; f.nTracked != 0 {
 				// Быстрая проверка: есть ли учтённый регистр, который в этой
